@@ -4,7 +4,5 @@
   "roots": [
     "/Users/vahagnohanyan/Tripix"
   ],
-  "//legacy_journal": "Tripix's live journal predates the bound marker. true = the owner vouches for that markerless journal at these roots; `collab init --adopt` (owner, at a terminal) would bind it and make this flag unnecessary.",
-  "legacy_journal": true,
   "gate": "scripts/preflight.sh"
 }
