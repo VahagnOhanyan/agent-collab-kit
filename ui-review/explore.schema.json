@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image_tool", "baseline_problems", "variants"],
+  "properties": {
+    "image_tool": {
+      "type": "string",
+      "description": "Exact name of the native image tool that rendered the mockups, or NONE if no image could be generated."
+    },
+    "baseline_problems": {
+      "type": "array",
+      "description": "Concrete problems seen in the baseline screenshot, each tied to a visible element.",
+      "items": { "type": "string" }
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "direction", "changes", "preserved", "image_path", "render_prompt"],
+        "properties": {
+          "id": { "type": "string", "description": "A, B, C, ..." },
+          "name": { "type": "string" },
+          "direction": { "type": "string", "description": "The visual approach in one or two sentences." },
+          "changes": { "type": "array", "items": { "type": "string" } },
+          "preserved": { "type": "array", "items": { "type": "string" }, "description": "MUST PRESERVE items this variant keeps, explicitly." },
+          "image_path": { "type": "string", "description": "Absolute path of the rendered mockup, or empty string if rendering failed." },
+          "render_prompt": { "type": "string" }
+        }
+      }
+    }
+  }
+}

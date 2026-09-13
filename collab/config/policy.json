@@ -1,0 +1,119 @@
+{
+  "//": "Which classes of action an agent may take on its own, and which stop and wait for the owner. This is a TABLE read by code, not advice in a prompt: an approval is required by the task state machine itself (transitions.mjs), so there is no path to `in_progress` that skips it, and the MCP surface contains no tool that can grant one.",
+  "//evaluation": "ALL rules are evaluated and the HIGHEST severity among the matches wins; approval is mandatory if any match says so. First-match-wins was rejected: it makes rule ORDER load-bearing, so reordering the file can silently downgrade a rule. An action that matches nothing falls to `unmatched_class` — SECURITY_SENSITIVE, i.e. ask — because a classifier that fails open is not a classifier.",
+  "schema_version": 1,
+  "classes": {
+    "READ_ONLY": {
+      "severity": 0,
+      "summary": "Reads the tree, git, docs or test output. Changes nothing."
+    },
+    "SAFE_WRITE": {
+      "severity": 1,
+      "summary": "Edits source, tests or docs in the working tree; git can bring it back."
+    },
+    "EXTERNAL_SIDE_EFFECT": {
+      "severity": 2,
+      "summary": "Reaches something outside this machine that other people can see."
+    },
+    "DESTRUCTIVE": {
+      "severity": 3,
+      "summary": "Discards work or data that git cannot bring back."
+    },
+    "SECURITY_SENSITIVE": {
+      "severity": 4,
+      "summary": "Touches credentials, permissions or anything that grants access."
+    },
+    "PRODUCTION": {
+      "severity": 5,
+      "summary": "Changes what real users get."
+    },
+    "FINANCIAL": {
+      "severity": 5,
+      "summary": "Costs the owner money, now or on the next invoice."
+    }
+  },
+  "defaults": {
+    "unmatched_class": "SECURITY_SENSITIVE",
+    "approval": {
+      "READ_ONLY": "never",
+      "SAFE_WRITE": "never",
+      "EXTERNAL_SIDE_EFFECT": "mandatory",
+      "DESTRUCTIVE": "mandatory",
+      "SECURITY_SENSITIVE": "mandatory",
+      "PRODUCTION": "mandatory",
+      "FINANCIAL": "mandatory"
+    },
+    "approval_ttl_seconds": 86400
+  },
+  "//never_standing": "An approval for a `never_standing` class authorises ONE action, matched by fingerprint, and is consumed when used. A grant to buy one thing can never authorise buying another.",
+  "rules": [
+    {
+      "id": "money",
+      "class": "FINANCIAL",
+      "never_standing": true,
+      "pattern": "subscription|billing|invoice|paid plan|upgrade .*plan|purchase|\\bbuy\\b|pricing tier|credit card|api credits|paid (api|account|tier)|register .*domain|provision .*(cloud|instance|cluster)|\\b(stripe|terraform apply|npm publish|gh release)\\b",
+      "reason": "Anything that can appear on an invoice needs a fresh, single-use authorisation from the owner."
+    },
+    {
+      "id": "cloud-cli",
+      "class": "FINANCIAL",
+      "never_standing": true,
+      "pattern": "\\b(aws|gcloud|az|doctl|heroku|vercel deploy|fly deploy)\\b",
+      "reason": "Cloud CLIs create billable resources; the free-looking subcommands are not distinguishable here."
+    },
+    {
+      "id": "production",
+      "class": "PRODUCTION",
+      "pattern": "deploy|production|prod (db|database|host)|testflight|app ?store|release build|rollout|submit .*review",
+      "reason": "ADR-0010 already bars agents from production; this keeps the same line in the collaboration layer."
+    },
+    {
+      "id": "production-hosts",
+      "class": "PRODUCTION",
+      "pattern": "(^|[^.a-z])(www\\.|api\\.)?aweiro\\.com",
+      "reason": "Production hostnames. The dev host is dev.aweiro.com and is matched by the dev-host rule below."
+    },
+    {
+      "id": "deploy-paths",
+      "class": "PRODUCTION",
+      "pattern": "deploy/remote/|deploy/nginx/|release-deploy\\.yml",
+      "reason": "Editing the deploy path is one command away from running it."
+    },
+    {
+      "id": "secrets",
+      "class": "SECURITY_SENSITIVE",
+      "pattern": "credential|secret|\\btoken\\b|api ?key|password|\\.env\\b|serviceaccount|\\biam\\b|firewall|deploy key|rotate ",
+      "reason": "Credentials are never read, written or quoted through this layer."
+    },
+    {
+      "id": "destructive",
+      "class": "DESTRUCTIVE",
+      "pattern": "reset --hard|git clean|drop (table|database|column)|truncate |delete .*(user|media|account|bucket)|migrate reset|force-reset|wipe|rm -rf",
+      "reason": "Discards work or data git cannot restore."
+    },
+    {
+      "id": "outbound",
+      "class": "EXTERNAL_SIDE_EFFECT",
+      "pattern": "\\bgit\\s+push\\b|pull request|open a pr\\b|slack|send (an )?e-?mail|post to |publish",
+      "reason": "Leaves this machine and is visible to other people; push also starts CI."
+    },
+    {
+      "id": "dev-host",
+      "class": "SAFE_WRITE",
+      "pattern": "dev\\.aweiro\\.com|localhost|127\\.0\\.0\\.1",
+      "reason": "The dev backend is where agents are meant to work."
+    },
+    {
+      "id": "write",
+      "class": "SAFE_WRITE",
+      "pattern": "\\bedit\\b|refactor|implement|write (a )?test|\\bfix\\b|rename|add (a )?(file|test|field|case)",
+      "reason": "Ordinary work in the working tree."
+    },
+    {
+      "id": "read",
+      "class": "READ_ONLY",
+      "pattern": "\\bread\\b|inspect|analy[sz]e|\\breview\\b|search|summari[sz]|run (the )?tests?|run (the )?gates|preflight|typecheck|\\blint\\b|build-for-testing",
+      "reason": "Reads and checks. Changes nothing."
+    }
+  ]
+}

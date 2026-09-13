@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scores", "recommendation", "risks"],
+  "properties": {
+    "scores": {
+      "type": "array",
+      "description": "One row per variant. Every score is an integer 1-5 where 5 is always better (for complexity and regression risk 5 = easiest / safest).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variant_id", "visual_quality", "ux_clarity", "product_fit", "design_system_consistency", "ios_nativeness", "accessibility", "implementation_ease", "maintainability", "regression_safety", "functional_preservation", "notes"],
+        "properties": {
+          "variant_id": { "type": "string" },
+          "visual_quality": { "type": "integer" },
+          "ux_clarity": { "type": "integer" },
+          "product_fit": { "type": "integer" },
+          "design_system_consistency": { "type": "integer" },
+          "ios_nativeness": { "type": "integer" },
+          "accessibility": { "type": "integer" },
+          "implementation_ease": { "type": "integer" },
+          "maintainability": { "type": "integer" },
+          "regression_safety": { "type": "integer" },
+          "functional_preservation": { "type": "integer" },
+          "notes": { "type": "string", "description": "What decides this variant, incl. responsive behaviour: iPhone sizes, long/ru text, Dynamic Type, empty states, safe areas." }
+        }
+      }
+    },
+    "recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_variant_id", "borrow_from_others", "why", "fixes", "better_than_alternatives_because", "tradeoffs", "complexity", "components_or_tokens_to_change", "hybrid_image_path"],
+      "properties": {
+        "base_variant_id": { "type": "string" },
+        "borrow_from_others": { "type": "array", "items": { "type": "string" }, "description": "e.g. 'photo treatment from C'. Empty if not a hybrid." },
+        "why": { "type": "string" },
+        "fixes": { "type": "array", "items": { "type": "string" } },
+        "better_than_alternatives_because": { "type": "string" },
+        "tradeoffs": { "type": "array", "items": { "type": "string" } },
+        "complexity": { "type": "string", "enum": ["low", "medium", "high"] },
+        "components_or_tokens_to_change": { "type": "array", "items": { "type": "string" }, "description": "Real file paths / token names from the repo." },
+        "hybrid_image_path": { "type": "string", "description": "Absolute path of the rendered hybrid mockup, or empty string if not a hybrid or rendering failed." }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Where this recommendation could be wrong or break behaviour."
+    }
+  }
+}

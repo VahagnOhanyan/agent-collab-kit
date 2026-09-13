@@ -1,0 +1,15 @@
+{
+  "//": "The vocabulary of things an agent can actually DO. Roles are named bundles of these; routing (request_review, send_message to a role) resolves through them. A capability that is not listed here cannot be granted — scripts/check-collab-registry.mjs fails on an unknown name, which is how a typo stops being a silently unroutable agent.",
+  "capabilities": {
+    "read_code": "Read repository files.",
+    "modify_code": "Edit repository files.",
+    "run_tests": "Run the test runners declared in runners.json.",
+    "run_gates": "Run the repository guard scripts and preflight.",
+    "review_code": "Produce a structured review verdict on someone else's work.",
+    "inspect_git": "Read git status, log and diff.",
+    "run_application": "Build, install and drive the app on a simulator or device.",
+    "use_mcp_tool": "Call other MCP servers registered for this project.",
+    "research": "Read documentation and external sources and summarise them.",
+    "record_decision": "Write a decision record that binds later work."
+  }
+}

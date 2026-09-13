@@ -1,0 +1,43 @@
+// How a message physically reaches an agent.
+//
+// The adapter is the ONLY place that knows anything provider-specific, and it
+// knows only two things: whether the agent can be reached right now, and how.
+// Everything above it — tasks, reviews, routing — works in roles and
+// capabilities and would not change if a fourth provider appeared.
+//
+// Adding an agent means adding an entry to config/agents.json. Adding a NEW KIND
+// of agent means one more file here implementing probe/deliver/describe. Two
+// kinds cover both current agents and, in practice, most future ones:
+//
+//   manual — the message waits in the inbox; the agent reads it when its own
+//            session runs. This is how Claude Code and any interactive session
+//            works, and it is the default because it costs nothing and starts
+//            nothing.
+//   cli    — the layer COULD spawn the agent. Whether it does is `enabled`, and
+//            it is false: the owner decided on 2026-09-10 that nothing starts a
+//            paid agent without them. probe() still reports whether the binary
+//            is there, so `collab doctor` tells the truth about what is possible
+//            rather than what is configured.
+
+import { execFileSync } from 'node:child_process'
+import { manualAdapter } from './manual.mjs'
+import { cliAdapter } from './cli.mjs'
+
+export function which(binary) {
+  try {
+    return execFileSync('sh', ['-c', `command -v ${JSON.stringify(binary)}`], { encoding: 'utf8' }).trim() || null
+  } catch {
+    return null
+  }
+}
+
+export function adapterFor(agentView) {
+  const adapter = agentView.adapter || { kind: 'manual' }
+  switch (adapter.kind) {
+    case 'cli':
+      return cliAdapter(agentView, adapter)
+    case 'manual':
+    default:
+      return manualAdapter(agentView, adapter)
+  }
+}

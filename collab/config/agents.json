@@ -1,0 +1,78 @@
+{
+  "//": "The agent registry. This file is the ONLY place a provider name appears in the collaboration layer: the protocol routes by role and capability, never by agent id, so swapping who reviews what is an edit here and nothing else. Adding a third agent is one more entry plus, if it needs one, a role in roles.json.",
+  "//briefing": "`briefing` is the agent's own instructions, returned by its whoami call. Instructions travel WITH the registration so a new agent does not need a new prompt file wired into a new place.",
+  "//adapter": "`adapter.kind` is how a message physically reaches the agent. 'manual' = it lands in the inbox and the agent reads it when its session runs. 'cli' = the layer could spawn it; `enabled:false` means it will not, and doctor reports the binary state either way.",
+  "defaults": {
+    "lease_seconds": 3600,
+    "heartbeat_stale_seconds": 900
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "provider": "anthropic",
+      "roles": [
+        "architect",
+        "ios_engineer",
+        "backend_engineer",
+        "product_engineer"
+      ],
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "run_application",
+        "use_mcp_tool",
+        "research",
+        "record_decision"
+      ],
+      "adapter": {
+        "kind": "manual",
+        "session": "interactive"
+      },
+      "briefing_file": "tools/collab/claude/briefing.md",
+      "briefing": "You are the lead session. You hold architecture, iOS and cross-layer work, you own shared/, scripts/, .github/ and CLAUDE.md, and you are the only one who pushes. Before you call your own work done, ask the collaboration layer for an independent review by ROLE (code_reviewer), not by name. Record anything that should bind later work as a decision, and promote the ones that bind everyone to docs/decisions/."
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "provider": "openai",
+      "roles": [
+        "software_engineer",
+        "code_reviewer",
+        "test_engineer"
+      ],
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "use_mcp_tool",
+        "research"
+      ],
+      "adapter": {
+        "kind": "cli",
+        "enabled": false,
+        "binary": "codex",
+        "args": [
+          "exec",
+          "--sandbox",
+          "read-only",
+          "--skip-git-repo-check",
+          "--cd",
+          "."
+        ],
+        "note": "Owner decision 2026-09-10: queue first, launch by hand. Nothing here starts a paid agent on its own.",
+        "verified_against": "codex-cli 0.154.0 — flags read from `codex exec --help` on 2026-09-10, not from memory. There is no --ask-for-approval on `exec`: it is non-interactive already, and the sandbox flag is what bounds it.",
+        "install_hint": "npm install -g @openai/codex, then: node tools/collab/codex/install.mjs"
+      },
+      "briefing_file": "tools/collab/codex/briefing.md",
+      "briefing": "You are the independent engineer on this repository. Your default work is review, test analysis, bug detection and backend/code engineering. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application — you cannot boot the simulator or the phone, so never claim UI was verified. Read your full instructions with the collab CLI: node tools/collab/src/cli.js brief codex."
+    }
+  ]
+}
