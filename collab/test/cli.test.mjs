@@ -295,3 +295,33 @@ test('an unknown command fails loudly rather than doing nothing', () => {
     w.cleanup()
   }
 })
+
+test('a dirty file that a task claimed is not reported as claimed by nobody', async () => {
+  // The regression this holds: `git status --porcelain` starts a line with a
+  // space when the file is modified but not staged, and trimming the whole
+  // output ate that space on the FIRST line, so its path lost a letter and
+  // stopped matching the claim. .collab is excluded here so that the first
+  // porcelain line is reliably the file, not the journal directory.
+  const w = scratch({ git: true })
+  try {
+    writeFileSync(join(w.sbx.root, '.git', 'info', 'exclude'), '.collab/\n')
+    writeFileSync(join(w.sbx.root, 'alpha.js'), 'one\n')
+    git(w.sbx.root, ['add', 'alpha.js'])
+    git(w.sbx.root, ['commit', '-q', '-m', 'add alpha'])
+    writeFileSync(join(w.sbx.root, 'alpha.js'), 'two\n')
+
+    const task = await w.claude.createTask({ title: 'Work on alpha', action: 'edit a file' })
+    await w.claude.claimTask({ task_id: task.id })
+    await w.claude.claimFiles({ task_id: task.id, paths: ['alpha.js'] })
+
+    const result = run(w, ['status'])
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /claimed alpha\.js/, 'the whole path, and recognised as claimed')
+    // The sandbox keeps its own untracked files, so "no task claims" is expected
+    // here. What must never appear is a path with its first letter eaten — the
+    // form the bug took, and the reason a claimed file stopped matching its claim.
+    assert.doesNotMatch(result.stdout, /(^|[^a])lpha\.js/m, 'a path must not lose its first letter')
+  } finally {
+    w.cleanup()
+  }
+})

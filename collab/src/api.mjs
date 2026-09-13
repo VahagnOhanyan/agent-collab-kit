@@ -29,6 +29,7 @@ import * as decisions from './domain/decisions.mjs'
 import * as messages from './domain/messages.mjs'
 import * as reviews from './domain/reviews.mjs'
 import * as tasks from './domain/tasks.mjs'
+import * as delegations from './domain/delegations.mjs'
 import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
 
@@ -220,6 +221,8 @@ export function createApi({
       tasks.updateTask(ctx, { task_id, status: 'blocked', reason, expected_version }),
     releaseTask: (input) => tasks.releaseTask(ctx, input),
     claimFiles: (input) => tasks.claimFiles(ctx, input),
+    addDelegation: (input) => delegations.addDelegation(ctx, input),
+    completeDelegation: (input) => delegations.completeDelegation(ctx, input),
     sweep: () => tasks.sweep(ctx),
 
     // ── messages ──────────────────────────────────────────────────────────
@@ -282,6 +285,7 @@ export function createApi({
         approvals_pending: approvals.listApprovals(ctx, { pending_only: true }).length,
         decisions_open: decisions.listDecisions(ctx, {}).filter((d) => ['open', 'disputed', 'escalated'].includes(d.status)).length,
         runs_failed: runs.listRuns(ctx, { failed_only: true }).length,
+        delegations: delegations.openDelegations(ctx),
         git: gitSnapshot(roots.codeRoot, all)
       }
     },
@@ -389,9 +393,25 @@ function gitSnapshot(worktree, allTasks) {
   }
   const head = run(['rev-parse', '--short', 'HEAD'])
   const branch = run(['rev-parse', '--abbrev-ref', 'HEAD'])
-  const dirty = run(['status', '--porcelain'])
+  // ⛔ NOT through run(): it trims, and a porcelain line starts with a SPACE when
+  // a file is modified in the working tree but not staged (" M path"). Trimming
+  // the whole output ate that space on the first line only, and slice(3) then ate
+  // the first letter of its path — `.claude/rules/…` was printed as
+  // `claude/rules/…`. Worse than the typo: the mangled path no longer matched its
+  // own task's claim, so a claimed file was reported as claimed by nobody, which
+  // is the one question this snapshot exists to answer.
+  const porcelain = (() => {
+    try {
+      return runGit(worktree, ['status', '--porcelain'])
+    } catch {
+      return ''
+    }
+  })()
+  const dirty = porcelain
     .split('\n')
-    .filter(Boolean)
+    // A line is two status columns, a space, then the path: shorter than four
+    // characters is the trailing empty line, not a file.
+    .filter((line) => line.length > 3)
     .map((line) => line.slice(3))
 
   const claimed = new Map()

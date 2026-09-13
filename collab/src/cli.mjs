@@ -200,6 +200,15 @@ const COMMANDS = {
       `  runs failed        ${s.runs_failed}`
     )
 
+    if (s.delegations?.length) {
+      // What the lead handed to a subagent. A record of intent, not proof: the
+      // layer never started these and cannot check which model actually ran.
+      out('', `${C.bold}delegations${C.off} ${dim('(declared by the lead, not verified)')}`)
+      for (const d of s.delegations) {
+        out(`  ${d.by} -> ${d.to} ${dim(`(${d.model})`)}  ${d.task_id}`, dim(`  ${' '.repeat(6)} ${d.purpose || d.task_title}`))
+      }
+    }
+
     out('', `${C.bold}working tree${C.off} ${dim(s.git.worktree || '(none)')}`)
     if (!s.git.is_git) {
       out(dim('  not a git working tree — nothing to compare claims against'))
@@ -247,6 +256,13 @@ const COMMANDS = {
     )
     if (task.blocked_reason) out(`${C.red}blocked${C.off}      ${task.blocked_reason}`)
     if (task.waiting_on) out(`${C.yellow}waiting on${C.off}   ${task.waiting_on.kind} ${task.waiting_on.ref}`)
+    if ((task.delegations || []).length) {
+      out('', `${C.bold}delegations${C.off}`)
+      for (const d of task.delegations) {
+        const state = d.finished_at ? d.outcome || 'finished' : `${C.yellow}running${C.off}`
+        out(`  ${d.id}  ${d.to} ${dim(`(${d.model})`)}  ${state}`, dim(`      ${d.purpose || '(no purpose given)'}`))
+      }
+    }
 
     const reviews = api.listReviews({ task_id: task.id })
     if (reviews.length) {

@@ -835,3 +835,73 @@ test('an ownerless task holds no files, however long it sits there', async () =>
     w.cleanup()
   }
 })
+
+// ── who actually did the work ──────────────────────────────────────────────
+
+test('a delegation says who and on which model, and shows as running until it is closed', async () => {
+  const w = world()
+  try {
+    const task = await w.claude.createTask({ title: 'Extract the parser', action: 'edit a file' })
+    await w.claude.claimTask({ task_id: task.id })
+
+    const { delegation } = await w.claude.addDelegation({
+      task_id: task.id,
+      to: 'ios-implementer',
+      model: 'sonnet',
+      purpose: 'move the parser into its own file, plan attached'
+    })
+    assert.equal(delegation.to, 'ios-implementer')
+    assert.equal(delegation.model, 'sonnet')
+    assert.equal(delegation.finished_at, null)
+
+    const live = await w.claude.status()
+    assert.equal(live.delegations.length, 1, 'the owner can see it while it runs')
+    assert.equal(live.delegations[0].task_id, task.id)
+
+    await w.claude.completeDelegation({ task_id: task.id, delegation_id: delegation.id, outcome: 'done, two files' })
+    const after = await w.claude.status()
+    assert.equal(after.delegations.length, 0, 'a finished delegation is history, not work in flight')
+    assert.equal(w.claude.getTask({ task_id: task.id }).delegations[0].outcome, 'done, two files')
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('a delegation is recorded by whoever holds the task, and names a model', async () => {
+  const w = world()
+  try {
+    const task = await w.claude.createTask({ title: 'Claude holds this', action: 'edit a file' })
+    await w.claude.claimTask({ task_id: task.id })
+
+    let error = null
+    try {
+      await w.codex.addDelegation({ task_id: task.id, to: 'general-purpose', model: 'haiku', purpose: 'not mine to hand out' })
+    } catch (e) {
+      error = e
+    }
+    assert.equal(error?.code, CODES.NOT_PERMITTED)
+
+    // The model is required on purpose: project agents declare `model: inherit`,
+    // so leaving it out is not "let the system choose" — it is the lead's own
+    // model by omission, the most expensive one.
+    error = null
+    try {
+      await w.claude.addDelegation({ task_id: task.id, to: 'ios-implementer', model: '', purpose: 'no model named' })
+    } catch (e) {
+      error = e
+    }
+    assert.equal(error?.code, CODES.INVALID_INPUT)
+
+    // The purpose is a line the owner reads in `collab status`, not a place to
+    // paste the whole brief: the record lives inside the task.
+    error = null
+    try {
+      await w.claude.addDelegation({ task_id: task.id, to: 'ios-implementer', model: 'sonnet', purpose: 'x'.repeat(401) })
+    } catch (e) {
+      error = e
+    }
+    assert.equal(error?.code, CODES.INVALID_INPUT)
+  } finally {
+    w.cleanup()
+  }
+})

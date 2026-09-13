@@ -251,6 +251,40 @@ export const TOOLS = [
     annotations: WRITE,
     handler: (input, api) => api.claimFiles(input)
   },
+  {
+    name: 'add_delegation',
+    title: 'Say who you handed this subtask to, and on which model',
+    description:
+      'Record that work on this task went to a subagent, and which model it runs on. A subagent is not a registered ' +
+      'agent here, so without this the journal shows only your own id and the owner cannot see who did the work. ' +
+      'This is a RECORD, not a control: nothing is started by writing it, and the layer cannot verify the model.',
+    inputSchema: object(
+      {
+        task_id: str('The task the work belongs to.'),
+        to: str('The subagent, e.g. "ios-implementer", "verifier", "Explore".'),
+        model: str('The model it runs on, e.g. "haiku", "sonnet", "opus", "fable". Required: omitting it is how work quietly inherits the most expensive model.'),
+        purpose: str('One line on what it was asked to do.')
+      },
+      ['task_id', 'to', 'model']
+    ),
+    annotations: WRITE,
+    handler: (input, api) => api.addDelegation(input)
+  },
+  {
+    name: 'complete_delegation',
+    title: 'Close a delegation you recorded',
+    description: 'Mark a recorded delegation finished and say how it went, so `collab status` stops showing it as running.',
+    inputSchema: object(
+      {
+        task_id: str('The task the delegation is on.'),
+        delegation_id: str('The delegation id returned by add_delegation.'),
+        outcome: str('How it went, in one line.')
+      },
+      ['task_id', 'delegation_id']
+    ),
+    annotations: WRITE,
+    handler: (input, api) => api.completeDelegation(input)
+  },
 
   {
     name: 'send_message',
