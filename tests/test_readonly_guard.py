@@ -313,6 +313,9 @@ class DeniedCommandTests(GuardCase):
         "date --set=x", "plutil -convert xml1 x", "plutil -replace k -string v x", "plutil -p -o x f",
         "plutil -insert k -string v x", "plutil f", "xcode-select -s /x", "xcode-select --install",
         "xcode-select -r", "xcode-select", "env -i", "env X=1", "command -v", "command -v -p ls", "date -f",
+        # третье ревью: printf -v меняет PATH, rg -z запускает распаковщики
+        "printf -v PATH /tmp; cat", "printf -v PATH /tmp", "printf -vPATH x", "printf -v x y",
+        "rg -z needle f", "rg -nz x", "rg -zn x", "rg --search-zip x", "rg --search-zip=true x",
     )
     RUNNER_DENIED = (
         # node
@@ -457,6 +460,42 @@ class ScriptPathTests(GuardCase):
         link.symlink_to(self.root / "proj")
         self.assertAllowed("scripts/preflight.sh", cwd=str(link))
         self.assertBlocked("./link.sh", cwd=str(link))
+
+
+class RealpathContainmentTests(GuardCase):
+    """Пути с кодом для раннеров — внутри cwd после realpath (третье ревью: симлинк наружу, чужой проект)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.cwd = str(self.root / "proj")
+        (self.root / "proj" / "sub").mkdir(parents=True)
+        (self.root / "outside").mkdir()
+        (self.root / "outside" / "x.test.js").write_text("")
+        (self.root / "outside" / "Evil.xcodeproj").mkdir()
+        (self.root / "proj" / "tests-link").symlink_to(self.root / "outside")
+        (self.root / "proj" / "Evil.xcodeproj").symlink_to(self.root / "outside" / "Evil.xcodeproj")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_symlinked_or_foreign_code_blocks(self):
+        for command in ("node --test tests-link/x.test.js", "node --test tests-link", "node --check tests-link/x.test.js",
+                        "python3 -m unittest discover -s tests-link", "python3 -m unittest -s tests-link",
+                        "python3 -m pytest tests-link", "python3 -m pytest --ignore=tests-link sub",
+                        "xcodebuild -project /tmp/Evil.xcodeproj -scheme Evil build",
+                        "xcodebuild -project Evil.xcodeproj -scheme Evil build",
+                        "xcodebuild -workspace /tmp/W.xcworkspace -scheme S build-for-testing"):
+            with self.subTest(command=command):
+                self.assertBlocked(command)
+
+    def test_paths_inside_cwd_still_pass(self):
+        for command in ("node --test sub/", "node --test sub/a.test.js", "python3 -m unittest discover -s sub",
+                        "python3 -m unittest -v sub.test_x", "python3 -m pytest sub",
+                        "xcodebuild -project App.xcodeproj -scheme App build-for-testing",
+                        "xcodebuild -workspace App.xcworkspace -scheme App build", "printf '%s\\n' x", "rg -n needle sub"):
+            with self.subTest(command=command):
+                self.assertAllowed(command)
 
 
 class RobustnessTests(unittest.TestCase):

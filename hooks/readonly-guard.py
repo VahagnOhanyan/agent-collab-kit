@@ -258,8 +258,12 @@ def reject_args(cmd, args, exact=(), prefixes=(), short_letters=""):
                     raise Blocked("`%s -%s` не разрешён" % (cmd, letter))
 
 
-def check_relative_path(cmd, value):
-    """Аргумент-путь тест-раннера: относительный, без `..`, не флаг."""
+def check_relative_path(cmd, value, cwd):
+    """Аргумент-путь тест-раннера: относительный, без `..`, не флаг, и после realpath — внутри cwd.
+
+    Лексической проверки мало: `tests/link` может быть симлинком наружу, и раннер
+    выполнит чужой код. Несуществующий хвост (имя модуля, фильтр) realpath оставляет
+    как есть, так что проверка содержимого не требует существования файла."""
     if not value or value.startswith("-"):
         raise Blocked("`%s`: неизвестный флаг `%s`" % (cmd, value))
     if value.startswith("/"):
@@ -267,6 +271,17 @@ def check_relative_path(cmd, value):
     head = value.split("::", 1)[0]
     if ".." in head.split("/"):
         raise Blocked("`%s`: путь `%s` выходит из cwd через `..`" % (cmd, value))
+    check_inside_cwd(cmd, head, cwd)
+
+
+def check_inside_cwd(cmd, path, cwd):
+    """realpath(cwd/path) лежит внутри realpath(cwd) — по границе компонента."""
+    if not isinstance(cwd, str) or not cwd.startswith("/"):
+        raise Blocked("`%s`: в событии нет абсолютного cwd — путь `%s` нельзя проверить" % (cmd, path))
+    root = os.path.realpath(cwd).rstrip("/")
+    real = os.path.realpath(os.path.join(cwd, path))
+    if real != root and not real.startswith(root + "/"):
+        raise Blocked("`%s`: путь `%s` после разрешения симлинков ведёт за пределы cwd" % (cmd, path))
 
 
 def resolve_inside_cwd(cwd, path, need_exec):
@@ -326,7 +341,17 @@ def policy_file(cmd, args, cwd):
 
 
 def policy_rg(cmd, args, cwd):
-    reject_args(cmd, args, exact=("--pre", "--pre-glob"), prefixes=("--pre=", "--pre-glob="))
+    # --pre запускает произвольную программу; -z/--search-zip — внешние распаковщики.
+    reject_args(cmd, args, exact=("--pre", "--pre-glob", "--search-zip"),
+                prefixes=("--pre=", "--pre-glob=", "--search-zip="), short_letters="z")
+
+
+def policy_printf(cmd, args, cwd):
+    # `printf -v NAME` в bash/zsh присваивает переменную оболочки — `printf -v PATH /tmp; cat`
+    # подменяет PATH для следующих команд строки.
+    for a in texts(args):
+        if a.startswith("-v"):
+            raise Blocked("`printf %s` присваивает переменную оболочки (например PATH) — запрещено" % a)
 
 
 def policy_find(cmd, args, cwd):
@@ -485,7 +510,7 @@ def policy_node(cmd, args, cwd):
     if t in (["--version"], ["-v"]):
         return
     if len(t) == 2 and t[0] in ("--check", "-c"):
-        check_relative_path("node --check", t[1])
+        check_relative_path("node --check", t[1], cwd)
         return
     if not t or t[0] != "--test":
         raise Blocked("`node` разрешён только как `node --test …` или `node --check <файл>`")
@@ -507,7 +532,7 @@ def policy_node(cmd, args, cwd):
                               % (value, ", ".join(_NODE_REPORTERS)))
             i += 1
             continue
-        check_relative_path("node --test", a)
+        check_relative_path("node --test", a, cwd)
         i += 1
 
 
@@ -523,7 +548,7 @@ _UNITTEST_VALUE = ("-k", "--durations", "-s", "--start-directory", "-t", "--top-
                    "--pattern")
 
 
-def _check_runner_options(runner, t, flags, value_opts, path_value_opts=()):
+def _check_runner_options(runner, t, flags, value_opts, path_value_opts=(), cwd=None):
     i = 0
     while i < len(t):
         a = t[i]
@@ -540,12 +565,12 @@ def _check_runner_options(runner, t, flags, value_opts, path_value_opts=()):
             if runner == "pytest" and name == "-p" and not value.startswith("no:"):
                 raise Blocked("`pytest -p %s` загружает плагин — разрешено только `-p no:<имя>`" % value)
             if name in path_value_opts:
-                check_relative_path(runner + " " + name, value)
+                check_relative_path(runner + " " + name, value, cwd)
             i += 1
             continue
         if a.startswith("-"):
             raise Blocked("`%s %s` не входит в allowlist опций" % (runner, a))
-        check_relative_path(runner, a)
+        check_relative_path(runner, a, cwd)
         i += 1
 
 
@@ -557,9 +582,9 @@ def policy_python(cmd, args, cwd):
         raise Blocked("`python3` разрешён только как `python3 -m unittest …` или `python3 -m pytest …`")
     if t[1] == "unittest":
         _check_runner_options("unittest", t[2:], _UNITTEST_FLAGS, _UNITTEST_VALUE,
-                              path_value_opts=("-s", "--start-directory", "-t", "--top-level-directory"))
+                              path_value_opts=("-s", "--start-directory", "-t", "--top-level-directory"), cwd=cwd)
     else:
-        _check_runner_options("pytest", t[2:], _PYTEST_FLAGS, _PYTEST_VALUE, path_value_opts=("--ignore",))
+        _check_runner_options("pytest", t[2:], _PYTEST_FLAGS, _PYTEST_VALUE, path_value_opts=("--ignore",), cwd=cwd)
 
 
 def _npm_like(cmd, t, allow_run):
@@ -644,6 +669,10 @@ def policy_xcodebuild(cmd, args, cwd):
             i += 1
             if i >= len(t):
                 raise Blocked("`xcodebuild %s` без значения" % a)
+            if a in ("-project", "-workspace"):
+                if t[i].startswith("/"):
+                    raise Blocked("`xcodebuild %s %s`: проект вне cwd — его фазы сборки выполнят чужой код" % (a, t[i]))
+                check_inside_cwd("xcodebuild " + a, t[i], cwd)
             i += 1
             continue
         if a in _XCB_FLAGS or a in _XCB_ACTIONS:
@@ -695,7 +724,7 @@ def policy_collab(cmd, args, cwd):
 ALLOWLIST = {
     # чистые читатели
     "ls": any_args, "cat": any_args, "head": any_args, "tail": any_args, "wc": any_args, "stat": any_args,
-    "du": any_args, "df": any_args, "pwd": any_args, "which": any_args, "echo": any_args, "printf": any_args,
+    "du": any_args, "df": any_args, "pwd": any_args, "which": any_args, "echo": any_args, "printf": policy_printf,
     "uname": any_args, "whoami": any_args, "id": any_args, "grep": any_args, "egrep": any_args,
     "fgrep": any_args, "cut": any_args, "tr": any_args, "jq": any_args, "diff": any_args, "cmp": any_args,
     "comm": any_args, "basename": any_args, "dirname": any_args, "realpath": any_args, "readlink": any_args,
