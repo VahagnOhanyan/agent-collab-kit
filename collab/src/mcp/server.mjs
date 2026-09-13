@@ -1,18 +1,29 @@
 #!/usr/bin/env node
-// The collaboration MCP server. Registered per agent with its own identity:
-//   .mcp.json            -> COLLAB_AGENT_ID=claude
-//   ~/.codex/config.toml -> COLLAB_AGENT_ID=codex
+// The collaboration MCP server. Registered per agent with its own identity
+// (COLLAB_AGENT_ID=claude for Claude Code, =codex for Codex), once per machine.
+//
+// ONE INSTALLATION, EVERY FOLDER. The server starts in whatever directory the
+// client was opened in, so it must be harmless there: it never creates
+// `.collab/`. Where there is no journal it still answers initialize and
+// tools/list, and every tool call returns NOT_INITIALIZED (or ROOT_REFUSED for
+// `/` and the home directory) naming the `collab init` to run. It re-checks on
+// each call, so `collab init` takes effect without restarting the client.
+// A bad identity or an invalid config still exits 2: those are not
+// "wrong folder", they are a broken registration.
 //
 // stdout is the protocol channel. Every diagnostic goes to stderr, and
 // console.log is reassigned to stderr at startup because one stray log line in
 // the wrong stream is the single most common way a stdio MCP server dies.
 
-import { createApi } from '../api.mjs'
+import { realpathSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { createApi, isUninitialised } from '../api.mjs'
+import { ignoredEnv } from '../paths.mjs'
 import { CollabError } from '../errors.mjs'
 import { RPC, createFramer, encodeError, encodeResult } from './jsonrpc.mjs'
 import { TOOLS } from './tools.mjs'
 
-export const SERVER_NAME = 'aweiro-collab'
+export const SERVER_NAME = 'collab'
 export const SERVER_VERSION = '1.0.0'
 
 // Echo back the client's version when we know it, otherwise offer our newest.
@@ -21,7 +32,7 @@ export const SERVER_VERSION = '1.0.0'
 export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 
 export const INSTRUCTIONS =
-  'Shared task, message, review, decision and approval ledger for the agents working on this repository. ' +
+  'Shared task, message, review, decision and approval ledger for the agents working on this project. ' +
   'Start with whoami. Discover collaborators by ROLE or CAPABILITY (find_agents), never by name. ' +
   'Claim work before doing it and claim_files before editing, because the working tree is shared. ' +
   'Ask for an independent review with request_review — you may not review your own task. ' +
@@ -36,8 +47,11 @@ function toolResult(payload, { isError = false } = {}) {
   return result
 }
 
+// `api` is either a ready facade or a function returning one (which may throw
+// NOT_INITIALIZED, reported as a tool error).
 export function createHandler(api, { tools = TOOLS } = {}) {
   const byName = new Map(tools.map((tool) => [tool.name, tool]))
+  const currentApi = typeof api === 'function' ? api : () => api
 
   return async function handle(method, params) {
     switch (method) {
@@ -68,7 +82,7 @@ export function createHandler(api, { tools = TOOLS } = {}) {
           return toolResult({ code: 'UNKNOWN_TOOL', message: `there is no tool "${params?.name}"` }, { isError: true })
         }
         try {
-          return toolResult(await tool.handler(params?.arguments ?? {}, api))
+          return toolResult(await tool.handler(params?.arguments ?? {}, currentApi()))
         } catch (error) {
           // A failed domain operation is a TOOL error the model can read and act
           // on, not a protocol error. Protocol errors are for malformed protocol.
@@ -121,22 +135,38 @@ export function serve({ input = process.stdin, output = process.stdout, api, too
   return { framer, handle }
 }
 
-async function main() {
+// `options` (configDir, registryDir, projectRoot) exist for tests only. The
+// registered server is started without them, and no environment variable can
+// stand in for them: a repository's .mcp.json can write this process's env.
+export async function main(options = {}) {
   // Before anything else: keep stdout clean for the protocol.
   console.log = console.error
   console.info = console.error
 
-  let api
+  const trusted = Object.fromEntries(
+    Object.entries({ configDir: options.configDir, registryDir: options.registryDir, projectRoot: options.projectRoot }).filter(([, v]) => v)
+  )
+  const agentId = process.env.COLLAB_AGENT_ID
+  let api = null
+  let waiting = null
   try {
-    api = createApi({ agentId: process.env.COLLAB_AGENT_ID })
+    api = createApi({ agentId, ...trusted })
   } catch (error) {
-    process.stderr.write(`collab-mcp: ${error.message}\n`)
-    process.exit(2)
+    if (!isUninitialised(error)) {
+      process.stderr.write(`collab-mcp: ${error.message}\n`)
+      process.exit(2)
+    }
+    waiting = error
   }
 
-  serve({ api })
+  const getApi = () => {
+    if (!api) api = createApi({ agentId, ...trusted })
+    return api
+  }
+  serve({ api: getApi })
 
   const goodbye = (status) => {
+    if (!api) return
     try {
       api.store.emitUnlocked('agent.exit', { collection: 'agents', id: api.agentId }, { status })
     } catch {
@@ -162,9 +192,19 @@ async function main() {
   })
 
   process.stderr.write(
-    `collab-mcp ${SERVER_VERSION}: acting as ${api.agentId}, state in ${api.store.paths.root}, ${TOOLS.length} tools\n`
+    api
+      ? `collab-mcp ${SERVER_VERSION}: acting as ${api.agentId}, state in ${api.store.paths.root}, ${TOOLS.length} tools\n`
+      : `collab-mcp ${SERVER_VERSION}: acting as ${agentId}, no journal yet (${waiting.code}): ${waiting.message}\n`
   )
+  const ignored = ignoredEnv()
+  if (ignored.length) process.stderr.write(`collab-mcp: ignoring ${ignored.join(', ')} — not runtime inputs\n`)
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+const invokedDirectly = (() => {
+  try {
+    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+})()
 if (invokedDirectly) main()

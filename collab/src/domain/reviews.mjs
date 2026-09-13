@@ -20,6 +20,7 @@ import { assertNoSecret } from '../policy.mjs'
 import { TASK_STATUS, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { projectAgent } from './agents.mjs'
+import { assertOwnerOrContributor } from './gate.mjs'
 
 export const VERDICTS = Object.freeze(['approved', 'changes_requested'])
 
@@ -27,6 +28,7 @@ export function requestReview(ctx, { task_id, reviewer_role = 'code_reviewer', r
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    assertOwnerOrContributor(task, ctx.agentId, 'request a review of')
 
     const author = task.owner || ctx.agentId
     let reviewer = reviewer_agent

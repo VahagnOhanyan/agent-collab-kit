@@ -1,19 +1,23 @@
-# Codex registration for the Aweiro collaboration layer.
+# Codex registration for the collab layer (agent-kit), one entry for every project.
 #
-# Merge this into ~/.codex/config.toml. `node tools/collab/codex/install.mjs`
-# does it idempotently and keeps a backup; this file is the source it copies, so
-# the block is reviewable in git rather than living only on one laptop.
+# Merge this into ~/.codex/config.toml. `node collab/codex/install.mjs` does it
+# idempotently and keeps a backup; this file is the source it copies, so the
+# block is reviewable in git rather than living only on one laptop.
 #
 # COLLAB_AGENT_ID is what gives Codex its identity in the shared ledger. Without
-# it the server refuses to start — an anonymous writer in a shared journal is
-# worse than none. The value must match an `id` in
-# tools/collab/config/agents.json.
+# it the server refuses to start. The value must match an agent `id` in the
+# built-in collab/config/agents.json or in the project's registry entry.
+#
+# The server finds the project from the directory Codex runs in (`-C`): the
+# journal is the git repository's main tree, shared by all its worktrees. It
+# never creates `.collab/`; run `collab init` in a project first.
 #
 # The path below is absolute because Codex resolves a relative one against
-# whatever directory it happens to be started in.
+# whatever directory it happens to be started in. The install step points it at
+# the installed release.
 
 [mcp_servers.collab]
 command = "node"
-args = ["/Users/vahagnohanyan/Tripix/tools/collab/src/mcp/server.mjs"]
+args = ["/Users/vahagnohanyan/agent-kit/collab/src/mcp/server.mjs"]
 env = { COLLAB_AGENT_ID = "codex" }
 startup_timeout_sec = 20

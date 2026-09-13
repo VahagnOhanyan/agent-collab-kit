@@ -4,92 +4,24 @@
 // the server, writes newline-delimited JSON-RPC to its stdin and reads its
 // stdout, so what is asserted is the wire behaviour a client will actually see —
 // not an in-process function call that happens to share the same code.
+// Sandbox roots and config reach the server as main() parameters (helpers.mjs),
+// never as environment variables.
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { TOOLS } from '../src/mcp/tools.mjs'
 import { SUPPORTED_PROTOCOL_VERSIONS } from '../src/mcp/server.mjs'
+import { runCli, sandbox, startServer, tempDir, toolPayload } from './helpers.mjs'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const SERVER = join(HERE, '..', 'src', 'mcp', 'server.mjs')
-
-// A tiny client: writes lines, resolves each response by id.
-function startServer({ agentId = 'claude', stateDir }) {
-  const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, COLLAB_AGENT_ID: agentId, COLLAB_STATE_DIR: stateDir },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
-  const pending = new Map()
-  const unsolicited = []
-  let carry = ''
-  let stderr = ''
-
-  child.stdout.setEncoding('utf8')
-  child.stdout.on('data', (chunk) => {
-    carry += chunk
-    let index = carry.indexOf('\n')
-    while (index !== -1) {
-      const line = carry.slice(0, index)
-      carry = carry.slice(index + 1)
-      if (line.trim()) {
-        const message = JSON.parse(line)
-        const resolve = pending.get(message.id)
-        if (resolve) {
-          pending.delete(message.id)
-          resolve(message)
-        } else {
-          unsolicited.push(message)
-        }
-      }
-      index = carry.indexOf('\n')
-    }
-  })
-  child.stderr.on('data', (d) => {
-    stderr += d
-  })
-
-  return {
-    child,
-    stderr: () => stderr,
-    unsolicited,
-    request(id, method, params) {
-      const answered = new Promise((resolve) => pending.set(id, resolve))
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
-      return answered
-    },
-    notify(method, params) {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`)
-    },
-    raw(text) {
-      child.stdin.write(text)
-    },
-    // Wait for the child to actually exit before the caller removes the state
-    // directory: the server writes on its way out, and rmSync racing that
-    // produces an ENOTEMPTY that has nothing to do with what is under test.
-    stop() {
-      return new Promise((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) return resolve()
-        child.on('exit', resolve)
-        child.stdin.end()
-        child.kill()
-      })
-    }
-  }
-}
-
-function scratch() {
-  return mkdtempSync(join(tmpdir(), 'collab-mcp-'))
-}
+// A server inside an initialised sandbox project.
+const serverIn = (sbx, extra = {}) => startServer({ cwd: sbx.root, options: sbx.options, ...extra })
 
 test('the full handshake, then tools/list and tools/call', async () => {
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
     const init = await server.request(1, 'initialize', {
       protocolVersion: '2025-06-18',
@@ -99,7 +31,7 @@ test('the full handshake, then tools/list and tools/call', async () => {
     assert.equal(init.jsonrpc, '2.0')
     assert.equal(init.result.protocolVersion, '2025-06-18', 'a supported version is echoed back verbatim')
     assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } })
-    assert.equal(init.result.serverInfo.name, 'aweiro-collab')
+    assert.equal(init.result.serverInfo.name, 'collab')
     assert.match(init.result.instructions, /request_user_approval/)
 
     server.notify('notifications/initialized')
@@ -116,6 +48,7 @@ test('the full handshake, then tools/list and tools/call', async () => {
     assert.equal(who.result.isError, false)
     assert.equal(who.result.structuredContent.agent_id, 'claude')
     assert.deepEqual(who.result.structuredContent.roles, ['architect', 'ios_engineer', 'backend_engineer', 'product_engineer'])
+    assert.equal(who.result.structuredContent.journal_root, sbx.root)
 
     const pong = await server.request(4, 'ping')
     assert.deepEqual(pong.result, {}, 'ping answers with an empty object, not null')
@@ -124,38 +57,89 @@ test('the full handshake, then tools/list and tools/call', async () => {
     assert.equal(server.unsolicited.length, 0, `server sent unsolicited output: ${JSON.stringify(server.unsolicited)}`)
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
+  }
+})
+
+test('in a folder with no journal: the handshake works, every tool call is NOT_INITIALIZED, nothing is created, and init takes effect without a restart', async () => {
+  const base = tempDir('collab-mcp-bare-')
+  const options = { registryDir: join(base, 'registry') }
+  const server = startServer({ cwd: base, options })
+  try {
+    const init = await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
+    assert.equal(init.result.serverInfo.name, 'collab')
+    const listed = await server.request(2, 'tools/list')
+    assert.equal(listed.result.tools.length, TOOLS.length, 'the tools are listed so the client can show them')
+
+    let id = 10
+    for (const name of ['whoami', 'collab_status', 'list_tasks', 'create_task']) {
+      const response = await server.request((id += 1), 'tools/call', { name, arguments: name === 'create_task' ? { title: 'nope' } : {} })
+      assert.equal(response.error, undefined, `${name}: a tool error, not a protocol error`)
+      assert.equal(response.result.isError, true, name)
+      const body = toolPayload(response)
+      assert.equal(body.code, 'NOT_INITIALIZED', name)
+      assert.match(body.message, /collab init/)
+      assert.equal(body.details.command, 'collab init')
+    }
+    assert.equal(existsSync(join(base, '.collab')), false, 'the server created nothing')
+
+    const created = runCli(['init'], { cwd: base, options })
+    assert.equal(created.status, 0, created.stderr)
+
+    const who = await server.request(50, 'tools/call', { name: 'whoami', arguments: {} })
+    assert.equal(who.result.isError, false, JSON.stringify(who.result))
+    assert.equal(who.result.structuredContent.journal_root, base)
+  } finally {
+    await server.stop()
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('a session opened where the root resolves to the home directory gets ROOT_REFUSED, and the server stays up', async () => {
+  const home = tempDir('collab-mcp-home-')
+  mkdirSync(join(home, '.collab'))
+  mkdirSync(join(home, 'Desktop'))
+  const server = startServer({ cwd: join(home, 'Desktop'), env: { HOME: home }, options: { registryDir: join(home, 'registry') } })
+  try {
+    await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
+    const who = await server.request(2, 'tools/call', { name: 'whoami', arguments: {} })
+    assert.equal(who.result.isError, true)
+    assert.equal(toolPayload(who).code, 'ROOT_REFUSED')
+    assert.deepEqual((await server.request(3, 'ping')).result, {})
+  } finally {
+    await server.stop()
+    rmSync(home, { recursive: true, force: true })
   }
 })
 
 test('every supported protocol version is echoed, an unknown one degrades', async () => {
   for (const version of SUPPORTED_PROTOCOL_VERSIONS) {
-    const stateDir = scratch()
-    const server = startServer({ stateDir })
+    const sbx = sandbox()
+    const server = serverIn(sbx)
     try {
       const init = await server.request(1, 'initialize', { protocolVersion: version })
       assert.equal(init.result.protocolVersion, version)
     } finally {
       await server.stop()
-      rmSync(stateDir, { recursive: true, force: true })
+      sbx.cleanup()
     }
   }
 
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
     const init = await server.request(1, 'initialize', { protocolVersion: '2099-01-01' })
     assert.equal(init.result.protocolVersion, SUPPORTED_PROTOCOL_VERSIONS[0], 'an unknown version gets our newest, not an error')
     assert.equal(init.error, undefined, 'initialize never errors over a version')
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
   }
 })
 
 test('an unknown method is -32601 and does not kill the server', async () => {
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
     await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
     const missing = await server.request(2, 'resources/list')
@@ -166,13 +150,13 @@ test('an unknown method is -32601 and does not kill the server', async () => {
     assert.deepEqual(alive.result, {})
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
   }
 })
 
 test('a malformed line is -32700 and the stream keeps working', async () => {
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
     await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
     server.raw('this is not json\n')
@@ -184,15 +168,15 @@ test('a malformed line is -32700 and the stream keeps working', async () => {
     assert.deepEqual(alive.result, {})
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
   }
 })
 
 test('a message split across writes is reassembled', async () => {
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
-    const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+    const message = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
     const answered = new Promise((resolve) => {
       const timer = setInterval(() => {
         if (server.unsolicited.length) {
@@ -201,67 +185,66 @@ test('a message split across writes is reassembled', async () => {
         }
       }, 20)
     })
-    server.raw(payload.slice(0, 20))
+    server.raw(message.slice(0, 20))
     await new Promise((r) => setTimeout(r, 40))
-    server.raw(`${payload.slice(20)}\n`)
-    const message = await answered
-    assert.equal(message.id, 1)
-    assert.equal(message.result.serverInfo.name, 'aweiro-collab')
+    server.raw(`${message.slice(20)}\n`)
+    const response = await answered
+    assert.equal(response.id, 1)
+    assert.equal(response.result.serverInfo.name, 'collab')
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
   }
 })
 
 test('a domain failure comes back as a tool error, never as a protocol error', async () => {
-  const stateDir = scratch()
-  const server = startServer({ stateDir })
+  const sbx = sandbox()
+  const server = serverIn(sbx)
   try {
     await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
     const missing = await server.request(2, 'tools/call', { name: 'get_task', arguments: { task_id: 'tsk_zzzzzz_abcdef' } })
     assert.equal(missing.error, undefined, 'the JSON-RPC envelope is fine; the tool failed')
     assert.equal(missing.result.isError, true)
-    assert.equal(JSON.parse(missing.result.content[0].text).code, 'NOT_FOUND')
+    assert.equal(toolPayload(missing).code, 'NOT_FOUND')
 
     const unknown = await server.request(3, 'tools/call', { name: 'nope', arguments: {} })
     assert.equal(unknown.result.isError, true)
-    assert.equal(JSON.parse(unknown.result.content[0].text).code, 'UNKNOWN_TOOL')
+    assert.equal(toolPayload(unknown).code, 'UNKNOWN_TOOL')
   } finally {
     await server.stop()
-    rmSync(stateDir, { recursive: true, force: true })
+    sbx.cleanup()
   }
 })
 
+async function exitOf(server) {
+  const code = await new Promise((resolve) => {
+    if (server.child.exitCode !== null) return resolve(server.child.exitCode)
+    server.child.on('exit', resolve)
+  })
+  return { code, stderr: server.stderr() }
+}
+
 test('the server refuses to start without an identity', async () => {
-  const stateDir = scratch()
-  const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, COLLAB_AGENT_ID: '', COLLAB_STATE_DIR: stateDir },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
-  let stderr = ''
-  child.stderr.on('data', (d) => {
-    stderr += d
-  })
-  const code = await new Promise((resolve) => child.on('exit', resolve))
-  rmSync(stateDir, { recursive: true, force: true })
-  assert.equal(code, 2, 'a config failure exits 2, like the aweiro adapter')
-  assert.match(stderr, /COLLAB_AGENT_ID is required/)
+  const sbx = sandbox()
+  try {
+    const { code, stderr } = await exitOf(serverIn(sbx, { agentId: '' }))
+    assert.equal(code, 2, 'a config failure exits 2')
+    assert.match(stderr, /COLLAB_AGENT_ID is required/)
+  } finally {
+    sbx.cleanup()
+  }
 })
 
-test('the server refuses an identity that is not a registered agent', async () => {
-  const stateDir = scratch()
-  const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, COLLAB_AGENT_ID: 'nobody', COLLAB_STATE_DIR: stateDir },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
-  let stderr = ''
-  child.stderr.on('data', (d) => {
-    stderr += d
-  })
-  const code = await new Promise((resolve) => child.on('exit', resolve))
-  rmSync(stateDir, { recursive: true, force: true })
-  assert.equal(code, 2)
-  assert.match(stderr, /no agent "nobody" is registered/)
+test('the server refuses an identity that is not a registered agent — even where there is no journal', async () => {
+  const sbx = sandbox({ init: false })
+  try {
+    const { code, stderr } = await exitOf(serverIn(sbx, { agentId: 'nobody' }))
+    assert.equal(code, 2)
+    assert.match(stderr, /no agent "nobody" is registered/)
+    assert.equal(existsSync(sbx.stateDir), false)
+  } finally {
+    sbx.cleanup()
+  }
 })
 
 test('NO EXPOSED TOOL CAN GRANT AN APPROVAL', () => {

@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+// `collab` on PATH: a launcher for collab/src/cli.mjs.
+//
+// realpath first, so a symlink to this file (e.g. from a bin directory on PATH)
+// still finds the package next to the real file. CommonJS on purpose: the
+// launcher has no extension and must not depend on a package.json "type".
+'use strict'
+
+const { realpathSync } = require('node:fs')
+const { dirname, join } = require('node:path')
+const { pathToFileURL } = require('node:url')
+
+const cli = join(dirname(realpathSync(__filename)), '..', 'collab', 'src', 'cli.mjs')
+
+import(pathToFileURL(cli).href)
+  .then((module) => module.main(process.argv.slice(2)))
+  .catch((error) => {
+    process.stderr.write(`collab: ${(error && error.stack) || error}\n`)
+    process.exit(1)
+  })

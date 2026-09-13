@@ -27,6 +27,7 @@ import { CODES, CollabError } from '../errors.mjs'
 import { assertNoSecret, classifyAction, fingerprintAction } from '../policy.mjs'
 import { TASK_STATUS, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
+import { admitWork } from './gate.mjs'
 
 export function requestApproval(ctx, { task_id = null, action, reason, details = '', cost_estimate = null }) {
   if (!action) throw new CollabError(CODES.INVALID_INPUT, 'an approval request needs the action it is asking about')
@@ -129,6 +130,7 @@ export function resolveApproval(ctx, { approval_id, decision, note = '', channel
       resolution_note: note,
       resolution_evidence: evidence
     })
+    let resolvedRecord = next
 
     if (approval.task_id) {
       const task = tx.get('tasks', approval.task_id)
@@ -138,19 +140,32 @@ export function resolveApproval(ctx, { approval_id, decision, note = '', channel
         // nobody owns is available work, not work under way.
         // Denied: blocked, carrying the owner's answer as the reason, so the
         // record says why it stopped and not merely that it did.
-        const to =
+        let to =
           decision === 'granted'
             ? task.owner
               ? TASK_STATUS.IN_PROGRESS
               : TASK_STATUS.CREATED
             : TASK_STATUS.BLOCKED
-        assertTransition(task, to, { reason: note || 'the owner declined this action' })
+        // A task that already has an owner goes straight back to work — for
+        // THAT owner, through the same gate as a claim: hold, role, policy, and
+        // this grant consumed in this write, with a fresh lease. An owner that no
+        // longer holds the task's role does not get it back: the authorised work
+        // returns to the pool instead.
+        let admission = null
+        if (to === TASK_STATUS.IN_PROGRESS) {
+          if (task.role && !ctx.registry.hasRole(task.owner, task.role)) to = TASK_STATUS.CREATED
+          else admission = admitWork(tx, ctx, task, { approval: next, actor: task.owner })
+        }
+        assertTransition(task, to, { reason: note || 'the owner declined this action', admission })
         tx.put('tasks', {
           ...task,
           status: to,
+          ...(admission ? admission.fields : {}),
+          ...(to === TASK_STATUS.CREATED ? { owner: null, lease: null } : {}),
           waiting_on: null,
           blocked_reason: decision === 'denied' ? note || 'the owner declined this action' : null
         })
+        if (admission?.approval) resolvedRecord = admission.approval
       }
     }
 
@@ -161,22 +176,8 @@ export function resolveApproval(ctx, { approval_id, decision, note = '', channel
       evidence,
       actor_kind: 'user'
     })
-    return next
+    return resolvedRecord
   })
 }
-
-export function consumeApproval(ctx, { approval_id }) {
-  return ctx.store.transact(async (tx) => {
-    const approval = tx.get('approvals', approval_id)
-    if (!approval) throw new CollabError(CODES.NOT_FOUND, `no approval ${approval_id}`, { id: approval_id })
-    if (approval.status !== 'granted') {
-      throw new CollabError(CODES.APPROVAL_INVALID, `approval ${approval_id} is ${approval.status}`, { id: approval_id })
-    }
-    if (approval.consumed_at) {
-      throw new CollabError(CODES.APPROVAL_INVALID, `approval ${approval_id} was already used`, { id: approval_id })
-    }
-    const next = tx.put('approvals', { ...approval, consumed_at: tx.iso(), consumed_by: ctx.agentId })
-    tx.emit('approval.consumed', { collection: 'approvals', id: approval_id }, { by: ctx.agentId })
-    return next
-  })
-}
+// There is no separate consumeApproval: a grant is consumed only by the gate,
+// in the transaction that moves the task into work (domain/gate.mjs).

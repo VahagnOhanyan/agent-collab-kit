@@ -13,7 +13,8 @@
 // so the caller can go and talk to them instead of guessing.
 
 import { CODES, CollabError } from '../errors.mjs'
-import { assertActionAllowed, classifyAction } from '../policy.mjs'
+import { classifyAction } from '../policy.mjs'
+import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
 import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 
@@ -26,7 +27,7 @@ const DEFAULT_LEASE_SECONDS = 3600
 // back. Sweeping those was a real bug: on 2026-09-10 a task parked in `review`
 // was released overnight, and the reviewer had to shove it back through
 // `in_progress` before it could answer the review that was still pending on it.
-const LEASED_STATES = new Set([TASK_STATUS.IN_PROGRESS, TASK_STATUS.ASSIGNED])
+// (LEASED_STATES lives in gate.mjs, next to the rule about who may hold a task.)
 
 export function projectTask(task, { now, leaseSeconds }) {
   const expiresAt = task.lease?.expires_at ? Date.parse(task.lease.expires_at) : null
@@ -168,20 +169,8 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
         task: project(ctx, task)
       }
     }
-    if (task.role && !ctx.registry.hasRole(ctx.agentId, task.role)) {
-      throw new CollabError(CODES.NOT_PERMITTED, `task ${task.id} needs role "${task.role}", which ${ctx.agentId} does not hold`, {
-        id: task.id,
-        role: task.role
-      })
-    }
-
-    // The approval gate. There is no other way into in_progress.
-    assertActionAllowed({
-      policy: ctx.config.policy,
-      action: task.action,
-      approval: approvalFor(tx, task),
-      now: tx.iso()
-    })
+    // The gate: hold, role, policy and grant — and the lease this claim gets.
+    const admission = admitWork(tx, ctx, task, { leaseSeconds })
 
     if (projected.lease_expired && task.owner && task.owner !== ctx.agentId) {
       // Record the steal before performing it, so the audit log shows why a task
@@ -192,19 +181,8 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
       })
     }
 
-    assertTransition(task, TASK_STATUS.IN_PROGRESS, {})
-    const next = tx.put('tasks', {
-      ...task,
-      status: TASK_STATUS.IN_PROGRESS,
-      owner: ctx.agentId,
-      contributors: [...new Set([...(task.contributors || []), ctx.agentId])],
-      git_base: git_base || task.git_base,
-      lease: {
-        holder: ctx.agentId,
-        acquired_at: tx.iso(),
-        expires_at: new Date(now + leaseSeconds * 1000).toISOString()
-      }
-    })
+    assertTransition(task, TASK_STATUS.IN_PROGRESS, { admission })
+    const next = tx.put('tasks', { ...task, ...admission.fields, git_base: git_base || task.git_base })
     touchAgent(tx, ctx, { status: 'busy', current_task_id: task.id })
     tx.emit('task.claimed', { collection: 'tasks', id: task.id }, { owner: ctx.agentId })
     return { claimed: true, task: project(ctx, next) }
@@ -229,8 +207,20 @@ export function assignTask(ctx, { task_id, to_agent = null, role = null, capabil
       throw new CollabError(CODES.NOT_PERMITTED, `${target} does not hold role "${task.role}"`, { id: task_id, role: task.role })
     }
 
+    // Coordination may place an unowned task. Taking a HELD one away is refused:
+    // only its holder hands it over, or anyone once the holder's lease lapsed.
+    // Without this, assign-to-self then update_task walked past the gate.
+    assertMayHold(tx, task, ctx.agentId, 'reassign')
     assertTransition(task, TASK_STATUS.ASSIGNED, {})
-    const next = tx.put('tasks', { ...task, status: TASK_STATUS.ASSIGNED, owner: target, lease: null })
+    // An assignment carries a lease, so an assignee that never starts does not
+    // hold the task forever: when it lapses the task can be reassigned or swept.
+    const leaseSeconds = ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
+    const next = tx.put('tasks', {
+      ...task,
+      status: TASK_STATUS.ASSIGNED,
+      owner: target,
+      lease: { holder: target, acquired_at: tx.iso(), expires_at: new Date(tx.now() + leaseSeconds * 1000).toISOString() }
+    })
     touchAgent(tx, ctx)
     tx.emit('task.assigned', { collection: 'tasks', id: task_id }, { to: target, by: ctx.agentId })
     return project(ctx, next)
@@ -242,17 +232,30 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
 
+    // Field edits (title, description, files…) by any agent keep their old
+    // behaviour. STATUS changes do not: see below.
     const fields = { ...task, ...pick(patch, ['title', 'description', 'priority', 'files', 'depends_on', 'branch', 'waiting_on']) }
+    let admission = null
     if (status && status !== task.status) {
       const pendingApproval =
         task.approval_id && tx.get('approvals', task.approval_id)?.status === 'pending' ? task.approval_id : null
-      assertTransition(task, status, { reason, pendingApproval })
+      if (status === TASK_STATUS.IN_PROGRESS) {
+        // Moving into work by status is moving into work: the same gate as a
+        // claim (hold, role, policy, grant), and the caller gets the lease.
+        admission = admitWork(tx, ctx, task)
+      } else {
+        // Re-statusing a task somebody else holds would let a caller release it
+        // and then claim it — the lease bypassed in two steps.
+        assertMayHold(tx, task, ctx.agentId, 'change the status of')
+      }
+      assertTransition(task, status, { reason, pendingApproval, admission })
       fields.status = status
+      if (admission) Object.assign(fields, admission.fields)
       if (status === TASK_STATUS.BLOCKED) fields.blocked_reason = reason
       if (status === TASK_STATUS.IN_PROGRESS) fields.blocked_reason = null
     }
     const next = tx.put('tasks', fields, { expectedVersion: expected_version })
-    touchAgent(tx, ctx)
+    touchAgent(tx, ctx, admission ? { status: 'busy', current_task_id: task_id } : {})
     tx.emit('task.updated', { collection: 'tasks', id: task_id }, { status: fields.status, note, reason })
     return project(ctx, next)
   })
@@ -262,6 +265,7 @@ export function completeTask(ctx, { task_id, summary = '', expected_version }) {
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    assertOwnerOrContributor(task, ctx.agentId, 'complete')
     const approval = approvalFor(tx, task)
     const pendingApproval = approval && approval.status === 'pending' ? approval.id : null
 
@@ -281,6 +285,8 @@ export function releaseTask(ctx, { task_id, reason = 'released' }) {
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    // Only the holder (or anyone, once nobody holds it) may give it back.
+    assertMayHold(tx, task, ctx.agentId, 'release')
     assertTransition(task, TASK_STATUS.CREATED, {})
     const next = tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
     touchAgent(tx, ctx, { status: 'available', current_task_id: null })
@@ -354,11 +360,18 @@ export function sweep(ctx) {
 
   if (!expired.length && !goneQuiet.length) return { released: [], marked_offline: [] }
 
+  // The lists above are OBSERVATIONS made without the lock. Between them and the
+  // transaction an owner may renew its lease, request a review, finish, or come
+  // back online. So every candidate is re-read and re-decided under the lock,
+  // and skipped if its record moved at all.
   return ctx.store.transact(async (tx) => {
+    const lockedNow = tx.now()
     const released = []
     for (const task of expired) {
       const fresh = tx.get('tasks', task.id)
-      if (!fresh || TERMINAL.has(fresh.status)) continue
+      if (!fresh || fresh.version !== task.version) continue
+      if (!LEASED_STATES.has(fresh.status) || !fresh.owner) continue
+      if (!projectTask(fresh, { now: lockedNow, leaseSeconds }).lease_expired) continue
       tx.put('tasks', { ...fresh, status: TASK_STATUS.CREATED, owner: null, lease: null })
       tx.emit('task.released', { collection: 'tasks', id: task.id }, {
         by: 'sweep',
@@ -370,7 +383,9 @@ export function sweep(ctx) {
     const offline = []
     for (const agent of goneQuiet) {
       const fresh = tx.get('agents', agent.id)
-      if (!fresh) continue
+      if (!fresh || fresh.version !== agent.version) continue
+      if (fresh.status === 'offline' || fresh.status === 'failed') continue
+      if (lockedNow - (fresh.last_seen_at ? Date.parse(fresh.last_seen_at) : 0) <= staleAfterMs) continue
       tx.put('agents', { ...fresh, status: 'offline' })
       tx.emit('agent.status', { collection: 'agents', id: agent.id }, { status: 'offline', by: 'sweep' })
       offline.push(agent.id)

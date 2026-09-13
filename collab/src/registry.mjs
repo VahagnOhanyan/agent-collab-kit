@@ -1,37 +1,56 @@
 // Agents, roles and capabilities — read from configuration, never from code.
 //
 // The whole point of this module is that the word "codex" appears in
-// tools/collab/config/agents.json and NOWHERE in the protocol. An agent asks
-// for a `code_reviewer`; the registry answers with whoever holds that role and
-// is available. Adding a third agent is an entry in that file.
+// config/agents.json and NOWHERE in the protocol. An agent asks for a
+// `code_reviewer`; the registry answers with whoever holds that role and is
+// available. Adding a third agent is an entry in that file.
 //
-// validateRegistry is PURE and returns every problem it finds. loadRegistry is
-// the fail-fast wrapper that throws. The guard script calls the first so a
+// WHERE CONFIGURATION COMES FROM, in order:
+//   1. an explicit config dir (the configDir PARAMETER — tests; never an env var);
+//   2. the trusted project registry entry whose roots contain the journal root;
+//   3. the built-in defaults in INSTALL_ROOT/config.
+// The merge rule is WHOLE-FILE REPLACEMENT: a file present in 1 or 2 replaces
+// the built-in file of the same name, and a missing one falls back to it. There
+// is no deep merge, so no partial rule can slip in between two layers. Nothing
+// from the project repository itself is ever read. Two things a replacement can
+// NOT do: change an agent's adapter (always the built-in one), and weaken the
+// built-in policy (guardPolicy below).
+//
+// validateRegistry is PURE and returns every problem it finds. createRegistry is
+// the fail-fast wrapper that throws. `collab check-config` calls the first so a
 // misconfigured registry is fixed in one pass; the server calls the second and
 // exits. Sharing one function is what stops the gate and the runtime from
-// disagreeing about what "valid" means — the same split backend/mcp/config.js
-// makes between assertNotProductionHost and loadConfig.
+// disagreeing about what "valid" means.
 
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
-import { CONFIG_DIR } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, DEFAULT_REGISTRY_DIR, safeRealpath } from './paths.mjs'
+import { findProject } from './projects.mjs'
 
 export const AGENT_STATUSES = Object.freeze(['available', 'busy', 'waiting', 'offline', 'failed'])
 
-const readConfig = (dir, name) => {
-  const file = join(dir, name)
+export const CONFIG_FILES = Object.freeze({
+  capabilities: 'capabilities.json',
+  roles: 'roles.json',
+  agents: 'agents.json',
+  policy: 'policy.json',
+  runners: 'runners.json'
+})
+
+const readConfig = (file, name) => {
   try {
     return JSON.parse(readFileSync(file, 'utf8'))
   } catch (error) {
-    throw new CollabConfigError([`${name}: ${error.message}`])
+    throw new CollabConfigError([`${name}: ${error.code === 'ENOENT' ? `${file} does not exist` : `${file}: ${error.message}`}`])
   }
 }
 
-export function validateRegistry({ capabilities, roles, agents, policy, runners }) {
+export function validateRegistry(config) {
+  const { capabilities, roles, agents, policy, runners } = config
   const problems = []
-  const warnings = []
+  const warnings = [...(config.meta?.warnings || [])]
 
   const capIds = new Set(Object.keys(capabilities?.capabilities || {}))
   if (capIds.size === 0) problems.push('capabilities.json declares no capabilities')
@@ -121,6 +140,7 @@ export function validateRegistry({ capabilities, roles, agents, policy, runners 
   }
 
   problems.push(...validatePolicy(policy))
+  if (config.meta?.builtinPolicy) problems.push(...guardPolicy(config.meta.builtinPolicy, policy))
   problems.push(...validateRunners(runners))
 
   return { problems, warnings }
@@ -157,6 +177,22 @@ export function validatePolicy(policy) {
     problems.push('policy.json: the unmatched class must require approval — a classifier that fails open is not a classifier')
   }
 
+  // Evaluation is max-severity. A class that needs no approval ranking at or
+  // above one that does would let a match on it mask the mandatory one.
+  const ranked = Object.entries(classes).filter(([, def]) => typeof def.severity === 'number')
+  const free = ranked.filter(([id]) => approval[id] === 'never')
+  const gated = ranked.filter(([id]) => approval[id] === 'mandatory')
+  if (free.length && gated.length) {
+    const [freeId, freeDef] = free.reduce((a, b) => (b[1].severity > a[1].severity ? b : a))
+    const [gatedId, gatedDef] = gated.reduce((a, b) => (b[1].severity < a[1].severity ? b : a))
+    if (freeDef.severity >= gatedDef.severity) {
+      problems.push(
+        `policy.json: class "${freeId}" needs no approval but has severity ${freeDef.severity}, not below "${gatedId}" ` +
+          `(${gatedDef.severity}) which does — a match on it would mask the mandatory class`
+      )
+    }
+  }
+
   const ruleIds = new Set()
   for (const rule of policy.rules || []) {
     if (!rule.id) problems.push('policy.json: a rule has no id')
@@ -173,11 +209,122 @@ export function validatePolicy(policy) {
   return problems
 }
 
+// A replacement policy may only make classification stricter than the built-in.
+//
+// Why each check exists (see policy.mjs for the evaluation):
+//   - a built-in class removed, ranked lower, or no longer mandatory changes
+//     what every built-in rule means;
+//   - a built-in rule removed, re-patterned or re-classed weaker stops matching
+//     what it matched;
+//   - a weaker unmatched_class lets anything unrecognised through;
+//   - a NEW rule classed below the built-in unmatched class is the subtle one:
+//     an action the built-in table does not recognise falls to the unmatched
+//     class (mandatory), but once any rule matches, the strongest match wins
+//     even when it is weaker than the default. So `{"pattern": "kubectl",
+//     "class": "READ_ONLY"}` would turn "kubectl delete deployment api" from
+//     needs-the-owner into nobody-asked. New rules must rank at or above it —
+//     unless the rule opts in explicitly with `"lowers_default": true` and a
+//     non-empty `"justification"`. Such a rule is accepted, lowers only the
+//     text it matches, and is listed by `collab check-config`. The flag means
+//     nothing on a built-in rule, class or default: those are checked above
+//     regardless.
+export function guardPolicy(builtin, project) {
+  const problems = []
+  if (!builtin || !project) return problems
+  const where = 'policy.json (replacement)'
+  const bClasses = builtin.classes || {}
+  const pClasses = project.classes || {}
+  const bSeverity = (cls) => bClasses[cls]?.severity ?? 0
+  const pSeverity = (cls) => (typeof pClasses[cls]?.severity === 'number' ? pClasses[cls].severity : -Infinity)
+  const bApproval = (cls) => builtin.defaults?.approval?.[cls]
+  const pApproval = (cls) => project.defaults?.approval?.[cls]
+
+  for (const [id, def] of Object.entries(bClasses)) {
+    if (!pClasses[id]) {
+      problems.push(`${where}: built-in class "${id}" is missing — a replacement may add classes, never remove one`)
+      continue
+    }
+    if (pSeverity(id) < def.severity) {
+      problems.push(`${where}: class "${id}" has severity ${pClasses[id].severity}, below the built-in ${def.severity}`)
+    }
+    if (bApproval(id) === 'mandatory' && pApproval(id) !== 'mandatory') {
+      problems.push(`${where}: class "${id}" must keep approval "mandatory" as built in, not "${pApproval(id)}"`)
+    }
+  }
+
+  const bUnmatched = builtin.defaults?.unmatched_class
+  const pUnmatched = project.defaults?.unmatched_class
+  if (pSeverity(pUnmatched) < bSeverity(bUnmatched)) {
+    problems.push(`${where}: defaults.unmatched_class "${pUnmatched}" is weaker than the built-in "${bUnmatched}"`)
+  }
+  const ttl = (policy) => policy.defaults?.approval_ttl_seconds || 86400
+  if (ttl(project) > ttl(builtin)) {
+    problems.push(`${where}: approval_ttl_seconds ${ttl(project)} is longer than the built-in ${ttl(builtin)}`)
+  }
+
+  const pRules = new Map((project.rules || []).map((rule) => [rule.id, rule]))
+  const builtinIds = new Set()
+  for (const rule of builtin.rules || []) {
+    builtinIds.add(rule.id)
+    const mine = pRules.get(rule.id)
+    if (!mine) {
+      problems.push(`${where}: built-in rule "${rule.id}" is missing — a replacement may add rules, never drop one`)
+      continue
+    }
+    if (mine.pattern !== rule.pattern) {
+      problems.push(`${where}: rule "${rule.id}" changes the built-in pattern; add a new rule instead`)
+    }
+    if (pSeverity(mine.class) < bSeverity(rule.class)) {
+      problems.push(`${where}: rule "${rule.id}" is classed "${mine.class}", weaker than the built-in "${rule.class}"`)
+    }
+    if (rule.never_standing === true && mine.never_standing !== true) {
+      problems.push(`${where}: rule "${rule.id}" drops never_standing, so one grant could authorise repeats`)
+    }
+  }
+
+  const floor = bSeverity(bUnmatched)
+  for (const rule of project.rules || []) {
+    // A built-in rule id was checked above; lowers_default on it changes nothing.
+    if (builtinIds.has(rule.id)) continue
+    if (!lowersDefault(project, rule, floor)) continue
+    if (rule.lowers_default !== true) {
+      problems.push(
+        `${where}: added rule "${rule.id}" is classed "${rule.class}", below the built-in unmatched class "${bUnmatched}" — ` +
+          'an action the built-in table does not recognise would stop needing the owner once it matched. ' +
+          'Refused unless the rule opts in explicitly with "lowers_default": true and a "justification".'
+      )
+    } else if (typeof rule.justification !== 'string' || !rule.justification.trim()) {
+      problems.push(`${where}: added rule "${rule.id}" sets lowers_default but has no justification — say why text matching it may skip the owner`)
+    }
+  }
+  return problems
+}
+
+const lowersDefault = (policy, rule, floor) => {
+  const severity = policy.classes?.[rule.class]?.severity
+  return !(typeof severity === 'number' && severity >= floor) || policy.defaults?.approval?.[rule.class] !== 'mandatory'
+}
+
+// The accepted lowering rules of a replacement policy: added (not built-in),
+// below the built-in unmatched class, and explicitly opted in.
+export function loweringRules(builtin, project) {
+  if (!builtin || !project) return []
+  const builtinIds = new Set((builtin.rules || []).map((r) => r.id))
+  const floor = builtin.classes?.[builtin.defaults?.unmatched_class]?.severity ?? 0
+  return (project.rules || [])
+    .filter((rule) => !builtinIds.has(rule.id) && rule.lowers_default === true && lowersDefault(project, rule, floor))
+    .map(({ id, class: cls, pattern, justification }) => ({ id, class: cls, pattern, justification }))
+}
+
 export function validateRunners(runners) {
   const problems = []
   if (!runners) return ['runners.json is missing']
-  const defs = runners.runners || {}
-  if (Object.keys(defs).length === 0) problems.push('runners.json declares no runners')
+  const defs = runners.runners
+  if (!defs || typeof defs !== 'object' || Array.isArray(defs)) {
+    return ['runners.json: "runners" must be an object (it may be empty)']
+  }
+  // An empty set is valid and is the built-in default: a project runs nothing
+  // until its registry entry declares what may run.
   for (const [id, def] of Object.entries(defs)) {
     if (!Array.isArray(def.command) || def.command.length === 0) {
       problems.push(`runners.json: runner "${id}" has no command array`)
@@ -190,6 +337,9 @@ export function validateRunners(runners) {
     if (Array.isArray(def.command) && /^(sh|bash|zsh|eval)$/.test(def.command[0])) {
       problems.push(`runners.json: runner "${id}" invokes a shell; runners take argv, never a shell string`)
     }
+    if (def.cwd !== undefined && (typeof def.cwd !== 'string' || isAbsolute(def.cwd) || def.cwd.split(/[\\/]/).includes('..'))) {
+      problems.push(`runners.json: runner "${id}" has cwd ${JSON.stringify(def.cwd)} — it must be relative to the working tree`)
+    }
     if (!def.summary) problems.push(`runners.json: runner "${id}" has no summary`)
     if (!Number.isInteger(def.timeout_seconds)) problems.push(`runners.json: runner "${id}" has no timeout_seconds`)
     if (def.args && def.args.kind !== 'paths') {
@@ -199,14 +349,98 @@ export function validateRunners(runners) {
   return problems
 }
 
-export function loadRegistryConfig(dir = CONFIG_DIR) {
+// Adapters decide whether the layer may start a process for an agent, so they
+// come from the built-in config only. A replacement agents.json that declares one
+// has it ignored (and is told so); an agent unknown to the built-in config is
+// inbox-only.
+function applyBuiltinAdapters(agentsConfig, builtinAgents, warnings) {
+  if (!Array.isArray(agentsConfig?.agents)) return agentsConfig
+  const builtin = new Map((builtinAgents?.agents || []).map((a) => [a.id, a]))
   return {
-    capabilities: readConfig(dir, 'capabilities.json'),
-    roles: readConfig(dir, 'roles.json'),
-    agents: readConfig(dir, 'agents.json'),
-    policy: readConfig(dir, 'policy.json'),
-    runners: readConfig(dir, 'runners.json')
+    ...agentsConfig,
+    agents: agentsConfig.agents.map((agent) => {
+      const effective = builtin.get(agent.id)?.adapter || { kind: 'manual' }
+      if (agent.adapter !== undefined && JSON.stringify(agent.adapter) !== JSON.stringify(effective)) {
+        warnings.push(
+          `agents.json: agent "${agent.id}" declares an adapter; adapters come only from the built-in config, so it is ignored (effective: ${effective.kind})`
+        )
+      }
+      return { ...agent, adapter: effective }
+    })
   }
+}
+
+// Loads the five files: each from `overrideDir` when present there, otherwise
+// from the built-in defaults. `config.meta` (non-enumerable) records where
+// every file came from, so briefing files resolve against the directory that
+// declared them and the policy guard knows whether it has work to do.
+export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }) {
+  const builtinDir = safeRealpath(DEFAULT_CONFIG_DIR)
+  let override = overrideDir ? safeRealpath(resolve(overrideDir)) : null
+  if (override === builtinDir) override = null
+  if (override && source.kind === 'config-dir' && !existsSync(override)) {
+    throw new CollabConfigError([`config directory ${override} does not exist`])
+  }
+
+  const config = {}
+  const meta = { source, files: {}, dirs: {}, overridden: {}, warnings: [], builtinPolicy: null }
+  for (const [key, name] of Object.entries(CONFIG_FILES)) {
+    const candidate = override ? join(override, name) : null
+    const file = candidate && existsSync(candidate) ? candidate : join(builtinDir, name)
+    config[key] = readConfig(file, name)
+    meta.files[key] = file
+    meta.dirs[key] = dirname(file)
+    meta.overridden[key] = file !== join(builtinDir, name)
+  }
+  if (meta.overridden.agents) {
+    config.agents = applyBuiltinAdapters(config.agents, readConfig(join(builtinDir, 'agents.json'), 'agents.json'), meta.warnings)
+  }
+  if (meta.overridden.policy) meta.builtinPolicy = readConfig(join(builtinDir, 'policy.json'), 'policy.json')
+  Object.defineProperty(config, 'meta', { value: meta, enumerable: false })
+  return config
+}
+
+// Parameters only. COLLAB_CONFIG_DIR / COLLAB_REGISTRY_DIR are deliberately not
+// read: a server's environment can come from a repository's .mcp.json.
+export function loadConfig({ journalRoot = null, configDir = undefined, registryDir = DEFAULT_REGISTRY_DIR, home = undefined } = {}) {
+  if (configDir) return loadConfigFrom(configDir, { kind: 'config-dir', dir: resolve(configDir) })
+  if (journalRoot) {
+    const project = findProject(journalRoot, { registry: registryDir, home })
+    if (project) {
+      return loadConfigFrom(join(project.dir, 'collab'), { kind: 'project', id: project.id, dir: project.dir, registry: registryDir })
+    }
+  }
+  return loadConfigFrom(null, { kind: 'built-in' })
+}
+
+// Kept for callers that want one directory (or the defaults) and nothing else.
+export function loadRegistryConfig(dir = null) {
+  return dir ? loadConfigFrom(dir, { kind: 'config-dir', dir: resolve(dir) }) : loadConfigFrom()
+}
+
+// A briefing_file is relative to the config directory whose agents.json
+// declared it, and may not leave that directory.
+export function briefingPath(config, agent) {
+  if (!agent?.briefing_file) return null
+  const base = config.meta?.dirs?.agents || DEFAULT_CONFIG_DIR
+  const path = resolve(base, agent.briefing_file)
+  const rel = relative(base, path)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
+  return path
+}
+
+export function checkBriefings(config) {
+  const problems = []
+  for (const agent of config.agents?.agents || []) {
+    if (!agent.briefing_file) continue
+    const path = briefingPath(config, agent)
+    if (!path) {
+      problems.push(`agents.json: agent "${agent.id}" briefing_file ${agent.briefing_file} leaves its config directory`)
+    } else if (!existsSync(path)) {
+      problems.push(`agents.json: agent "${agent.id}" points at briefing_file ${path}, which does not exist`)
+    }
+  }
+  return problems
 }
 
 export function createRegistry(config) {
@@ -250,6 +484,7 @@ export function createRegistry(config) {
     },
     hasRole: (agentId, roleId) => (byId.get(agentId)?.roles || []).includes(roleId),
     hasCapability: (agentId, capId) => (byId.get(agentId)?.capabilities || []).includes(capId),
+    briefingPath: (agentId) => briefingPath(config, byId.get(agentId)),
 
     // The routing primitive. Everything that says "find me somebody who can X"
     // goes through here, which is why no caller needs to know an agent's name.
@@ -269,6 +504,6 @@ export function createRegistry(config) {
   }
 }
 
-export function loadRegistry(dir = CONFIG_DIR) {
+export function loadRegistry(dir = null) {
   return createRegistry(loadRegistryConfig(dir))
 }

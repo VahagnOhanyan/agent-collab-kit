@@ -4,10 +4,13 @@
 // a string. The table below is what makes "this task was completed without ever
 // being reviewed" impossible to write rather than merely discouraged.
 //
-// The approval gate lives HERE, in assertTransition, and not in a tool handler.
-// Every path that starts work goes through this function, so there is no route
-// into `in_progress` that skips the check — which is what turns "an agent must
-// not spend money on its own" from prompt advice into a property of the system.
+// The approval gate is ENFORCED here: entering `in_progress` requires an
+// admission for that task, and only domain/gate.mjs admitWork() makes one —
+// after checking the policy and consuming the owner's grant in the same
+// transaction. A code path that forgets the gate fails this guard instead of
+// silently skipping it, which is exactly what update_task once did. That is what
+// turns "an agent must not spend money on its own" from prompt advice into a
+// property of the system.
 //
 // ⚠️ NAMING. `approved` is a task status meaning a code review passed. An
 // `approval` record is the owner authorising a risky action. They are unrelated
@@ -73,6 +76,10 @@ export function allowedNext(task) {
 
 // Guards that cannot be expressed as an edge. Each returns null or a reason.
 const GUARDS = {
+  [S.IN_PROGRESS]: (task, ctx) =>
+    ctx?.admission?.task_id === task.id
+      ? null
+      : "work starts only through the approval gate (admitWork), which checks the policy and consumes the owner's grant",
   [S.REVIEW]: (task) => (task.needs_review === false ? 'this task was created with needs_review false' : null),
   [S.COMPLETED]: (task, ctx) => {
     if (task.needs_review && task.status === S.IN_PROGRESS) {
@@ -95,7 +102,10 @@ const GUARDS = {
       : null
 }
 
-export function assertTransition(task, to, ctx = {}) {
+// The edge alone: known status, not terminal, allowed by the table. The gate
+// checks this first so an illegal move is reported as illegal, not as a
+// missing approval.
+export function assertEdge(task, to) {
   const from = task.status
   if (from === to) return to
   if (!TRANSITIONS[from]) {
@@ -115,6 +125,13 @@ export function assertTransition(task, to, ctx = {}) {
       { id: task.id, from, to, allowed: TRANSITIONS[from] }
     )
   }
+  return to
+}
+
+export function assertTransition(task, to, ctx = {}) {
+  const from = task.status
+  if (from === to) return to
+  assertEdge(task, to)
   const guard = GUARDS[to]
   if (guard) {
     const problem = guard(task, ctx)

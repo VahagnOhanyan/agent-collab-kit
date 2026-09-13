@@ -1,0 +1,7 @@
+{
+  "//": "Trusted registry entry for Tripix. `roots` are journal roots (the parent of the git common dir), matched by exact realpath; every worktree of the repository resolves to this one root. Files in collab/ replace the built-in defaults of the same name, whole-file.",
+  "id": "tripix",
+  "roots": ["/Users/vahagnohanyan/Tripix"],
+  "//legacy_journal": "Tripix's live journal predates the bound marker. true = the owner vouches for that markerless journal at these roots; `collab init --adopt` (owner, at a terminal) would bind it and make this flag unnecessary.",
+  "legacy_journal": true
+}

@@ -1,6 +1,6 @@
 // Running the project's own checks, and sharing the result between agents.
 //
-// TWO RULES, BOTH LOAD-BEARING.
+// FOUR RULES, ALL LOAD-BEARING.
 //
 // 1. Fixed argv, never a shell string. Every runner's command is an array from
 //    runners.json and is spawned with shell:false, so there is no argument an
@@ -9,19 +9,39 @@
 //
 // 2. Counters, not just the exit code. Node's test runner exits 0 when a whole
 //    suite SKIPS, so an agent reading only the exit code cannot tell "passed"
-//    from "never ran" — the very confusion the verify skill warns about. The TAP
-//    summary is parsed and `skipped` is reported next to `pass`.
+//    from "never ran". The TAP summary is parsed, and a run in which nothing
+//    executed is recorded as `nothing_ran`, never as `passed`.
+//
+// 3. Runners come from configuration only — the built-in set (empty) or the
+//    owner's project registry. Nothing in the project repository can add one:
+//    these commands run outside any sandbox. They execute in the CALLER'S
+//    working tree (ctx.roots.codeRoot), so a check started from a worktree
+//    checks that worktree.
+//
+// 4. Containment is decided on REAL paths, component by component. The runner's
+//    cwd and every path argument are resolved through symlinks and must stay
+//    under realpath(codeRoot) (and under must_be_under). A lexical check alone
+//    lets `backend -> /somewhere/else` walk a runner out of the tree, and a
+//    string prefix lets `backend/testing` pass as `backend/test`.
 //
 // The point of storing the result as a record is that a run is a SHARED fact:
 // the reviewer reads the run the author already did instead of spending four
 // minutes reproducing it.
 
 import { spawn } from 'node:child_process'
-import { existsSync, appendFileSync } from 'node:fs'
-import { join, normalize } from 'node:path'
+import { appendFileSync, existsSync, lstatSync, realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { CODES, CollabError } from './errors.mjs'
-import { REPO_ROOT } from './paths.mjs'
+import { FIXED_PATH, FIXED_PATH_DIRS, isExecutableFile, sanitisedEnv } from './paths.mjs'
 import { touchAgent } from './domain/agents.mjs'
+
+// 5. The inherited environment is not trusted (a repository's .mcp.json can set
+//    it). A bare command name is looked up on the FIXED PATH only, and the child
+//    gets a sanitised environment: no GIT_*, NODE_OPTIONS or loader variables,
+//    and the fixed PATH. A command given as a path is used as written, relative
+//    to the runner's (contained) cwd.
+
+export const NOT_PASSING = Object.freeze(['failed', 'timeout', 'nothing_ran'])
 
 export function listRunners(ctx) {
   return Object.entries(ctx.config.runners.runners).map(([id, def]) => ({
@@ -32,36 +52,87 @@ export function listRunners(ctx) {
   }))
 }
 
-function resolveArgs(def, args) {
-  if (!def.args) {
-    if (args && args.length) {
-      throw new CollabError(CODES.RUNNER_REFUSED, `this runner takes no arguments`, { given: args })
+export function within(root, path) {
+  const rel = relative(root, path)
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
+}
+
+// The real path of `path`: realpath of its deepest existing ancestor with the
+// not-yet-existing rest appended. A dangling symlink on the way is null — its
+// target cannot be checked, so it is not trusted.
+export function realpathLoose(path) {
+  const rest = []
+  let current = resolve(path)
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...rest)
+    } catch {
+      try {
+        if (lstatSync(current).isSymbolicLink()) return null
+      } catch {
+        // does not exist at all: keep climbing
+      }
+      const parent = dirname(current)
+      if (parent === current) return resolve(path)
+      rest.unshift(basename(current))
+      current = parent
     }
+  }
+}
+
+const refuse = (message, details = {}) => new CollabError(CODES.RUNNER_REFUSED, message, details)
+
+function workingTree(ctx) {
+  const codeRoot = ctx.roots?.codeRoot
+  if (!codeRoot) throw refuse('there is no working tree to run checks in for this journal')
+  try {
+    return { codeRoot, realRoot: realpathSync(codeRoot) }
+  } catch {
+    throw refuse(`the working tree ${codeRoot} is not there`, { worktree: codeRoot })
+  }
+}
+
+function resolveCommand(command) {
+  if (command.includes('/')) return command
+  for (const dir of FIXED_PATH_DIRS) {
+    const candidate = join(dir, command)
+    if (isExecutableFile(candidate)) return candidate
+  }
+  throw refuse(`"${command}" is not on the fixed PATH (${FIXED_PATH}); runners never look commands up on the inherited PATH`, {
+    command
+  })
+}
+
+function resolveArgs(def, args, { codeRoot, realRoot }) {
+  if (!def.args) {
+    if (args && args.length) throw refuse('this runner takes no arguments', { given: args })
     return []
   }
   const spec = def.args
   const given = args || []
   if (given.length < (spec.min || 0) || given.length > (spec.max || 20)) {
-    throw new CollabError(
-      CODES.RUNNER_REFUSED,
-      `this runner takes between ${spec.min} and ${spec.max} paths, got ${given.length}`,
-      { given }
-    )
+    throw refuse(`this runner takes between ${spec.min} and ${spec.max} paths, got ${given.length}`, { given })
   }
+  const under = spec.must_be_under ? normalize(spec.must_be_under).replace(/[\\/]+$/, '') : null
+  const realUnder = under ? realpathLoose(join(codeRoot, under)) : null
+
   return given.map((raw) => {
-    const clean = normalize(String(raw)).replace(/^\/+/, '')
-    if (clean.includes('..')) {
-      throw new CollabError(CODES.RUNNER_REFUSED, `"${raw}" walks out of the tree`, { path: raw })
-    }
-    if (spec.must_be_under && !clean.startsWith(spec.must_be_under)) {
-      throw new CollabError(CODES.RUNNER_REFUSED, `"${raw}" is not under ${spec.must_be_under}`, { path: raw })
+    const clean = normalize(String(raw)).replace(/^[\\/]+/, '')
+    if (clean.split(/[\\/]/).includes('..')) throw refuse(`"${raw}" walks out of the tree`, { path: raw })
+    if (under && clean !== under && !clean.startsWith(`${under}/`)) {
+      throw refuse(`"${raw}" is not under ${spec.must_be_under}`, { path: raw })
     }
     if (spec.must_match && !new RegExp(spec.must_match).test(clean)) {
-      throw new CollabError(CODES.RUNNER_REFUSED, `"${raw}" does not look like ${spec.must_match}`, { path: raw })
+      throw refuse(`"${raw}" does not look like ${spec.must_match}`, { path: raw })
     }
-    if (spec.must_exist && !existsSync(join(REPO_ROOT, clean))) {
-      throw new CollabError(CODES.RUNNER_REFUSED, `"${raw}" does not exist`, { path: raw })
+    const real = realpathLoose(join(codeRoot, clean))
+    if (!real || !within(realRoot, real)) {
+      throw refuse(`"${raw}" resolves outside the working tree`, { path: raw, resolved: real })
     }
+    if (under && (!realUnder || !within(realUnder, real))) {
+      throw refuse(`"${raw}" resolves outside ${spec.must_be_under}`, { path: raw, resolved: real })
+    }
+    if (spec.must_exist && !existsSync(join(codeRoot, clean))) throw refuse(`"${raw}" does not exist`, { path: raw })
     return spec.strip_prefix && clean.startsWith(spec.strip_prefix) ? clean.slice(spec.strip_prefix.length) : clean
   })
 }
@@ -81,15 +152,17 @@ function summarise(def, { code, output, timedOut }) {
   if (def.parse === 'tap') {
     const counts = parseTap(output)
     if (counts) {
-      const ok = code === 0 && counts.fail === 0
       // The distinction that matters: a suite that skipped everything is green
-      // by exit code and proves nothing.
-      const ran = counts.pass + counts.fail
-      const headline =
-        ran === 0 && counts.skipped > 0
+      // by exit code and proves nothing, so it is not a pass.
+      const ran = (counts.pass || 0) + (counts.fail || 0)
+      const nothingRan = ran === 0
+      const ok = code === 0 && counts.fail === 0 && !nothingRan
+      const headline = nothingRan
+        ? counts.skipped > 0
           ? `NOTHING RAN — ${counts.skipped} skipped (missing service or fixture?)`
-          : `${counts.pass} passed, ${counts.fail} failed, ${counts.skipped} skipped of ${counts.tests}`
-      return { ok, headline, counts }
+          : `NOTHING RAN — ${counts.tests} tests reported, none executed`
+        : `${counts.pass} passed, ${counts.fail} failed, ${counts.skipped} skipped of ${counts.tests}`
+      return { ok, headline, counts, nothing_ran: nothingRan }
     }
   }
   if (def.parse === 'xcodebuild') {
@@ -107,14 +180,19 @@ function summarise(def, { code, output, timedOut }) {
 export async function startRun(ctx, { runner, args = [], task_id = null, wait_seconds = 20 }) {
   const def = ctx.config.runners.runners[runner]
   if (!def) {
-    throw new CollabError(CODES.RUNNER_REFUSED, `there is no runner "${runner}"`, {
-      runner,
-      known: Object.keys(ctx.config.runners.runners)
+    throw refuse(`there is no runner "${runner}"`, { runner, known: Object.keys(ctx.config.runners.runners) })
+  }
+  const tree = workingTree(ctx)
+  const resolved = resolveArgs(def, args, tree)
+  const argv = [...def.command.slice(1), ...resolved]
+  const cwd = realpathLoose(resolve(tree.codeRoot, def.cwd || '.'))
+  if (!cwd || !within(tree.realRoot, cwd)) {
+    throw refuse(`runner "${runner}" would run outside the working tree (cwd "${def.cwd}" resolves to ${cwd})`, {
+      cwd: def.cwd,
+      resolved: cwd
     })
   }
-  const resolved = resolveArgs(def, args)
-  const argv = [...def.command.slice(1), ...resolved]
-  const cwd = join(REPO_ROOT, def.cwd === '.' ? '' : def.cwd)
+  const executable = resolveCommand(def.command[0])
 
   const record = await ctx.store.transact(async (tx) => {
     const run = tx.create('runs', {
@@ -126,6 +204,7 @@ export async function startRun(ctx, { runner, args = [], task_id = null, wait_se
       status: 'running',
       command: [def.command[0], ...argv].join(' '),
       cwd: def.cwd,
+      worktree: tree.codeRoot,
       exit_code: null,
       result: null
     })
@@ -136,7 +215,7 @@ export async function startRun(ctx, { runner, args = [], task_id = null, wait_se
 
   const logFile = ctx.store.paths.runLog(record.id)
   const finished = new Promise((resolve) => {
-    const child = spawn(def.command[0], argv, { cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(executable, argv, { cwd, shell: false, env: sanitisedEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     let timedOut = false
     const timer = setTimeout(() => {
@@ -165,7 +244,7 @@ export async function startRun(ctx, { runner, args = [], task_id = null, wait_se
       const current = tx.get('runs', record.id)
       const next = tx.put('runs', {
         ...current,
-        status: timedOut ? 'timeout' : result.ok ? 'passed' : 'failed',
+        status: timedOut ? 'timeout' : result.ok ? 'passed' : result.nothing_ran ? 'nothing_ran' : 'failed',
         exit_code: code,
         finished_at: tx.iso(),
         result,
@@ -202,7 +281,7 @@ export function listRuns(ctx, { failed_only = false, runner = null, limit = 20 }
     .list('runs', {
       filter: (r) => {
         if (runner && r.runner !== runner) return false
-        if (failed_only && !['failed', 'timeout'].includes(r.status)) return false
+        if (failed_only && !NOT_PASSING.includes(r.status)) return false
         return true
       }
     })

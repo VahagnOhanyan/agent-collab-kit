@@ -1,0 +1,58 @@
+{
+  "//": "The agent registry for Tripix. This file is the ONLY place a provider name appears in the collaboration layer: the protocol routes by role and capability, never by agent id, so swapping who reviews what is an edit here and nothing else. Adding a third agent is one more entry plus, if it needs one, a role in roles.json.",
+  "//briefing": "`briefing` is the agent's own instructions, returned by its whoami call. `briefing_file` is relative to THIS directory.",
+  "//adapter": "No `adapter` here on purpose: adapters decide whether the layer may start a process, so they come only from the built-in config (collab/config/agents.json). One declared here would be ignored.",
+  "defaults": {
+    "lease_seconds": 3600,
+    "heartbeat_stale_seconds": 900
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "provider": "anthropic",
+      "roles": [
+        "architect",
+        "ios_engineer",
+        "backend_engineer",
+        "product_engineer"
+      ],
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "run_application",
+        "use_mcp_tool",
+        "research",
+        "record_decision"
+      ],
+      "briefing_file": "briefings/claude.md",
+      "briefing": "You are the lead session. You hold architecture, iOS and cross-layer work, you own shared/, scripts/, .github/ and CLAUDE.md, and you are the only one who pushes. Before you call your own work done, ask the collaboration layer for an independent review by ROLE (code_reviewer), not by name. Record anything that should bind later work as a decision, and promote the ones that bind everyone to docs/decisions/."
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "provider": "openai",
+      "roles": [
+        "software_engineer",
+        "code_reviewer",
+        "test_engineer"
+      ],
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "use_mcp_tool",
+        "research"
+      ],
+      "briefing_file": "briefings/codex.md",
+      "briefing": "You are the independent engineer on this repository. Your default work is review, test analysis, bug detection and backend/code engineering. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application — you cannot boot the simulator or the phone, so never claim UI was verified. Read your full instructions with the collab CLI: collab brief codex."
+    }
+  ]
+}

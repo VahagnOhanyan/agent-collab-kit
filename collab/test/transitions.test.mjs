@@ -187,6 +187,25 @@ test('the review cycle can repeat', () => {
   for (const [from, to] of chain) assert.ok(canTransition(from, to), `${from} -> ${to} must be possible`)
 })
 
+test('B: in_progress is reachable only with an admission for that task from the approval gate', () => {
+  let error = null
+  try {
+    assertTransition(task({ status: TASK_STATUS.CREATED }), TASK_STATUS.IN_PROGRESS, {})
+  } catch (e) {
+    error = e
+  }
+  assert.equal(error.code, CODES.GUARD_FAILED)
+  assert.match(error.message, /approval gate/)
+  assert.throws(
+    () => assertTransition(task(), TASK_STATUS.IN_PROGRESS, { admission: { task_id: 'tsk_b_000002' } }),
+    (e) => e.code === CODES.GUARD_FAILED,
+    'an admission for another task does not count'
+  )
+  assert.equal(assertTransition(task(), TASK_STATUS.IN_PROGRESS, { admission: { task_id: 'tsk_a_000001' } }), TASK_STATUS.IN_PROGRESS)
+  // The edge is still checked first: an illegal move is reported as illegal.
+  assert.throws(() => assertTransition(task({ status: TASK_STATUS.REVIEW }), TASK_STATUS.IN_PROGRESS, {}), (e) => e.code === CODES.ILLEGAL_TRANSITION)
+})
+
 test('allowedNext is what an agent is told it may do', () => {
   assert.deepEqual(allowedNext({ status: TASK_STATUS.REVIEW }), ['approved', 'changes_requested', 'blocked', 'cancelled'])
 })

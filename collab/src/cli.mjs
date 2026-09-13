@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The human's window into the collaboration, and the only place an approval can
-// be answered.
+// be answered. Installed on PATH as `collab` (bin/collab); every hint says so.
 //
 // ⛔ APPROVE / REJECT ARE NOT AVAILABLE TO AGENTS, AND THE HONEST VERSION OF WHY:
 // there is no MCP tool that grants an approval, so the ordinary path does not
@@ -10,14 +10,14 @@
 // none of that is a security boundary against a determined process — it is a
 // barrier against the realistic accident, plus an audit trail that makes a
 // forged grant visible rather than invisible. Real enforcement for a dangerous
-// action belongs in the harness: see docs/decisions/0011.
+// action belongs in the harness: see the header of domain/approvals.mjs.
 
 import { createInterface } from 'node:readline/promises'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { createApi } from './api.mjs'
-import { REPO_ROOT } from './paths.mjs'
-import { adapterFor } from './adapters/index.mjs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
+import { checkConfig } from './check-config.mjs'
+import { initJournal, resolveRoots } from './paths.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
@@ -52,13 +52,133 @@ const STATUS_COLOUR = {
   blocked: C.red,
   changes_requested: C.yellow,
   waiting_for_user: C.yellow,
-  waiting_for_agent: C.yellow
+  waiting_for_agent: C.yellow,
+  nothing_ran: C.yellow
 }
 const paint = (status) => `${STATUS_COLOUR[status] || ''}${status}${C.off}`
+
+function printError(error) {
+  process.stderr.write(`${C.red}${error.code}${C.off} ${error.message}\n`)
+  if (Object.keys(error.details || {}).length) process.stderr.write(`${dim(JSON.stringify(error.details, null, 2))}\n`)
+}
+
+// Commands that do not need a journal.
+// Trusted inputs reach the CLI only as arguments to main() (tests); the
+// environment never supplies them.
+const trustedOptions = ({ configDir, registryDir, projectRoot } = {}) =>
+  Object.fromEntries(Object.entries({ configDir, registryDir, projectRoot }).filter(([, value]) => value))
+
+const STANDALONE = {
+  async init({ flags }, options) {
+    const legacyJournalFor = legacyJournalLookup({ registryDir: options.registryDir })
+    // Re-binding a journal to this root is the owner's call, with the same
+    // barriers as an approval: not from an agent shell, only at an interactive
+    // terminal, and only after typing the journal root back.
+    if (flags.adopt) {
+      if (process.env.COLLAB_AGENT_ID) {
+        process.stderr.write(
+          `refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n` +
+            'Adopting a journal is the owner\'s decision, at their own terminal.\n'
+        )
+        process.exit(3)
+      }
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        process.stderr.write("refusing: collab init --adopt needs an interactive terminal — it is the owner's decision, not a script's.\n")
+        process.exit(3)
+      }
+      let target
+      try {
+        target = resolveRoots({ projectRoot: options.projectRoot, legacyJournalFor })
+      } catch (error) {
+        if (error instanceof CollabError) {
+          printError(error)
+          process.exit(1)
+        }
+        throw error
+      }
+      const root = target.journalRoot || target.cwd
+      out('', `${C.bold}adopt${C.off} ${root}/.collab as this project's journal`)
+      if (target.journal?.reason) out(`  ${target.journal.reason}`)
+      out("  Only do this for a journal you know is this project's own.", '')
+      const rl = createInterface({ input: process.stdin, output: process.stdout })
+      const typed = await rl.question('Type the journal root path to adopt it, anything else to abort: ')
+      rl.close()
+      if (typed.trim() !== root) {
+        out('aborted — nothing changed')
+        process.exit(0)
+      }
+    }
+    let result
+    try {
+      result = initJournal({ projectRoot: options.projectRoot, adopt: Boolean(flags.adopt), legacyJournalFor })
+    } catch (error) {
+      if (error instanceof CollabError) {
+        printError(error)
+        process.exit(1)
+      }
+      throw error
+    }
+    const headline = result.adopted
+      ? `${C.green}adopted${C.off}  ${result.stateDir} — now bound to ${result.journalRoot}`
+      : result.created
+        ? `${C.green}initialized${C.off}  ${result.stateDir}`
+        : `already initialized (${result.kind})  ${result.stateDir}`
+    out(headline)
+    const ignore = {
+      excluded: `added ".collab/" to ${result.ignore_file} — local to this clone, every worktree, no tracked file changed`,
+      'already-ignored': '.collab/ is already ignored by git',
+      'not-a-git-repository': 'not a git repository — nothing to ignore',
+      'check-failed': `${C.yellow}could not ask git whether .collab/ is ignored — check it by hand${C.off}`
+    }[result.ignore]
+    out(`ignore       ${ignore}`)
+  },
+
+  project({ flags }, options) {
+    const answer = describeProject(options)
+    if (flags.json) {
+      out(JSON.stringify(answer, null, 2))
+    } else {
+      out(
+        `journal      ${answer.journalRoot || '—'}`,
+        `worktree     ${answer.codeRoot || '—'}`,
+        `state        ${answer.stateDir || '—'}`,
+        `initialized  ${answer.initialized ? 'yes' : 'no — run `collab init` in the journal root'}`,
+        `project      ${answer.projectId || '— (built-in defaults)'}`,
+        `config       ${answer.configSource}`,
+        `registry     ${answer.registryDir}`
+      )
+      if (answer.ignoredEnv.length) out(`ignored env  ${answer.ignoredEnv.join(', ')}`)
+      if (answer.error) out(`${C.red}${answer.error.code}${C.off} ${answer.error.message}`)
+    }
+    if (answer.error) process.exit(1)
+  },
+
+  'check-config'({ flags }, options) {
+    const result = checkConfig({ projectId: typeof flags.project === 'string' ? flags.project : null, registryDir: options.registryDir })
+    out(dim(`registry ${result.registry}`), '')
+    for (const report of result.reports) {
+      const mark = report.problems.length ? `${C.red}${report.problems.length} problem(s)${C.off}` : `${C.green}ok${C.off}`
+      out(`${report.label}  ${mark}${report.overridden.length ? dim(`  replaces: ${report.overridden.join(', ')}`) : ''}`)
+      for (const problem of report.problems) out(`  ✘ ${problem}`)
+      if (report.lowering?.length) {
+        out(`  ${C.yellow}lowering rules${C.off} ${dim('(lowers_default: text they match skips the built-in default)')}`)
+        for (const rule of report.lowering) {
+          out(`    ${rule.id.padEnd(20)} ${rule.class.padEnd(12)} /${rule.pattern}/`, `      justification: ${rule.justification}`)
+        }
+      }
+      for (const warning of report.warnings) out(dim(`  · ${warning}`))
+    }
+    out('')
+    for (const problem of result.surface) out(`  ✘ ${problem}`)
+    if (!result.surface.length) out(`MCP surface ok — ${result.tools} tools, no path for an agent to authorise itself`)
+    if (!result.ok) process.exit(1)
+  }
+}
 
 const COMMANDS = {
   async status(api) {
     const s = await api.status()
+    out(dim(`journal  ${s.journal_root || api.store.paths.root}`), '')
     out(`${C.bold}agents${C.off}`)
     for (const a of s.agents) {
       const task = a.current_task_id ? ` on ${a.current_task_id}` : ''
@@ -80,7 +200,12 @@ const COMMANDS = {
       `  runs failed        ${s.runs_failed}`
     )
 
-    out('', `${C.bold}working tree${C.off}`, `  ${s.git.branch} @ ${s.git.head}, ${s.git.dirty_files} dirty`)
+    out('', `${C.bold}working tree${C.off} ${dim(s.git.worktree || '(none)')}`)
+    if (!s.git.is_git) {
+      out(dim('  not a git working tree — nothing to compare claims against'))
+      return
+    }
+    out(`  ${s.git.branch} @ ${s.git.head}, ${s.git.dirty_files} dirty`)
     for (const c of s.git.claimed_dirty.slice(0, 10)) out(`  ${dim('claimed')} ${c.file} ${dim(`(${c.task_id}, ${c.owner})`)}`)
     if (s.git.unclaimed_dirty.length) {
       // Naming these is the point. git cannot say WHO changed a file, so this
@@ -163,11 +288,42 @@ const COMMANDS = {
     }
   },
 
+  // Read-only. `--json` is the interface for skills (e.g. /codex-review runs
+  // `collab reviews --reviewer codex --pending --json`) so they never read
+  // .collab/ files directly. The filter is domain/reviews.mjs listReviews; each
+  // row carries its task's title and status, and `status: "stale"` marks a
+  // pending review whose task is finished or gone.
   async reviews(api, { flags }) {
-    const list = api.listReviews({ pending_only: Boolean(flags.pending) })
-    if (!list.length) return out(dim('no reviews'))
-    for (const r of list) {
-      out(`${r.id}  task ${r.task_id}  round ${r.round}  ${r.author} -> ${r.reviewer}  ${paint(r.verdict)}`)
+    const list = api.listReviews({
+      pending_only: Boolean(flags.pending),
+      reviewer: typeof flags.reviewer === 'string' ? flags.reviewer : null,
+      task_id: typeof flags.task === 'string' ? flags.task : null
+    })
+    const rows = list.map((r) => {
+      const task = api.store.get('tasks', r.task_id)
+      const finished = !task || ['completed', 'cancelled'].includes(task.status)
+      return {
+        id: r.id,
+        task_id: r.task_id,
+        round: r.round,
+        verdict: r.verdict,
+        status: r.verdict !== 'pending' ? 'answered' : finished ? 'stale' : 'pending',
+        author: r.author,
+        reviewer: r.reviewer,
+        requested_by: r.requested_by,
+        created_at: r.created_at,
+        submitted_at: r.submitted_at || null,
+        summary: r.summary || null,
+        task_title: task ? task.title : null,
+        task_status: task ? task.status : null
+      }
+    })
+    if (flags.json) return out(JSON.stringify(rows, null, 2))
+    if (!rows.length) return out(dim('no reviews'))
+    for (const r of rows) {
+      const stale = r.status === 'stale' ? `  ${C.yellow}stale — task ${r.task_status || 'gone'}${C.off}` : ''
+      out(`${r.id}  task ${r.task_id}  round ${r.round}  ${r.author} -> ${r.reviewer}  ${paint(r.verdict)}${stale}`)
+      out(dim(`   ${r.task_title || '(task no longer exists)'}`))
       if (r.summary) out(dim(`   ${r.summary}`))
     }
   },
@@ -180,7 +336,7 @@ const COMMANDS = {
       for (const p of d.positions || []) out(dim(`   ${p.agent} favours "${p.option}": ${p.rationale}`))
       if (d.outcome) out(`   -> ${d.outcome}${d.adr_ref ? dim(`  (${d.adr_ref})`) : ''}`)
       if (d.status === 'decided' && !d.adr_ref) {
-        out(dim('   no ADR yet — if this binds everyone, write docs/decisions/ and set adr_ref'))
+        out(dim("   no ADR yet — if this binds everyone, write it into the project's decision records and set adr_ref"))
       }
     }
   },
@@ -200,7 +356,7 @@ const COMMANDS = {
         ''
       )
     }
-    out(dim('answer with: node tools/collab/src/cli.mjs approve <id>   (or reject <id> --note "...")'))
+    out(dim('answer with: collab approve <id>   (or: collab reject <id> --note "...")'))
   },
 
   approve: (api, parsed) => resolveApprovalInteractively(api, parsed, 'granted'),
@@ -217,7 +373,7 @@ const COMMANDS = {
     })
     const settled = await decision
     out(`${C.green}decided${C.off} ${settled.id}: ${settled.outcome}`)
-    if (!settled.adr_ref) out(dim('if this binds everyone, write it up in docs/decisions/ and re-run with --adr <path>'))
+    if (!settled.adr_ref) out(dim("if this binds everyone, write it into the project's decision records and re-run with --adr <path>"))
   },
 
   async runs(api, { flags }) {
@@ -245,20 +401,42 @@ const COMMANDS = {
     out(`roles         ${agent.roles.join(', ')}`)
     out(`capabilities  ${agent.capabilities.join(', ')}`, '')
     out(agent.runtime ? dim(`status ${agent.runtime.effective_status}, last seen ${agent.runtime.last_seen_at || 'never'}`) : '')
-    out('', agent.briefing)
+    out('', api.registry.agent(agent.id).briefing)
     const declared = api.registry.agent(agent.id)
     if (declared.briefing_file) {
+      const path = api.registry.briefingPath(agent.id)
       try {
-        out('', readFileSync(join(REPO_ROOT, declared.briefing_file), 'utf8'))
+        out('', readFileSync(path, 'utf8'))
       } catch {
-        out('', dim(`(${declared.briefing_file} is not readable from here)`))
+        out('', dim(`(${declared.briefing_file} is not readable from ${path || 'its config directory'})`))
       }
     }
   },
 
   async doctor(api) {
     const report = api.doctor()
-    out(`state        ${report.state_dir}`, `repo         ${report.repo_root}`, '')
+    out(
+      `journal      ${report.journal_root || '—'} ${dim(`(${report.root_source})`)}`,
+      `state        ${report.state_dir}`,
+      `worktree     ${report.worktree || '—'}`,
+      `config       ${report.config}`,
+      `registry     ${report.registry}`,
+      `install      ${report.install_root}`,
+      ''
+    )
+    if (report.ignored_env.length) {
+      out(
+        `${C.yellow}ignored env${C.off}  ${report.ignored_env.join(', ')} — not runtime inputs; config comes only from the registry`,
+        ''
+      )
+    }
+    if (report.journal_kind === 'legacy') {
+      out(
+        `${C.yellow}note${C.off}         this journal predates the bound marker, so a copy of it would not be recognised.`,
+        '             After checking it is this project\'s own, run: collab init --adopt',
+        ''
+      )
+    }
     out(`${C.bold}agents${C.off}`)
     for (const a of report.agents) {
       const mark = a.reachable ? `${C.green}ok${C.off}` : `${C.red}unavailable${C.off}`
@@ -267,6 +445,7 @@ const COMMANDS = {
       if (a.fix) out(`  ${' '.repeat(8)} ${C.yellow}fix:${C.off} ${a.fix}`)
     }
     out('', `${C.bold}runners${C.off}`)
+    if (!report.runners.length) out(dim('  none — declare them in the project registry entry'))
     for (const r of report.runners) out(`  ${r.id.padEnd(22)} ${dim(r.summary)}`)
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
@@ -282,14 +461,17 @@ const COMMANDS = {
 
   help() {
     out(
-      `${C.bold}collab${C.off} — shared state for the agents working on this repository`,
+      `${C.bold}collab${C.off} — shared state for the agents working on this project`,
       '',
+      '  init                   create the journal (.collab/) for this project; nothing else creates it',
+      '  check-config [--project <id>]  validate the built-in defaults and the project registry',
+      '  project [--json]       journal root, worktree, registry project and config source for this directory',
       '  status                 who is doing what, what is waiting, what the tree looks like',
       '  tasks [--all]          list tasks',
       '  task <id>              one task with its reviews and messages',
       '  inbox [agent]          messages addressed to an agent',
       '  thread <id>            one conversation',
-      '  reviews [--pending]    reviews and their verdicts',
+      '  reviews [--reviewer <agent>] [--pending] [--task <id>] [--json]  reviews, verdicts and their tasks (read-only)',
       '  decisions [--status]   decisions and open disagreements',
       '  approvals              what is waiting on you',
       `  approve <id>           ${C.yellow}authorise a request. Interactive terminal only${C.off}`,
@@ -299,7 +481,7 @@ const COMMANDS = {
       '  run <id>               one check result with its log tail',
       '  log [--tail N]         the audit log',
       '  brief [agent]          what an agent is told about itself — paste this into a new session',
-      '  doctor                 agents, adapters, what is unavailable and how to fix it',
+      '  doctor                 roots, config source, agents, adapters, what is unavailable and how to fix it',
       '  sweep                  release work abandoned by an agent that went away',
       '',
       dim('  --as <agent>         act as an agent (never unlocks approve/reject)')
@@ -317,7 +499,7 @@ function describeTo(to) {
 
 async function resolveApprovalInteractively(api, { args, flags }, decision) {
   const id = args[0]
-  if (!id) throw new CollabError('INVALID_INPUT', `usage: cli.mjs ${decision === 'granted' ? 'approve' : 'reject'} <approval-id>`)
+  if (!id) throw new CollabError('INVALID_INPUT', `usage: collab ${decision === 'granted' ? 'approve' : 'reject'} <approval-id>`)
 
   // Barrier 1: an agent shell always carries this variable. Clearing it to get
   // past this line is a deliberate act that shows up in shell history, not an
@@ -374,31 +556,39 @@ async function resolveApprovalInteractively(api, { args, flags }, decision) {
   if (resolved.task_id) out(dim(`task ${resolved.task_id} is unblocked`))
 }
 
-async function main() {
-  const [, , command = 'help', ...rest] = process.argv
+export async function main(argv = process.argv.slice(2), options = {}) {
+  const trusted = trustedOptions(options)
+  const [command = 'help', ...rest] = argv
   const parsed = parseArgs(rest)
+  if (command === 'help' || command === '--help') return COMMANDS.help()
+  if (STANDALONE[command]) return STANDALONE[command](parsed, trusted)
+
   const handler = COMMANDS[command]
   if (!handler) {
     process.stderr.write(`unknown command "${command}"\n`)
     COMMANDS.help()
     process.exit(1)
   }
-  if (command === 'help') return COMMANDS.help()
 
-  // The CLI acts as the owner's stand-in; `claude` is used only as the ledger
-  // identity for reads, and approve/reject refuse to use it at all.
-  const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || 'claude' })
   try {
+    // The CLI acts as the owner's stand-in; `claude` is used only as the ledger
+    // identity for reads, and approve/reject refuse to use it at all.
+    const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || 'claude', ...trusted })
     await handler(api, parsed)
   } catch (error) {
     if (error instanceof CollabError) {
-      process.stderr.write(`${C.red}${error.code}${C.off} ${error.message}\n`)
-      if (Object.keys(error.details || {}).length) process.stderr.write(`${dim(JSON.stringify(error.details, null, 2))}\n`)
+      printError(error)
       process.exit(1)
     }
     throw error
   }
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+const invokedDirectly = (() => {
+  try {
+    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
+})()
 if (invokedDirectly) main()

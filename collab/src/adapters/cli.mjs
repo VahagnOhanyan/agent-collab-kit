@@ -35,7 +35,7 @@ export function cliAdapter(agentView, adapter) {
           how: 'inbox only',
           missing: adapter.binary,
           note: `\`${adapter.binary}\` is not on PATH, so this agent cannot be started from here`,
-          fix: adapter.install_hint || `install ${adapter.binary} and re-run: node tools/collab/src/cli.mjs doctor`
+          fix: adapter.install_hint || `install ${adapter.binary} and re-run: collab doctor`
         }
       }
       return {

@@ -7,17 +7,21 @@
 // the approval resolver by importing the domain module directly, which is a
 // deliberate asymmetry, not an oversight — see domain/approvals.mjs.
 //
-// Identity comes from COLLAB_AGENT_ID, set per client at registration time:
-// `claude` in .mcp.json, `codex` in ~/.codex/config.toml. Without it the process
-// refuses to start, the same way backend/mcp/config.js refuses without
-// AWEIRO_AS_USER — an unidentified writer in a shared ledger is worse than none.
+// Identity comes from COLLAB_AGENT_ID, set per client at registration time.
+// Without it the process refuses to start — an unidentified writer in a shared
+// ledger is worse than none.
+//
+// Roots (journal, working tree, state dir) are resolved once here and handed to
+// the domain through ctx.roots; nothing below this file decides where it is.
 
-import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { CODES, CollabError } from './errors.mjs'
 import { systemClock } from './ids.mjs'
-import { REPO_ROOT, stateRoot } from './paths.mjs'
+import { DEFAULT_REGISTRY_DIR, INSTALL_ROOT, ignoredEnv, journalState, resolveRoots, runGit, safeRealpath } from './paths.mjs'
+import { findProject } from './projects.mjs'
 import { classifyAction } from './policy.mjs'
-import { createRegistry, loadRegistryConfig } from './registry.mjs'
+import { createRegistry, loadConfig } from './registry.mjs'
 import { createStore } from './store.mjs'
 import * as agents from './domain/agents.mjs'
 import * as approvals from './domain/approvals.mjs'
@@ -30,19 +34,115 @@ import { adapterFor } from './adapters/index.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
 
-export function createApi({ agentId, root = null, clock = systemClock, configDir = undefined } = {}) {
+export const isUninitialised = (error) =>
+  error instanceof CollabError && [CODES.NOT_INITIALIZED, CODES.ROOT_REFUSED, CODES.JOURNAL_INVALID].includes(error.code)
+
+function notInitialised(roots, state) {
+  if (!roots.journalRoot) {
+    return new CollabError(
+      CODES.NOT_INITIALIZED,
+      `no collab journal for ${roots.cwd}: it is not inside a git repository and no .collab/ directory exists above it. ` +
+        'Run `collab init` in the project root to start one — nothing is created implicitly.',
+      { command: 'collab init', run_in: 'the project root directory', cwd: roots.cwd }
+    )
+  }
+  const reason = state?.reason || `${roots.stateDir} does not exist`
+  return new CollabError(
+    CODES.NOT_INITIALIZED,
+    `this project has no usable collab journal: ${reason}. ` +
+      `Run \`collab init\` in ${roots.journalRoot} — nothing is created implicitly.`,
+    { command: 'collab init', run_in: roots.journalRoot, journal_root: roots.journalRoot, state_dir: roots.stateDir, reason }
+  )
+}
+
+// Whether the trusted registry vouches for a markerless legacy journal at a root.
+// Any lookup failure answers no: the journal is then refused, not trusted.
+export const legacyJournalLookup =
+  ({ registryDir = DEFAULT_REGISTRY_DIR, home = undefined } = {}) =>
+  (root) => {
+    if (!root) return false
+    try {
+      return findProject(root, { registry: registryDir, home })?.legacyJournal === true
+    } catch {
+      return false
+    }
+  }
+
+// Options — all trusted inputs are parameters, never environment variables:
+//   agentId      required
+//   root         explicit state directory (tests); shorthand for roots.stateDir
+//   roots        explicit { journalRoot, codeRoot, stateDir } — skips resolution
+//   cwd/home     inputs to resolveRoots when roots are not given
+//   projectRoot  explicit journal root (tests)
+//   configDir    explicit config directory (tests); otherwise registry/defaults
+//   registryDir  the trusted registry (default DEFAULT_REGISTRY_DIR)
+export function createApi({
+  agentId,
+  root = null,
+  roots: givenRoots = null,
+  cwd = undefined,
+  home = undefined,
+  clock = systemClock,
+  configDir = undefined,
+  registryDir = DEFAULT_REGISTRY_DIR,
+  projectRoot = null
+} = {}) {
   if (!agentId) {
     throw new CollabError(
       CODES.CONFIG_INVALID,
       'COLLAB_AGENT_ID is required — every write is attributed, so the layer will not run for an anonymous caller'
     )
   }
-  const config = loadRegistryConfig(configDir)
+
+  let roots
+  let rootsError = null
+  if (root || givenRoots) {
+    const stateDir = root ? resolve(root) : givenRoots.stateDir ? resolve(givenRoots.stateDir) : null
+    roots = {
+      cwd: null,
+      journalRoot: givenRoots?.journalRoot ? safeRealpath(givenRoots.journalRoot) : null,
+      codeRoot: givenRoots?.codeRoot ? safeRealpath(givenRoots.codeRoot) : null,
+      stateDir,
+      source: 'explicit'
+    }
+  } else {
+    try {
+      roots = resolveRoots({ cwd, projectRoot, legacyJournalFor: legacyJournalLookup({ registryDir, home }), ...(home ? { home } : {}) })
+    } catch (error) {
+      if (!isUninitialised(error)) throw error
+      rootsError = error
+      roots = { cwd: cwd || process.cwd(), journalRoot: null, codeRoot: null, stateDir: null, source: null }
+    }
+  }
+
+  // Identity and config are checked before the journal, so a misregistered
+  // agent fails loudly even in a folder that has no journal.
+  const config = loadConfig({ journalRoot: roots.journalRoot, configDir, registryDir, home })
   const registry = createRegistry(config)
   registry.agent(agentId) // fails fast if the caller is not a registered agent
 
-  const store = createStore({ root: root || stateRoot(), agentId, clock })
-  const ctx = { store, registry, config, clock, agentId }
+  if (rootsError) throw rootsError
+  // Initialised means `collab init` made it (or it is a complete legacy journal):
+  // a symlink, an empty directory or a half-built one is refused before any mkdir.
+  // A tracked or copied journal is JOURNAL_INVALID, not merely uninitialised.
+  const state = roots.stateDir
+    ? roots.journal ||
+      journalState(roots.stateDir, {
+        legacyJournal: legacyJournalLookup({ registryDir, home })(roots.journalRoot || dirname(roots.stateDir))
+      })
+    : null
+  if (state?.code === CODES.JOURNAL_INVALID) {
+    throw new CollabError(CODES.JOURNAL_INVALID, state.reason, {
+      journal_root: roots.journalRoot,
+      state_dir: roots.stateDir,
+      reason: state.reason,
+      ...(state.moved ? { command: 'collab init --adopt' } : {})
+    })
+  }
+  if (!state?.initialized) throw notInitialised(roots, state)
+
+  const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy' })
+  const ctx = { store, registry, config, clock, agentId, roots }
 
   let lastSweep = 0
   const maybeSweep = async () => {
@@ -57,12 +157,20 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
     }
   }
 
+  const configSource = () => {
+    const source = config.meta?.source || { kind: 'built-in' }
+    if (source.kind === 'project') return `registry project "${source.id}" (${source.dir})`
+    if (source.kind === 'config-dir') return `config dir ${source.dir}`
+    return 'built-in defaults'
+  }
+
   const api = {
     ctx,
     agentId,
     registry,
     config,
     store,
+    roots,
 
     // ── identity and discovery ────────────────────────────────────────────
     whoami() {
@@ -75,8 +183,11 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
         roles: declared.roles,
         capabilities: declared.capabilities,
         briefing: declared.briefing,
-        briefing_file: declared.briefing_file,
+        briefing_file: registry.briefingPath(agentId),
+        journal_root: roots.journalRoot,
+        worktree: roots.codeRoot,
         state_dir: store.paths.root,
+        config: configSource(),
         open_tasks: mine.map((t) => ({ id: t.id, title: t.title, status: t.status })),
         unread_messages: messages.getMessages(ctx, { unread_only: true }).length,
         pending_reviews: reviews.listReviews(ctx, { reviewer: agentId, pending_only: true }).length,
@@ -153,6 +264,7 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
       const byStatus = {}
       for (const task of all) byStatus[task.status] = (byStatus[task.status] || 0) + 1
       return {
+        journal_root: roots.journalRoot,
         agents: agents.listAgents(ctx).map((a) => ({
           id: a.id,
           roles: a.roles,
@@ -170,7 +282,7 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
         approvals_pending: approvals.listApprovals(ctx, { pending_only: true }).length,
         decisions_open: decisions.listDecisions(ctx, {}).filter((d) => ['open', 'disputed', 'escalated'].includes(d.status)).length,
         runs_failed: runs.listRuns(ctx, { failed_only: true }).length,
-        git: gitSnapshot(all)
+        git: gitSnapshot(roots.codeRoot, all)
       }
     },
 
@@ -178,7 +290,14 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
       const declared = registry.agents()
       return {
         state_dir: store.paths.root,
-        repo_root: REPO_ROOT,
+        journal_root: roots.journalRoot,
+        journal_kind: state.kind,
+        worktree: roots.codeRoot,
+        root_source: roots.source,
+        config: configSource(),
+        registry: registryDir,
+        ignored_env: ignoredEnv(),
+        install_root: INSTALL_ROOT,
         agents: declared.map((agent) => {
           const view = agents.readAgent(ctx, agent.id)
           const adapter = adapterFor(view)
@@ -199,16 +318,74 @@ export function createApi({ agentId, root = null, clock = systemClock, configDir
   return api
 }
 
+// `collab project`: what this layer would use for a directory, as one answer
+// skills and hooks can rely on. It reads; it never creates or writes anything,
+// and it does not need a journal or a valid identity.
+export function describeProject({
+  cwd = process.cwd(),
+  home = undefined,
+  registryDir = DEFAULT_REGISTRY_DIR,
+  projectRoot = null,
+  configDir = null,
+  env = process.env
+} = {}) {
+  const answer = {
+    cwd: safeRealpath(cwd),
+    journalRoot: null,
+    codeRoot: null,
+    stateDir: null,
+    initialized: false,
+    projectId: null,
+    registryDir,
+    configSource: configDir ? 'config-dir' : 'built-in',
+    ignoredEnv: ignoredEnv(env),
+    error: null
+  }
+  let roots
+  try {
+    roots = resolveRoots({ cwd, projectRoot, legacyJournalFor: legacyJournalLookup({ registryDir, home }), ...(home ? { home } : {}) })
+  } catch (error) {
+    answer.error = { code: error.code || 'ERROR', message: error.message }
+    return answer
+  }
+  Object.assign(answer, {
+    journalRoot: roots.journalRoot,
+    codeRoot: roots.codeRoot,
+    stateDir: roots.stateDir,
+    initialized: roots.initialized,
+    journalProblem: roots.journal && !roots.journal.initialized ? { code: roots.journal.code, reason: roots.journal.reason } : null
+  })
+  if (!configDir && roots.journalRoot) {
+    try {
+      const project = findProject(roots.journalRoot, { registry: registryDir, home })
+      if (project) {
+        answer.projectId = project.id
+        answer.configSource = 'registry'
+      }
+    } catch (error) {
+      answer.error = { code: error.code || 'ERROR', message: error.message }
+    }
+  }
+  return answer
+}
+
 // Read-only git context, so `collab status` can put ownership next to reality:
 // a dirty file that no task claims is somebody else's work in progress, and
-// saying so is more useful than pretending the tree is ours.
-function gitSnapshot(allTasks) {
+// saying so is more useful than pretending the tree is ours. It looks at ONE
+// working tree — the caller's — and says which.
+function gitSnapshot(worktree, allTasks) {
   const run = (args) => {
     try {
-      return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).trim()
+      return runGit(worktree, args).trim()
     } catch {
       return ''
     }
+  }
+  // Only a directory that IS a work tree's top level is inspected; otherwise git
+  // would walk up and report some unrelated enclosing repository.
+  const isWorktree = Boolean(worktree && existsSync(worktree) && safeRealpath(run(['rev-parse', '--show-toplevel']) || '/nonexistent') === worktree)
+  if (!isWorktree) {
+    return { worktree, is_git: false, head: '', branch: '', dirty_files: 0, unclaimed_dirty: [], claimed_dirty: [] }
   }
   const head = run(['rev-parse', '--short', 'HEAD'])
   const branch = run(['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -231,6 +408,8 @@ function gitSnapshot(allTasks) {
   }
 
   return {
+    worktree,
+    is_git: true,
     head,
     branch,
     dirty_files: dirty.length,

@@ -25,7 +25,10 @@ import { cliAdapter } from './cli.mjs'
 
 export function which(binary) {
   try {
-    return execFileSync('sh', ['-c', `command -v ${JSON.stringify(binary)}`], { encoding: 'utf8' }).trim() || null
+    // /bin/sh by absolute path: the shell itself is never looked up on PATH. The
+    // lookup of `binary` does use the caller's PATH on purpose — the question is
+    // whether the owner can start that agent from their own shell.
+    return execFileSync('/bin/sh', ['-c', `command -v ${JSON.stringify(binary)}`], { encoding: 'utf8' }).trim() || null
   } catch {
     return null
   }

@@ -9,8 +9,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,19 +17,24 @@ import { createApi } from '../src/api.mjs'
 import { CODES } from '../src/errors.mjs'
 import { fixedClock } from '../src/ids.mjs'
 import { resolveApproval } from '../src/domain/approvals.mjs'
+import { sandbox } from './helpers.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const API = join(HERE, '..', 'src', 'api.mjs')
 
+// A temp project with an initialised journal and a fixture config dir; nothing
+// here depends on any real project's configuration.
 function world({ clock } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'collab-flow-'))
+  const sbx = sandbox()
   const shared = clock || fixedClock()
+  const make = (agentId) => createApi({ agentId, roots: sbx.roots, configDir: sbx.configDir, clock: shared })
   return {
-    dir,
+    dir: sbx.stateDir,
+    sbx,
     clock: shared,
-    claude: createApi({ agentId: 'claude', root: dir, clock: shared }),
-    codex: createApi({ agentId: 'codex', root: dir, clock: shared }),
-    cleanup: () => rmSync(dir, { recursive: true, force: true })
+    claude: make('claude'),
+    codex: make('codex'),
+    cleanup: sbx.cleanup
   }
 }
 
@@ -498,7 +502,7 @@ test('two real processes claiming one task: exactly one wins', async () => {
       script,
       [
         `import { createApi } from ${JSON.stringify(API)}`,
-        'const api = createApi({ agentId: process.argv[2], root: process.argv[3] })',
+        'const api = createApi({ agentId: process.argv[2], root: process.argv[3], configDir: process.argv[4] })',
         `const result = await api.claimTask({ task_id: ${JSON.stringify(task.id)} })`,
         'process.stdout.write(JSON.stringify({ agent: process.argv[2], claimed: result.claimed, reason: result.reason || null }))'
       ].join('\n')
@@ -506,7 +510,10 @@ test('two real processes claiming one task: exactly one wins', async () => {
 
     const runOne = (agent) =>
       new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [script, agent, w.dir], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(process.execPath, [script, agent, w.dir, w.sbx.configDir], {
+          cwd: w.sbx.root,
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (d) => {
@@ -765,10 +772,13 @@ test('a runner outside the allowlist is refused, and so is an argument outside i
 })
 
 test('a check both agents can read is run once', async () => {
+  // A fixture runner in a temp working tree; no real project's checks are run.
   const w = world()
   try {
-    const run = await w.claude.startRun({ runner: 'backend-architecture', wait_seconds: 60 })
-    assert.ok(['passed', 'failed', 'running'].includes(run.status))
+    const run = await w.claude.startRun({ runner: 'tap-check', wait_seconds: 60 })
+    assert.equal(run.status, 'passed', JSON.stringify(run.result))
+    assert.equal(run.result.counts.pass, 1)
+    assert.equal(run.worktree, w.sbx.root, 'the run happened in the caller\'s working tree')
     // The point of storing it: the other agent reads the result rather than
     // spending the same minutes reproducing it.
     const seenByCodex = w.codex.getRun({ run_id: run.id })

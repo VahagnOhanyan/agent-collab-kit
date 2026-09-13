@@ -12,7 +12,7 @@
 // though nothing has run. Persisting the consequence happens opportunistically,
 // in sweep(), on the calls a working agent already makes.
 //
-// Static config (who CAN exist) lives in tools/collab/config/agents.json.
+// Static config (who CAN exist) lives in agents.json (built-in or registry).
 // This file is who IS running. Mixing the two turns a config file into a
 // mutable database, which is how config stops being reviewable.
 

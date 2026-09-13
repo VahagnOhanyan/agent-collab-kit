@@ -123,7 +123,7 @@ export const TOOLS = [
       {
         title: str('What is to be done, in one line.'),
         description: str('Detail: what "done" means, constraints, where to look.'),
-        role: str('The role required to do it, e.g. ios_engineer. Only agents holding it can claim it.'),
+        role: str('The role required to do it, e.g. software_engineer. Only agents holding it can claim it.'),
         priority: str('p0 highest to p3 lowest.', { enum: ['p0', 'p1', 'p2', 'p3'] }),
         needs_review: bool('Whether it must pass an independent review before it can be completed. Defaults to true.'),
         action: str('The concrete action, if it differs from the title. This is what gets classified.'),
@@ -380,7 +380,7 @@ export const TOOLS = [
     description:
       'Write down a choice that should bind later work, with the options and the reasoning. When agents disagree, ' +
       'each records a position here: the later opinion does not win by being later. A decision that binds everyone ' +
-      'belongs in docs/decisions/ as an ADR — record it here, then point adr_ref at it.',
+      "belongs in the project's own decision records (an ADR, for example) — record it here, then point adr_ref at it.",
     inputSchema: object(
       {
         title: str('The decision, in one line.'),
@@ -484,7 +484,9 @@ export const TOOLS = [
   {
     name: 'list_runners',
     title: 'Which checks can be run',
-    description: 'The allowlist of checks this layer will run: gates, lint, per-file tests, typechecks, and the iOS compile.',
+    description:
+      "The allowlist of checks this layer will run for this project, declared in the owner's project registry. " +
+      'Empty when the project declares none — then there is nothing to run through here.',
     inputSchema: object({}),
     annotations: READ,
     handler: (_input, api) => api.listRunners()
@@ -499,7 +501,7 @@ export const TOOLS = [
     inputSchema: object(
       {
         runner: str('The runner id from list_runners.'),
-        args: arr('Arguments, where the runner accepts them — backend-tests takes test file paths.', { type: 'string' }),
+        args: arr('Arguments, where the runner accepts them — for example test file paths. list_runners says which do.', { type: 'string' }),
         task_id: str('The task this check belongs to.'),
         wait_seconds: int('How long to wait before handing back a run id. Defaults to 20.')
       },

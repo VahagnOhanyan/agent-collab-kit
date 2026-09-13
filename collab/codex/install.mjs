@@ -12,8 +12,8 @@
 // in someone's config is a bad trade for tidiness.
 //
 // Usage:
-//   node tools/collab/codex/install.mjs           install or update the block
-//   node tools/collab/codex/install.mjs --check   say what it would do
+//   node collab/codex/install.mjs           install or update the block
+//   node collab/codex/install.mjs --check   say what it would do
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -21,15 +21,15 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = resolve(HERE, '..', '..', '..')
-const SERVER = join(REPO_ROOT, 'tools', 'collab', 'src', 'mcp', 'server.mjs')
+// collab/codex -> collab/src/mcp/server.mjs, wherever this package is installed
+const SERVER = resolve(HERE, '..', 'src', 'mcp', 'server.mjs')
 const CONFIG = process.env.CODEX_CONFIG || join(homedir(), '.codex', 'config.toml')
 const CHECK = process.argv.includes('--check')
 
 const BLOCK = [
   '[mcp_servers.collab]',
-  '# Aweiro collaboration layer — shared tasks, messages, reviews, decisions and',
-  '# approvals. Managed by tools/collab/codex/install.mjs; see docs/tooling/collab.md.',
+  '# collab — shared tasks, messages, reviews, decisions and approvals for',
+  '# every project on this machine. Managed by collab/codex/install.mjs (agent-kit).',
   'command = "node"',
   `args = ["${SERVER}"]`,
   'env = { COLLAB_AGENT_ID = "codex" }',

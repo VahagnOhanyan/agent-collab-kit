@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,11 +11,13 @@ import { fileURLToPath } from 'node:url'
 import { createStore } from '../src/store.mjs'
 import { CODES } from '../src/errors.mjs'
 import { fixedClock } from '../src/ids.mjs'
+import { initialisedJournal } from './helpers.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
+// A store opens only a journal `collab init` would have made.
 function scratchStore(agentId = 'claude') {
-  const dir = mkdtempSync(join(tmpdir(), 'collab-store-'))
+  const dir = initialisedJournal(mkdtempSync(join(tmpdir(), 'collab-store-')))
   return { dir, store: createStore({ root: dir, agentId, clock: fixedClock() }) }
 }
 
@@ -26,6 +28,24 @@ test('create stamps version 1 and an id derived from the collection', async () =
     assert.equal(task.version, 1)
     assert.match(task.id, /^tsk_[a-z0-9]+_[0-9a-f]{6}$/)
     assert.deepEqual(store.get('tasks', task.id), task)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the store refuses a state directory that does not exist instead of creating it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'collab-store-'))
+  try {
+    const missing = join(dir, 'project', '.collab')
+    let error = null
+    try {
+      createStore({ root: missing, agentId: 'claude' })
+    } catch (e) {
+      error = e
+    }
+    assert.equal(error?.code, CODES.NOT_INITIALIZED)
+    assert.match(error.message, /collab init/)
+    assert.equal(existsSync(join(dir, 'project')), false, 'not even the parent was created')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

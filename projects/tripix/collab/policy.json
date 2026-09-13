@@ -1,7 +1,6 @@
 {
-  "//": "Which classes of action an agent may take on its own, and which stop and wait for the owner. This is a TABLE read by code, not advice in a prompt: an approval is required by the task state machine itself (transitions.mjs), so there is no path to `in_progress` that skips it, and the MCP surface contains no tool that can grant one.",
-  "//evaluation": "ALL rules are evaluated and the HIGHEST severity among the matches wins; approval is mandatory if any match says so. First-match-wins was rejected: it makes rule ORDER load-bearing, so reordering the file can silently downgrade a rule. An action that matches nothing falls to `unmatched_class` — SECURITY_SENSITIVE, i.e. ask — because a classifier that fails open is not a classifier.",
-  "//projects": "This is the built-in floor. A registry project may replace this file, and the loader refuses the replacement if it weakens anything here: classes and rules may be added, never removed or downgraded, and an added rule must rank at or above the unmatched class.",
+  "//": "Tripix policy: the built-in table plus the Aweiro production-host, deploy-path and dev-host rules. This file replaces collab/config/policy.json for Tripix, and the loader refuses it if it weakens the built-in table: every built-in class and rule must stay (same pattern, class not weaker, never_standing kept). An ADDED rule below the built-in unmatched class is accepted only with lowers_default: true and a justification, and `collab check-config` lists it.",
+  "//evaluation": "ALL rules are evaluated and the HIGHEST severity among the matches wins; approval is mandatory if any match says so. An action that matches nothing falls to `unmatched_class` — SECURITY_SENSITIVE, i.e. ask.",
   "schema_version": 1,
   "classes": {
     "READ_ONLY": {
@@ -66,7 +65,19 @@
       "id": "production",
       "class": "PRODUCTION",
       "pattern": "deploy|production|prod (db|database|host)|testflight|app ?store|release build|rollout|submit .*review",
-      "reason": "Agents do not change what real users get without the owner."
+      "reason": "ADR-0010 already bars agents from production; this keeps the same line in the collaboration layer."
+    },
+    {
+      "id": "production-hosts",
+      "class": "PRODUCTION",
+      "pattern": "(^|[^.a-z])(www\\.|api\\.)?aweiro\\.com",
+      "reason": "Production hostnames. The dev host is dev.aweiro.com and is matched by the dev-host rule below."
+    },
+    {
+      "id": "deploy-paths",
+      "class": "PRODUCTION",
+      "pattern": "deploy/remote/|deploy/nginx/|release-deploy\\.yml",
+      "reason": "Editing the deploy path is one command away from running it."
     },
     {
       "id": "secrets",
@@ -85,6 +96,14 @@
       "class": "EXTERNAL_SIDE_EFFECT",
       "pattern": "\\bgit\\s+push\\b|pull request|open a pr\\b|slack|send (an )?e-?mail|post to |publish",
       "reason": "Leaves this machine and is visible to other people; push also starts CI."
+    },
+    {
+      "id": "dev-host",
+      "class": "SAFE_WRITE",
+      "pattern": "dev\\.aweiro\\.com|localhost|127\\.0\\.0\\.1",
+      "reason": "The dev backend is where agents are meant to work.",
+      "lowers_default": true,
+      "justification": "dev.aweiro.com and local hosts are not production; owner's existing decision carried over from Tripix"
     },
     {
       "id": "write",
