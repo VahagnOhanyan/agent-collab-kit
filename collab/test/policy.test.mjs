@@ -378,3 +378,42 @@ test('G: lowers_default on a built-in rule, class or default changes nothing', (
   }
   assert.deepEqual(loweringRules(policy, inert), [])
 })
+
+// ── the table speaks Russian too ───────────────────────────────────────────
+
+test('Russian phrasing classifies, and the dangerous side is covered wider than the safe one', () => {
+  // Why this exists: the table was English-only, so a Russian action matched
+  // nothing, fell to the unmatched class (SECURITY_SENSITIVE) and its task could
+  // not be claimed AT ALL. On 2026-09-13 three tasks in the Tripix journal were
+  // stuck exactly there, one of them holding seven files with no owner.
+  for (const [action, expected] of [
+    ['Заменить закон подъёма карты на следование за краем шторки', 'SAFE_WRITE'],
+    ['Починить дрожание иконок в секции комментариев', 'SAFE_WRITE'],
+    ['Написать тест на группировку фото-пинов', 'SAFE_WRITE'],
+    ['Изучить, как устроен слой, и сделать сводку', 'READ_ONLY']
+  ]) {
+    const verdict = classifyAction(policy, action)
+    assert.equal(verdict.action_class, expected, action)
+    assert.equal(verdict.requires_approval, false, `"${action}" must not need the owner`)
+  }
+
+  // THE HOLE THIS ORDERING PREVENTS. Max severity picks only among rules that
+  // MATCHED, so covering SAFE_WRITE in Russian while a dangerous rule stays
+  // English-only would let a safe verb carry a dangerous object straight past
+  // the owner. Every line below is that shape.
+  for (const [action, expected] of [
+    ['Правка миграции: удалить колонку user_id', 'DESTRUCTIVE'],
+    ['Исправить деплой-скрипт и выкатить на прод', 'PRODUCTION'],
+    ['Рефакторинг модуля оплаты: купить тестовый доступ', 'FINANCIAL'],
+    ['Проверить, как ротация ключа доступа ломает сессию', 'SECURITY_SENSITIVE'],
+    ['Посмотреть логи и стереть базу разработки', 'DESTRUCTIVE'],
+    ['Запушить ветку и открыть пулл-реквест', 'EXTERNAL_SIDE_EFFECT']
+  ]) {
+    const verdict = classifyAction(policy, action)
+    assert.equal(verdict.action_class, expected, action)
+    assert.equal(verdict.requires_approval, true, `"${action}" must stop and wait for the owner`)
+  }
+
+  // Still fails closed: a Russian phrase the table does not recognise asks.
+  assert.equal(classifyAction(policy, 'Выход из вертолётика на альбомном детенте').requires_approval, true)
+})

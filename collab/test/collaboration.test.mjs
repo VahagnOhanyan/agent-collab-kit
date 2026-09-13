@@ -788,3 +788,50 @@ test('a check both agents can read is run once', async () => {
     w.cleanup()
   }
 })
+
+// ── a claim needs a holder ─────────────────────────────────────────────────
+
+test('files are claimed by whoever holds the task, not by anybody holding its id', async () => {
+  const w = world()
+  try {
+    const task = await w.claude.createTask({ title: 'Nobody took this', action: 'edit a file' })
+    let error = null
+    try {
+      await w.claude.claimFiles({ task_id: task.id, paths: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift'] })
+    } catch (e) {
+      error = e
+    }
+    assert.equal(error?.code, CODES.NOT_PERMITTED, 'a claim without a holder has no lease and can never expire')
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('an ownerless task holds no files, however long it sits there', async () => {
+  const w = world()
+  try {
+    // create_task's own `files` list is the other way a claim can exist with no
+    // owner. On 2026-09-13 a task in `created` held three files of the Tripix
+    // tree this way and `collab status` printed its holder as `null`: a task in
+    // `created` has no lease, so `lease_expired` stayed false forever.
+    const ghost = await w.claude.createTask({
+      title: 'Never claimed',
+      action: 'edit a file',
+      files: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift']
+    })
+    assert.equal(ghost.owner, null)
+
+    const real = await w.codex.createTask({ title: 'Actual work on the same file', action: 'edit a file' })
+    await w.codex.claimTask({ task_id: real.id })
+    const claimed = await w.codex.claimFiles({
+      task_id: real.id,
+      paths: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift']
+    })
+    assert.ok(
+      claimed.files.includes('Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift'),
+      'ownership is what holds a file, not the listing'
+    )
+  } finally {
+    w.cleanup()
+  }
+})

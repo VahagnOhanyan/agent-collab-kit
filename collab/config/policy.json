@@ -52,7 +52,7 @@
       "id": "money",
       "class": "FINANCIAL",
       "never_standing": true,
-      "pattern": "subscription|billing|invoice|paid plan|upgrade .*plan|purchase|\\bbuy\\b|pricing tier|credit card|api credits|paid (api|account|tier)|register .*domain|provision .*(cloud|instance|cluster)|\\b(stripe|terraform apply|npm publish|gh release)\\b",
+      "pattern": "subscription|billing|invoice|paid plan|upgrade .*plan|purchase|\\bbuy\\b|pricing tier|credit card|api credits|paid (api|account|tier)|register .*domain|provision .*(cloud|instance|cluster)|\\b(stripe|terraform apply|npm publish|gh release)\\b|подписк|оплат|платн|биллинг|тариф|купить|покуп|приобрет|инвойс|кредитн[а-яё]* карт|за деньги|списани[ея] средств",
       "reason": "Anything that can appear on an invoice needs a fresh, single-use authorisation from the owner."
     },
     {
@@ -65,38 +65,39 @@
     {
       "id": "production",
       "class": "PRODUCTION",
-      "pattern": "deploy|production|prod (db|database|host)|testflight|app ?store|release build|rollout|submit .*review",
+      "pattern": "deploy|production|prod (db|database|host)|testflight|app ?store|release build|rollout|submit .*review|продакш|(в|на) прод|прод-|деплой|выкат|раскат|релиз|боево|тестфлайт|в апстор",
       "reason": "Agents do not change what real users get without the owner."
     },
     {
       "id": "secrets",
       "class": "SECURITY_SENSITIVE",
-      "pattern": "credential|secret|\\btoken\\b|api ?key|password|\\.env\\b|serviceaccount|\\biam\\b|firewall|deploy key|rotate ",
+      "pattern": "credential|secret|\\btoken\\b|api ?key|password|\\.env\\b|serviceaccount|\\biam\\b|firewall|deploy key|rotate |секрет|пароль|уч[её]тн[а-яё]* данн|апи-? ?ключ|api ?ключ|ключ доступа|приватн[а-яё]* ключ|токен|креденш|ротаци[а-яё]* ключ",
       "reason": "Credentials are never read, written or quoted through this layer."
     },
     {
       "id": "destructive",
       "class": "DESTRUCTIVE",
-      "pattern": "reset --hard|git clean|drop (table|database|column)|truncate |delete .*(user|media|account|bucket)|migrate reset|force-reset|wipe|rm -rf",
+      "pattern": "reset --hard|git clean|drop (table|database|column)|truncate |delete .*(user|media|account|bucket)|migrate reset|force-reset|wipe|rm -rf|удалить .*(пользовател|медиа|аккаунт|бакет|базу|таблиц|колонк|миграци)|дропнуть|снести (базу|таблиц|данн)|очистить (базу|таблиц|бакет|данн)|стереть|затереть|обнулить",
       "reason": "Discards work or data git cannot restore."
     },
     {
       "id": "outbound",
       "class": "EXTERNAL_SIDE_EFFECT",
-      "pattern": "\\bgit\\s+push\\b|pull request|open a pr\\b|slack|send (an )?e-?mail|post to |publish",
+      "pattern": "\\bgit\\s+push\\b|pull request|open a pr\\b|slack|send (an )?e-?mail|post to |publish|запуш|пулл-?реквест|пул-?реквест|отправить письмо|написать в слак|в слак|опубликова|выложить|отправить .*на сервер",
       "reason": "Leaves this machine and is visible to other people; push also starts CI."
     },
     {
       "id": "write",
       "class": "SAFE_WRITE",
-      "pattern": "\\bedit\\b|refactor|implement|write (a )?test|\\bfix\\b|rename|add (a )?(file|test|field|case)",
+      "pattern": "\\bedit\\b|refactor|implement|write (a )?test|\\bfix\\b|rename|add (a )?(file|test|field|case)|правк|поправ|исправ|починит|почини|реализова|внедрит|переименова|рефактор|переписат|вынест|написать тест|добавить (тест|файл|поле|метод|функци|экран|кнопк|случа|правил)|заменить (закон|правило|метод|функци|реализаци|значени|логику)|удалить (м[её]ртв|неиспользуем|дублиру)",
       "reason": "Ordinary work in the working tree."
     },
     {
       "id": "read",
       "class": "READ_ONLY",
-      "pattern": "\\bread\\b|inspect|analy[sz]e|\\breview\\b|search|summari[sz]|run (the )?tests?|run (the )?gates|preflight|typecheck|\\blint\\b|build-for-testing",
+      "pattern": "\\bread\\b|inspect|analy[sz]e|\\breview\\b|search|summari[sz]|run (the )?tests?|run (the )?gates|preflight|typecheck|\\blint\\b|build-for-testing|прочита|изучит|посмотрет|разобрат|проанализ|анализ|найти|поиск|сверит|проверит|прогнать тест|запустить тест|ревью|обзор|сводк|описат|разбор",
       "reason": "Reads and checks. Changes nothing."
     }
-  ]
+  ],
+  "//language": "The table is bilingual, and the order it was extended in is load-bearing. Owners and agents phrase tasks in Russian; an action the table does not recognise falls to unmatched_class and the task cannot be claimed at all — on 2026-09-13 three tasks in the Tripix journal were stuck exactly there. Russian was therefore added to EVERY rule, and WIDER in the dangerous classes than in the safe ones: max-severity picks only among rules that MATCHED, so a Russian phrase matching SAFE_WRITE while its dangerous rule stays English-only is a hole, not a stricter default. ⛔ Cyrillic cannot sit next to \\b or inside \\w in JavaScript regexes (\\w is [A-Za-z0-9_], so a word boundary before a Russian letter never fires) — the Russian branches use [а-яё] instead."
 }

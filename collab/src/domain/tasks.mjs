@@ -302,11 +302,21 @@ export function claimFiles(ctx, { task_id, paths }) {
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    // A claim is made by whoever is doing the work, so that the claim hangs off a
+    // lease with a holder. Claiming for a task nobody has taken produced a claim
+    // with no owner and no lease — and nothing can expire a lease that does not
+    // exist. create_task's `files` reached the same dead end.
+    assertOwnerOrContributor(task, ctx.agentId, 'claim files for')
 
     const now = tx.now()
     const leaseSeconds = ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
     const conflicts = []
-    for (const other of tx.list('tasks', { filter: (t) => t.id !== task_id && !TERMINAL.has(t.status) })) {
+    // AN OWNERLESS TASK HOLDS NOTHING. On 2026-09-13 three files in the Tripix
+    // tree were locked by a task nobody had ever claimed, and `collab status`
+    // printed its holder as `null`: the listing was there, the lease never was,
+    // so `lease_expired` stayed false forever. Ownership is what holds a file,
+    // not the listing.
+    for (const other of tx.list('tasks', { filter: (t) => t.id !== task_id && !TERMINAL.has(t.status) && Boolean(t.owner) })) {
       const live = projectTask(other, { now, leaseSeconds })
       if (live.lease_expired) continue // an abandoned claim holds nothing
       for (const path of other.files || []) {
