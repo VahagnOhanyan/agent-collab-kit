@@ -1,0 +1,1346 @@
+#!/usr/bin/env node
+// agent-kit-install — install the COMMITTED state of ~/agent-kit as a release.
+//
+//   ~/.agent-kit/releases/<sha>/   one directory per installed commit (git archive)
+//   ~/.agent-kit/current           symlink to the active release, switched atomically
+//   ~/.agent-kit/history.jsonl     {at, sha, previous, commit, action} per switch
+//
+// Everything user-level points at `current`, never at a release, so a rollback
+// is one symlink switch: skills, agents, the `collab` launcher and both MCP
+// registrations follow at once.
+//
+// ORDER OF WORK. Checks that can refuse (dirty source, foreign files at link
+// destinations, a foreign Claude registration, an unrewritable Codex config)
+// run BEFORE the minute-long build, and again right before anything changes.
+// Every change is recorded in an undo journal; if any later step fails, the
+// run is undone in reverse and the error names what was undone. Pruning old
+// releases is the only irreversible step and runs last, after success.
+//
+// Deliberately stdlib only and CommonJS (no extension, no package.json), like
+// bin/collab. Usage: agent-kit-install --help
+'use strict'
+
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const crypto = require('node:crypto')
+const { spawn, spawnSync } = require('node:child_process')
+const { pathToFileURL } = require('node:url')
+
+const KEEP_RELEASES = 3
+const MIN_NODE_MAJOR = 18
+const DEFAULT_BINDIR = '/opt/homebrew/bin'
+const SERVER_REL = 'collab/src/mcp/server.mjs'
+const REQUIRED_PATHS = Object.freeze([
+  'agents/implementer.md',
+  'agents/verifier.md',
+  'skills/codex-review/SKILL.md',
+  'skills/ui-review/SKILL.md',
+  'hooks/scope-guard.py',
+  'hooks/readonly-guard.py',
+  'bin/collab',
+  'collab/src/mcp/server.mjs',
+  'collab/src/mcp/tools.mjs',
+  'collab/test'
+])
+// The node written into both registrations. A stable symlink survives a Node
+// upgrade; process.execPath (a Homebrew Cellar path) does not.
+const NODE_CANDIDATES = Object.freeze(['/opt/homebrew/bin/node', '/usr/local/bin/node'])
+const GIT_CANDIDATES = Object.freeze(['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'])
+const TAR = '/usr/bin/tar'
+const RELEASE_NAME = /^[0-9a-f]{7,40}$/
+const RESTART = 'перезапустите открытые сессии Claude и Codex'
+
+
+class InstallError extends Error {}
+
+// ── small helpers ──────────────────────────────────────────────────────────
+
+const lstatOrNull = (p) => {
+  try {
+    return fs.lstatSync(p)
+  } catch {
+    return null
+  }
+}
+const realpathOr = (p) => {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+const rand = () => crypto.randomBytes(4).toString('hex')
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex')
+const isInside = (child, parent) => child === parent || child.startsWith(parent + path.sep)
+const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
+const out = (line = '') => process.stdout.write(`${line}\n`)
+const tail = (text, n = 40) => String(text || '').split('\n').slice(-n).join('\n')
+
+function describeEntry(st) {
+  if (st.isDirectory()) return 'directory'
+  if (st.isFile()) return 'regular file'
+  return 'special file'
+}
+
+// The environment for child processes that run kit code (tests, smoke): no
+// COLLAB_* identity leaking in, no GIT_* redirecting git, no loader tricks, and
+// no NODE_TEST_CONTEXT — when this installer itself runs under `node --test`,
+// that variable would turn the kit's `node --test` into a silent child reporter.
+function childEnv(extra = {}) {
+  const env = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^(COLLAB_|GIT_|DYLD_)/.test(key)) continue
+    if (['NODE_OPTIONS', 'NODE_TEST_CONTEXT', 'LD_PRELOAD', 'LD_LIBRARY_PATH'].includes(key)) continue
+    env[key] = value
+  }
+  env.PATH = [path.dirname(process.execPath), process.env.PATH || '/usr/bin:/bin'].join(':')
+  return { ...env, ...extra }
+}
+
+// git: absolute path, sanitised env with a fixed PATH.
+const GIT = GIT_CANDIDATES.find((p) => {
+  try {
+    const st = fs.statSync(p)
+    return st.isFile() && (st.mode & 0o111) !== 0
+  } catch {
+    return false
+  }
+})
+function gitEnv() {
+  const env = childEnv()
+  env.PATH = [path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin'].join(':')
+  return env
+}
+function git(cwd, args) {
+  if (!GIT) throw new InstallError(`no git found at ${GIT_CANDIDATES.join(', ')}`)
+  const r = spawnSync(GIT, args, { cwd, env: gitEnv(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (r.error) throw new InstallError(`git ${args.join(' ')}: ${r.error.message}`)
+  return r
+}
+
+function isExecutableFile(p) {
+  try {
+    const st = fs.statSync(p)
+    return st.isFile() && (st.mode & 0o111) !== 0
+  } catch {
+    return false
+  }
+}
+
+// First existing NODE_CANDIDATE, kept as that (symlink) path. Otherwise the
+// realpath of what `command -v node` finds on PATH, with a warning.
+function resolveNode({ candidates = NODE_CANDIDATES, pathEnv = process.env.PATH || '' } = {}) {
+  for (const candidate of candidates) if (isExecutableFile(candidate)) return { path: candidate, warning: null }
+  for (const dir of pathEnv.split(':')) {
+    if (!dir || !path.isAbsolute(dir)) continue
+    const found = path.join(dir, 'node')
+    if (!isExecutableFile(found)) continue
+    const real = fs.realpathSync(found)
+    return {
+      path: real,
+      warning: `none of ${candidates.join(', ') || '(no candidates)'} exists; registering ${real} (realpath of \`command -v node\`), which may break when Node is upgraded`
+    }
+  }
+  throw new InstallError(`no node found: none of ${candidates.join(', ') || '(no candidates)'} exists and there is no node on PATH`)
+}
+
+// ── undo journal ───────────────────────────────────────────────────────────
+
+class Journal {
+  constructor() {
+    this.steps = []
+  }
+  add(description, undo) {
+    this.steps.push({ description, undo })
+  }
+  rollback() {
+    const report = []
+    for (const step of this.steps.slice().reverse()) {
+      try {
+        step.undo()
+        report.push(`undone: ${step.description}`)
+      } catch (error) {
+        report.push(`FAILED to undo ${step.description}: ${error.message}`)
+      }
+    }
+    this.steps = []
+    return report
+  }
+}
+
+// mkdir -p that records the directories it created (removed on undo if empty).
+function ensureDir(dir, journal) {
+  const missing = []
+  let cursor = path.resolve(dir)
+  while (!lstatOrNull(cursor)) {
+    missing.unshift(cursor)
+    const parent = path.dirname(cursor)
+    if (parent === cursor) break
+    cursor = parent
+  }
+  const st = fs.statSync(cursor)
+  if (!st.isDirectory()) throw new InstallError(`${cursor} exists and is not a directory`)
+  for (const d of missing) {
+    fs.mkdirSync(d)
+    journal?.add(`created directory ${d}`, () => {
+      if (lstatOrNull(d) && fs.readdirSync(d).length === 0) fs.rmdirSync(d)
+    })
+  }
+  return missing
+}
+
+function atomicSymlink(target, dest) {
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.agent-kit-tmp-${process.pid}-${rand()}`)
+  fs.symlinkSync(target, tmp)
+  try {
+    fs.renameSync(tmp, dest)
+  } catch (error) {
+    fs.rmSync(tmp, { force: true })
+    throw error
+  }
+}
+
+function writeFileAtomic(file, buffer, mode) {
+  const tmp = `${file}.agent-kit-tmp-${process.pid}-${rand()}`
+  const fd = fs.openSync(tmp, 'wx', mode)
+  try {
+    fs.writeSync(fd, buffer)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  try {
+    fs.chmodSync(tmp, mode)
+    fs.renameSync(tmp, file)
+  } catch (error) {
+    fs.rmSync(tmp, { force: true })
+    throw error
+  }
+}
+
+// ── arguments ──────────────────────────────────────────────────────────────
+
+const HELP = `usage: agent-kit-install [options]
+
+Installs the committed HEAD of the source repository as ~/.agent-kit/releases/<sha>,
+switches ~/.agent-kit/current to it, links skills/agents/collab and registers the
+collab MCP server with Claude Code (user scope) and Codex.
+
+  --source <dir>       source git repository (default: <home>/agent-kit)
+  --home <dir>         home directory to install into (default: $HOME)
+  --bindir <dir>       where the collab launcher is linked (default: ${DEFAULT_BINDIR})
+  --claude-bin <path>  Claude Code executable (default: claude)
+  --replace-claude     replace a different user-scope "collab" MCP registration
+  --dry-run            run every check, tests and smoke included; change nothing
+  --rollback           switch current back to the previous release
+  -h, --help           this text
+
+With a non-default --home, --bindir and --claude-bin must be given explicitly.`
+
+function parseArgs(argv) {
+  const opts = { replaceClaude: false, dryRun: false, rollback: false, skipKitTests: false, help: false }
+  const valued = { '--source': 'source', '--home': 'home', '--bindir': 'bindir', '--claude-bin': 'claudeBin' }
+  const flags = {
+    '--replace-claude': 'replaceClaude',
+    '--dry-run': 'dryRun',
+    '--rollback': 'rollback',
+    '--skip-kit-tests': 'skipKitTests', // hidden: for the installer's own tests only
+    '--help': 'help',
+    '-h': 'help'
+  }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    const eq = arg.indexOf('=')
+    const name = arg.startsWith('--') && eq !== -1 ? arg.slice(0, eq) : arg
+    if (valued[name]) {
+      const value = eq !== -1 && arg.startsWith('--') ? arg.slice(eq + 1) : argv[++i]
+      if (value === undefined || value === '') throw new InstallError(`${name} needs a value`)
+      opts[valued[name]] = value
+    } else if (flags[arg]) {
+      opts[flags[arg]] = true
+    } else {
+      throw new InstallError(`unknown argument: ${arg}\n\n${HELP}`)
+    }
+  }
+  return opts
+}
+
+function makeContext(opts) {
+  const major = Number(process.versions.node.split('.')[0])
+  if (!(major >= MIN_NODE_MAJOR)) throw new InstallError(`Node ${MIN_NODE_MAJOR}+ is required, this is ${process.version}`)
+
+  const realHome = path.resolve(os.homedir())
+  const home = path.resolve(opts.home || realHome)
+  if (home !== realHome && (!opts.bindir || !opts.claudeBin)) {
+    throw new InstallError('with a non-default --home, pass --bindir and --claude-bin explicitly (so a test never touches the real ones)')
+  }
+  const homeStat = lstatOrNull(home)
+  if (!homeStat || !fs.statSync(home).isDirectory()) throw new InstallError(`home ${home} is not a directory`)
+  const bindir = path.resolve(opts.bindir || DEFAULT_BINDIR)
+  if (!lstatOrNull(bindir) || !fs.statSync(bindir).isDirectory()) throw new InstallError(`bindir ${bindir} is not a directory`)
+
+  let node = null
+  if (!opts.rollback) {
+    node = resolveNode()
+    const v = spawnSync(node.path, ['-p', 'process.versions.node'], { encoding: 'utf8', env: childEnv() })
+    const nodeMajor = Number(String(v.stdout || '').trim().split('.')[0])
+    if (v.error || v.status !== 0 || !(nodeMajor >= MIN_NODE_MAJOR)) {
+      throw new InstallError(`${node.path} is not a working Node ${MIN_NODE_MAJOR}+ (${v.error ? v.error.message : (v.stdout || v.stderr || '').trim()})`)
+    }
+  }
+
+  const kitDir = path.join(home, '.agent-kit')
+  const currentPath = path.join(kitDir, 'current')
+  return {
+    opts,
+    node,
+    home,
+    realHome,
+    bindir,
+    kitDir,
+    kitDirReal: path.join(realpathOr(home), '.agent-kit'),
+    releasesDir: path.join(kitDir, 'releases'),
+    tmpDir: path.join(kitDir, 'tmp'),
+    currentPath,
+    historyPath: path.join(kitDir, 'history.jsonl'),
+    lockPath: path.join(home, '.agent-kit.lock'),
+    serverPath: path.join(currentPath, SERVER_REL),
+    codexConfig: path.join(home, '.codex', 'config.toml'),
+    claudeBin: opts.claudeBin || 'claude',
+    source: path.resolve(opts.source || path.join(home, 'agent-kit'))
+  }
+}
+
+// ── lock ───────────────────────────────────────────────────────────────────
+
+function acquireLock(ctx) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(ctx.lockPath, 'wx', 0o600)
+      fs.writeSync(fd, String(process.pid))
+      fs.closeSync(fd)
+      return () => fs.rmSync(ctx.lockPath, { force: true })
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      const pid = Number(fs.readFileSync(ctx.lockPath, 'utf8').trim())
+      let alive = false
+      try {
+        if (pid > 0) process.kill(pid, 0)
+        alive = pid > 0
+      } catch (e) {
+        alive = e.code === 'EPERM'
+      }
+      if (alive) throw new InstallError(`another agent-kit-install is running (pid ${pid}, lock ${ctx.lockPath})`)
+      fs.rmSync(ctx.lockPath, { force: true })
+    }
+  }
+  throw new InstallError(`could not take the lock ${ctx.lockPath}`)
+}
+
+// ── source ─────────────────────────────────────────────────────────────────
+
+function inspectSource(ctx) {
+  const dir = ctx.source
+  if (!lstatOrNull(dir) || !fs.statSync(dir).isDirectory()) throw new InstallError(`source ${dir} is not a directory`)
+  const real = fs.realpathSync(dir)
+  const top = git(real, ['rev-parse', '--show-toplevel'])
+  if (top.status !== 0) throw new InstallError(`source ${dir} is not a git repository`)
+  if (realpathOr(top.stdout.trim()) !== real) {
+    throw new InstallError(`source ${dir} is inside the repository ${top.stdout.trim()} but is not its top level`)
+  }
+  const head = git(real, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])
+  if (head.status !== 0 || !head.stdout.trim()) {
+    throw new InstallError(`source ${dir} has no commits — commit the kit first; only committed state is installed`)
+  }
+  const status = git(real, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'])
+  if (status.status !== 0) throw new InstallError(`git status failed in ${dir}: ${status.stderr.trim()}`)
+  const dirty = status.stdout.split('\n').filter(Boolean)
+  if (dirty.length) {
+    const shown = dirty.slice(0, 30).map((l) => `  ${l}`)
+    if (dirty.length > 30) shown.push(`  … and ${dirty.length - 30} more`)
+    throw new InstallError(`source ${dir} has uncommitted changes; only committed state is installed. Commit or stash:\n${shown.join('\n')}`)
+  }
+  const commit = head.stdout.trim()
+  const tree = git(real, ['ls-tree', '-r', '--name-only', '-z', commit])
+  if (tree.status !== 0) throw new InstallError(`git ls-tree failed in ${dir}: ${tree.stderr.trim()}`)
+  const missing = missingPaths(tree.stdout.split('\0').filter(Boolean))
+  if (missing.length) throw missingError(`commit ${commit.slice(0, 12)} of ${dir}`, missing)
+  return { dir: real, commit, sha: commit.slice(0, 12) }
+}
+
+// ── manifests (content identity of a tree) ─────────────────────────────────
+
+function manifest(root) {
+  const entries = new Map()
+  const walk = (rel) => {
+    const abs = rel ? path.join(root, rel) : root
+    for (const name of fs.readdirSync(abs).sort()) {
+      const r = rel ? `${rel}/${name}` : name
+      const p = path.join(root, r)
+      const st = fs.lstatSync(p)
+      if (st.isSymbolicLink()) entries.set(r, `link:${fs.readlinkSync(p)}`)
+      else if (st.isDirectory()) {
+        entries.set(r, 'dir')
+        walk(r)
+      } else if (st.isFile()) entries.set(r, `file:${st.mode & 0o111 ? 'x' : '-'}:${sha256(fs.readFileSync(p))}`)
+      else entries.set(r, 'special')
+    }
+  }
+  walk('')
+  return entries
+}
+
+function manifestDiff(a, b, limit = 10) {
+  const diff = []
+  for (const [k, v] of a) if (!b.has(k)) diff.push(`- ${k}`)
+    else if (b.get(k) !== v) diff.push(`~ ${k}`)
+  for (const k of b.keys()) if (!a.has(k)) diff.push(`+ ${k}`)
+  return diff.length > limit ? [...diff.slice(0, limit), `… ${diff.length - limit} more`] : diff
+}
+
+// ── build: archive, kit tests, smoke ───────────────────────────────────────
+
+function tapVerdict({ status, signal, stdout }) {
+  const counts = {}
+  for (const m of String(stdout).matchAll(/^# (tests|suites|pass|fail|cancelled|skipped|todo) (\d+)\s*$/gm)) counts[m[1]] = Number(m[2])
+  const problems = []
+  if (status !== 0) problems.push(signal ? `killed by ${signal}` : `exit code ${status}`)
+  for (const key of ['tests', 'fail', 'cancelled', 'skipped']) {
+    if (counts[key] === undefined) problems.push(`no "# ${key}" line in the TAP summary`)
+  }
+  if (counts.tests === 0) problems.push('# tests 0 (nothing ran)')
+  for (const key of ['fail', 'cancelled', 'skipped']) if (counts[key] > 0) problems.push(`# ${key} ${counts[key]}`)
+  const failing = [...String(stdout).matchAll(/^\s*not ok \d+ - (.*)$/gm)].map((m) => m[1]).slice(0, 10)
+  return { ok: problems.length === 0, counts, problems, failing }
+}
+
+function runKitTests(dir, node) {
+  out('kit tests: node --test collab/test/ (in the build copy; about a minute)…')
+  const started = Date.now()
+  const r = spawnSync(node, ['--test', 'collab/test/'], {
+    cwd: dir,
+    env: childEnv(),
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+    timeout: 20 * 60 * 1000
+  })
+  const verdict = tapVerdict({ status: r.error ? -1 : r.status, signal: r.signal, stdout: r.stdout || '' })
+  if (r.error) verdict.problems.unshift(r.error.message)
+  if (!verdict.ok || r.error) {
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-tap-'))
+    const log = path.join(logDir, 'kit-tests.tap')
+    fs.writeFileSync(log, `${r.stdout || ''}\n--- stderr ---\n${r.stderr || ''}`)
+    throw new InstallError(
+      `kit tests did not pass: ${verdict.problems.join('; ')}` +
+        (verdict.failing.length ? `\nfailing:\n${verdict.failing.map((f) => `  not ok - ${f}`).join('\n')}` : '') +
+        `\nfull TAP log: ${log}`
+    )
+  }
+  const seconds = Math.round((Date.now() - started) / 1000)
+  out(`kit tests: ${verdict.counts.tests} tests, ${verdict.counts.pass} pass, 0 fail, 0 skipped, 0 cancelled (${seconds}s)`)
+  return verdict.counts
+}
+
+function walkUpFor(start, name) {
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    if (lstatOrNull(path.join(dir, name))) return path.join(dir, name)
+    if (path.dirname(dir) === dir) return null
+  }
+}
+
+function compareToolNames(expected, actual) {
+  const problems = []
+  if (!expected.length) problems.push('tools.mjs defines no tools')
+  if (actual.length !== expected.length) problems.push(`${actual.length} tools listed, tools.mjs defines ${expected.length}`)
+  const want = new Set(expected)
+  const got = new Set(actual)
+  const missing = expected.filter((n) => !got.has(n))
+  const extra = actual.filter((n) => !want.has(n))
+  const dupes = [...new Set(actual.filter((n, i) => actual.indexOf(n) !== i))]
+  if (missing.length) problems.push(`missing: ${missing.join(', ')}`)
+  if (extra.length) problems.push(`not in tools.mjs: ${extra.join(', ')}`)
+  if (dupes.length) problems.push(`listed twice: ${dupes.join(', ')}`)
+  if (want.size !== expected.length) problems.push('tools.mjs defines a name twice')
+  return problems
+}
+
+// The expected tool set comes from the release being installed, read in a
+// child process (cwd = the empty smoke folder, so any file it made is caught).
+function releaseToolNames(node, dir, cwd) {
+  const url = pathToFileURL(path.join(dir, 'collab', 'src', 'mcp', 'tools.mjs')).href
+  const script = 'const m = await import(process.argv[1]); process.stdout.write(JSON.stringify((m.TOOLS || []).map((t) => t && t.name)))'
+  const r = spawnSync(node, ['--input-type=module', '-e', script, url], { cwd, env: childEnv(), encoding: 'utf8', timeout: 60_000 })
+  let names = null
+  try {
+    names = JSON.parse(r.stdout)
+  } catch {
+    names = null
+  }
+  if (r.error || r.status !== 0 || !Array.isArray(names) || names.some((n) => typeof n !== 'string')) {
+    throw new InstallError(`could not read TOOLS from collab/src/mcp/tools.mjs of this release (exit ${r.status}):\n${tail(`${r.stdout}\n${r.stderr}`, 15)}`)
+  }
+  return names
+}
+
+function mcpHandshake(node, server, cwd, expectedNames) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(node, [server], {
+      cwd,
+      env: childEnv({ COLLAB_AGENT_ID: 'claude' }),
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    const waiters = new Map()
+    const stray = []
+    let carry = ''
+    let stderr = ''
+    let settled = false
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        child.kill('SIGKILL')
+        error.message += stderr ? `\nserver stderr:\n${tail(stderr, 15)}` : ''
+        reject(error)
+      } else resolve(value)
+    }
+    const timer = setTimeout(() => finish(new InstallError('MCP smoke test timed out after 30s')), 30_000)
+    child.on('error', (error) => finish(new InstallError(`could not start the MCP server: ${error.message}`)))
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      carry += chunk
+      for (let i = carry.indexOf('\n'); i !== -1; i = carry.indexOf('\n')) {
+        const line = carry.slice(0, i)
+        carry = carry.slice(i + 1)
+        if (!line.trim()) continue
+        let message
+        try {
+          message = JSON.parse(line)
+        } catch {
+          stray.push(line)
+          continue
+        }
+        const waiter = waiters.get(message.id)
+        if (waiter) {
+          waiters.delete(message.id)
+          waiter(message)
+        } else stray.push(line)
+      }
+    })
+    const exited = new Promise((res) => child.on('exit', (code, signal) => res({ code, signal })))
+    child.on('exit', (code, signal) => {
+      if (waiters.size) finish(new InstallError(`the MCP server exited (code ${code}, signal ${signal}) before answering`))
+    })
+    const send = (message) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`)
+    const request = (id, method, params) =>
+      new Promise((res) => {
+        waiters.set(id, res)
+        send({ id, method, params })
+      })
+
+    ;(async () => {
+      const init = await request(1, 'initialize', {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'agent-kit-install', version: '1.0.0' }
+      })
+      if (init.error || init.result?.serverInfo?.name !== 'collab') {
+        throw new InstallError(`initialize did not return serverInfo.name "collab": ${JSON.stringify(init)}`)
+      }
+      send({ method: 'notifications/initialized' })
+      const list = await request(2, 'tools/list', {})
+      const tools = list.result?.tools
+      if (!Array.isArray(tools)) throw new InstallError(`tools/list returned no tools array: ${JSON.stringify(list).slice(0, 300)}`)
+      const mismatch = compareToolNames(expectedNames, tools.map((t) => t?.name))
+      if (mismatch.length) {
+        throw new InstallError(`tools/list does not match collab/src/mcp/tools.mjs of this release: ${mismatch.join('; ')}`)
+      }
+      const call = await request(3, 'tools/call', { name: 'whoami', arguments: {} })
+      const text = (call.result?.content || []).map((c) => c.text || '').join('\n')
+      let code = null
+      try {
+        code = JSON.parse(text).code
+      } catch {
+        code = null
+      }
+      if (call.result?.isError !== true || code !== 'NOT_INITIALIZED') {
+        throw new InstallError(`whoami in a folder without a journal should fail with NOT_INITIALIZED, got: ${JSON.stringify(call).slice(0, 400)}`)
+      }
+      child.stdin.end()
+      const exit = await Promise.race([exited, new Promise((res) => setTimeout(() => res(null), 5000))])
+      if (!exit) throw new InstallError('the MCP server did not exit within 5s after stdin closed')
+      if (stray.length) {
+        throw new InstallError(`the MCP server wrote unexpected stdout lines (a reply to a notification, or a log line): ${stray.slice(0, 3).join(' | ')}`)
+      }
+      return { tools: tools.length, code, exit }
+    })().then(
+      (value) => finish(null, value),
+      (error) => finish(error instanceof InstallError ? error : new InstallError(error.message))
+    )
+  })
+}
+
+async function smoke(dir, node) {
+  const empty = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-smoke-')))
+  try {
+    if (git(empty, ['rev-parse', '--git-dir']).status === 0) throw new InstallError(`smoke folder ${empty} is inside a git repository`)
+    const journal = walkUpFor(empty, '.collab')
+    if (journal) throw new InstallError(`smoke folder ${empty} has a .collab above it (${journal}); set TMPDIR elsewhere`)
+
+    const check = spawnSync(path.join(dir, 'bin', 'collab'), ['check-config'], { cwd: empty, env: childEnv(), encoding: 'utf8', timeout: 120_000 })
+    if (check.error || check.status !== 0) {
+      throw new InstallError(`bin/collab check-config failed (${check.error ? check.error.message : `exit ${check.status}`}):\n${tail(`${check.stdout}\n${check.stderr}`, 30)}`)
+    }
+    const expected = releaseToolNames(node, dir, empty)
+    const hs = await mcpHandshake(node, path.join(dir, SERVER_REL), empty, expected)
+    const left = fs.readdirSync(empty)
+    if (left.length) throw new InstallError(`the smoke test left files in a folder without a journal: ${left.join(', ')}`)
+    out(`smoke: check-config ok; MCP initialize + tools/list = ${hs.tools} tools, same names as tools.mjs; whoami -> ${hs.code}; nothing created`)
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true })
+  }
+}
+
+function missingPaths(files) {
+  const set = new Set(files)
+  return REQUIRED_PATHS.filter((rel) => !set.has(rel) && !files.some((f) => f.startsWith(`${rel}/`)))
+}
+
+const missingError = (where, missing) =>
+  new InstallError(`${where} is missing required paths:\n${missing.map((m) => `  - ${m}`).join('\n')}\nCommit them to the kit and install again.`)
+
+function checkLayout(dir) {
+  const missing = REQUIRED_PATHS.filter((rel) => !lstatOrNull(path.join(dir, rel)))
+  if (missing.length) throw missingError(`the build copy ${dir}`, missing)
+}
+
+async function build(ctx, source, journal) {
+  let parent
+  if (ctx.opts.dryRun) parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-dry-')))
+  else {
+    ensureDir(ctx.tmpDir, journal)
+    parent = ctx.tmpDir
+  }
+  const dir = path.join(parent, `${source.sha}-${rand()}`)
+  const cleanup = () => fs.rmSync(ctx.opts.dryRun ? parent : dir, { recursive: true, force: true })
+  try {
+    fs.mkdirSync(dir)
+    const tar = `${dir}.tar`
+    const archive = git(source.dir, ['archive', '--format=tar', '-o', tar, source.commit])
+    if (archive.status !== 0) throw new InstallError(`git archive failed: ${archive.stderr.trim()}`)
+    const x = spawnSync(TAR, ['-xf', tar, '-C', dir], { encoding: 'utf8', env: gitEnv() })
+    fs.rmSync(tar, { force: true })
+    if (x.error || x.status !== 0) throw new InstallError(`tar -x failed: ${x.error ? x.error.message : x.stderr}`)
+    out(`build: git archive ${source.sha} -> ${dir}`)
+    checkLayout(dir)
+    const before = manifest(dir)
+
+    let counts = null
+    if (ctx.opts.skipKitTests) out('kit tests: SKIPPED (--skip-kit-tests; for the installer test-suite only)')
+    else counts = runKitTests(dir, ctx.node.path)
+    await smoke(dir, ctx.node.path)
+
+    const after = manifest(dir)
+    const changed = manifestDiff(before, after)
+    if (changed.length) throw new InstallError(`the kit tests or smoke test modified the build copy:\n  ${changed.join('\n  ')}`)
+    return { dir, manifest: before, counts, cleanup }
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+}
+
+// ── releases, current, history ─────────────────────────────────────────────
+
+function readCurrent(ctx) {
+  const st = lstatOrNull(ctx.currentPath)
+  if (!st) return null
+  if (!st.isSymbolicLink()) throw new InstallError(`${ctx.currentPath} exists and is not a symlink; refusing to touch it`)
+  const raw = fs.readlinkSync(ctx.currentPath)
+  const resolved = path.resolve(path.dirname(ctx.currentPath), raw)
+  if (path.dirname(resolved) !== ctx.releasesDir || !RELEASE_NAME.test(path.basename(resolved))) {
+    throw new InstallError(`${ctx.currentPath} points at ${raw}, not at a release in ${ctx.releasesDir}; refusing to touch it`)
+  }
+  return { sha: path.basename(resolved), raw }
+}
+
+function switchCurrent(ctx, sha, journal, previousRaw) {
+  atomicSymlink(`releases/${sha}`, ctx.currentPath)
+  journal.add(`switched ${ctx.currentPath} to releases/${sha}`, () => {
+    if (previousRaw) atomicSymlink(previousRaw, ctx.currentPath)
+    else fs.rmSync(ctx.currentPath, { force: true })
+  })
+}
+
+function readHistory(ctx) {
+  if (!lstatOrNull(ctx.historyPath)) return []
+  return fs
+    .readFileSync(ctx.historyPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((e) => e && typeof e.sha === 'string')
+}
+
+function appendHistory(ctx, entry, journal) {
+  const existed = lstatOrNull(ctx.historyPath)
+  const size = existed ? existed.size : 0
+  fs.appendFileSync(ctx.historyPath, `${JSON.stringify(entry)}\n`)
+  journal.add(`appended to ${ctx.historyPath}`, () => {
+    if (existed) fs.truncateSync(ctx.historyPath, size)
+    else fs.rmSync(ctx.historyPath, { force: true })
+  })
+}
+
+// Installs in order (rollbacks excluded). The rollback target of `sha` is the
+// release installed before its latest install that still exists, so repeated
+// --rollback walks further back instead of toggling.
+function rollbackTarget(ctx, history, sha) {
+  const seq = history.filter((e) => e.action !== 'rollback').map((e) => e.sha)
+  let index = seq.lastIndexOf(sha)
+  if (index === -1) index = seq.length
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (seq[i] !== sha && lstatOrNull(path.join(ctx.releasesDir, seq[i]))) return seq[i]
+  }
+  return null
+}
+
+function pruneReleases(ctx, history, current, previous) {
+  const seq = history.filter((e) => e.action !== 'rollback').map((e) => e.sha)
+  const newest = []
+  for (let i = seq.length - 1; i >= 0; i -= 1) if (!newest.includes(seq[i])) newest.push(seq[i])
+  const keep = new Set([...newest.slice(0, KEEP_RELEASES), current, previous, rollbackTarget(ctx, history, current)].filter(Boolean))
+  const known = new Set(seq)
+  const removed = []
+  for (const name of fs.readdirSync(ctx.releasesDir).sort()) {
+    if (!RELEASE_NAME.test(name) || keep.has(name) || !known.has(name)) continue
+    fs.rmSync(path.join(ctx.releasesDir, name), { recursive: true, force: true })
+    removed.push(name)
+  }
+  return removed
+}
+
+// ── user-level links ───────────────────────────────────────────────────────
+
+function linkSpecs(ctx) {
+  return [
+    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review' },
+    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review' },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md' },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md' },
+    { dest: path.join(ctx.bindir, 'collab'), rel: 'bin/collab' }
+  ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
+}
+
+function planLinks(ctx) {
+  const plan = []
+  const refused = []
+  for (const spec of linkSpecs(ctx)) {
+    const parent = lstatOrNull(path.dirname(spec.dest))
+    if (parent && !fs.statSync(path.dirname(spec.dest)).isDirectory()) {
+      refused.push(`${path.dirname(spec.dest)} exists and is not a directory`)
+      continue
+    }
+    const st = lstatOrNull(spec.dest)
+    if (!st) {
+      plan.push({ ...spec, action: 'create' })
+      continue
+    }
+    if (!st.isSymbolicLink()) {
+      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-kit symlink`)
+      continue
+    }
+    const raw = fs.readlinkSync(spec.dest)
+    const resolved = path.resolve(path.dirname(spec.dest), raw)
+    if (resolved === spec.target) plan.push({ ...spec, action: 'ok', old: raw })
+    else if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) plan.push({ ...spec, action: 'repoint', old: raw })
+    else refused.push(`${spec.dest} is a symlink to ${raw}, which is not inside ${ctx.kitDir}`)
+  }
+  if (refused.length) {
+    throw new InstallError(
+      `refusing to overwrite files that agent-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
+        'Move them away (or delete them) yourself and run the installer again.'
+    )
+  }
+  return plan
+}
+
+function applyLinks(plan, journal, changes) {
+  for (const item of plan) {
+    if (item.action === 'create') {
+      ensureDir(path.dirname(item.dest), journal)
+      fs.symlinkSync(item.target, item.dest)
+      journal.add(`created link ${item.dest}`, () => {
+        const st = lstatOrNull(item.dest)
+        if (st && st.isSymbolicLink() && fs.readlinkSync(item.dest) === item.target) fs.unlinkSync(item.dest)
+      })
+      changes.push(`link ${item.dest} -> ${item.target} (created)`)
+    } else if (item.action === 'repoint') {
+      const st = lstatOrNull(item.dest)
+      if (!st || !st.isSymbolicLink() || fs.readlinkSync(item.dest) !== item.old) {
+        throw new InstallError(`${item.dest} changed while the installer was running`)
+      }
+      atomicSymlink(item.target, item.dest)
+      journal.add(`repointed link ${item.dest}`, () => atomicSymlink(item.old, item.dest))
+      changes.push(`link ${item.dest} -> ${item.target} (was ${item.old})`)
+    }
+  }
+}
+
+function brokenLinks(ctx) {
+  return linkSpecs(ctx)
+    .filter((spec) => {
+      try {
+        fs.statSync(spec.dest)
+        return false
+      } catch {
+        return true
+      }
+    })
+    .map((spec) => spec.dest)
+}
+
+// ── Codex: ~/.codex/config.toml ────────────────────────────────────────────
+// Not a TOML parser. A line scanner that knows enough TOML (strings,
+// multi-line strings, multi-line arrays, comments) to find table headers, so
+// exactly the [mcp_servers.collab] section is replaced and every other byte is
+// kept. The text is handled as latin1 so bytes round-trip whatever the encoding.
+
+function splitLines(text) {
+  const lines = []
+  let i = 0
+  while (i < text.length) {
+    const j = text.indexOf('\n', i)
+    if (j === -1) {
+      lines.push({ body: text.slice(i), eol: '' })
+      break
+    }
+    const crlf = j > i && text[j - 1] === '\r'
+    lines.push({ body: text.slice(i, crlf ? j - 1 : j), eol: crlf ? '\r\n' : '\n' })
+    i = j + 1
+  }
+  return lines
+}
+
+function normalizeKey(raw) {
+  const parts = []
+  let current = ''
+  let quote = null
+  for (const ch of raw) {
+    if (quote) {
+      if (ch === quote) quote = null
+      else current += ch
+    } else if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '.') {
+      parts.push(current.trim())
+      current = ''
+    } else current += ch
+  }
+  parts.push(current.trim())
+  return parts.join('.')
+}
+
+function classifyToml(lines) {
+  let ml = null
+  let depth = 0
+  const closeBasic = (s, from) => {
+    for (let j = s.indexOf('"""', from); j !== -1; j = s.indexOf('"""', j + 1)) {
+      let backslashes = 0
+      for (let k = j - 1; k >= 0 && s[k] === '\\'; k -= 1) backslashes += 1
+      if (backslashes % 2 === 0) return j
+    }
+    return -1
+  }
+  const scan = (s, start) => {
+    let i = start
+    while (i < s.length) {
+      if (ml) {
+        const close = ml === '"""' ? closeBasic(s, i) : s.indexOf("'''", i)
+        if (close === -1) return
+        i = close + 3
+        while (s[i] === ml[0]) i += 1
+        ml = null
+        continue
+      }
+      const ch = s[i]
+      if (ch === '#') return
+      if (s.startsWith('"""', i) || s.startsWith("'''", i)) {
+        ml = s.slice(i, i + 3)
+        i += 3
+        continue
+      }
+      if (ch === '"') {
+        i += 1
+        while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1
+        i += 1
+        continue
+      }
+      if (ch === "'") {
+        const j = s.indexOf("'", i + 1)
+        i = j === -1 ? s.length : j + 1
+        continue
+      }
+      if (ch === '[' || ch === '{') depth += 1
+      else if (ch === ']' || ch === '}') depth = Math.max(0, depth - 1)
+      i += 1
+    }
+  }
+  const findEq = (s) => {
+    let quote = null
+    for (let i = 0; i < s.length; i += 1) {
+      if (quote) {
+        if (s[i] === quote) quote = null
+      } else if (s[i] === '"' || s[i] === "'") quote = s[i]
+      else if (s[i] === '=') return i
+    }
+    return -1
+  }
+  return lines.map(({ body }, index) => {
+    const plain = ml === null && depth === 0
+    if (plain) {
+      const t = body.trim()
+      if (t === '' || t.startsWith('#')) return { kind: 'blank', plain }
+      if (t.startsWith('[')) {
+        const array = t.startsWith('[[')
+        const m = array ? /^\[\[\s*(.+?)\s*\]\]\s*(#.*)?$/.exec(t) : /^\[\s*(.+?)\s*\]\s*(#.*)?$/.exec(t)
+        if (!m) return { kind: 'bad', plain, line: index + 1 }
+        return { kind: 'header', name: normalizeKey(m[1]), array, plain }
+      }
+      const eq = findEq(body)
+      if (eq === -1) return { kind: 'bad', plain, line: index + 1 }
+      scan(body, eq + 1)
+      return { kind: 'key', key: normalizeKey(body.slice(0, eq)), plain }
+    }
+    scan(body, 0)
+    return { kind: 'other', plain }
+  })
+}
+
+const CODEX_TABLE = 'mcp_servers.collab'
+
+function codexBlock(serverPath, nodePath) {
+  return [
+    `[${CODEX_TABLE}]`,
+    '# Managed by agent-kit-install: the active agent-kit release, through ~/.agent-kit/current.',
+    `command = ${JSON.stringify(nodePath)}`,
+    `args = [${JSON.stringify(serverPath)}]`,
+    'env = { COLLAB_AGENT_ID = "codex" }',
+    'startup_timeout_sec = 20'
+  ]
+}
+
+// text and block lines are latin1 strings. Returns { changed, text, replaced, oldBlock }.
+function rewriteCodexToml(text, blockLines) {
+  const lines = splitLines(text)
+  const info = classifyToml(lines)
+  const eol = lines.find((l) => l.eol)?.eol || '\n'
+  const ours = (name) => name === CODEX_TABLE || name.startsWith(`${CODEX_TABLE}.`)
+  const problems = []
+  let start = -1
+  let table = ''
+  info.forEach((c, i) => {
+    if (c.kind === 'bad') problems.push(`line ${i + 1} is neither a table header nor key = value`)
+    if (c.kind === 'header') {
+      table = c.name
+      if (c.array && ours(c.name)) problems.push(`line ${i + 1}: [[${c.name}]] is an array of tables`)
+      else if (c.name === CODEX_TABLE) {
+        if (start === -1) start = i
+        else problems.push(`line ${i + 1}: a second [${CODEX_TABLE}]`)
+      }
+    } else if (c.kind === 'key' && !ours(table)) {
+      const full = table ? `${table}.${c.key}` : c.key
+      if (ours(full)) problems.push(`line ${i + 1}: ${CODEX_TABLE} is defined by the key "${c.key}"${table ? ` in [${table}]` : ''}`)
+    }
+  })
+  let end = lines.length
+  if (start !== -1) {
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (info[i].kind === 'header' && !ours(info[i].name)) {
+        end = i
+        break
+      }
+    }
+  }
+  info.forEach((c, i) => {
+    if (c.kind === 'header' && ours(c.name) && c.name !== CODEX_TABLE && (start === -1 || i < start || i >= end)) {
+      problems.push(`line ${i + 1}: [${c.name}] is not directly under [${CODEX_TABLE}]`)
+    }
+  })
+  if (problems.length) {
+    const error = new Error(problems.join('; '))
+    error.problems = problems
+    throw error
+  }
+
+  if (start !== -1) {
+    // Blank and comment lines before the next table belong to that table.
+    while (end - 1 > start && info[end - 1].kind === 'blank' && info[end - 1].plain) end -= 1
+    const oldBlock = lines.slice(start, end).map((l) => l.body + l.eol).join('')
+    const replacement = blockLines.join(eol) + lines[end - 1].eol
+    if (oldBlock === replacement) return { changed: false, text, replaced: false, oldBlock }
+    const prefix = lines.slice(0, start).map((l) => l.body + l.eol).join('')
+    const suffix = lines.slice(end).map((l) => l.body + l.eol).join('')
+    return { changed: true, text: prefix + replacement + suffix, replaced: true, oldBlock }
+  }
+  if (text === '') return { changed: true, text: blockLines.join(eol) + eol, replaced: false, oldBlock: null }
+  const base = text.endsWith('\n') ? text : text + eol
+  const gap = base.endsWith(eol + eol) ? '' : eol
+  return { changed: true, text: base + gap + blockLines.join(eol) + eol, replaced: false, oldBlock: null }
+}
+
+function planCodex(ctx) {
+  const st = lstatOrNull(ctx.codexConfig)
+  let file = ctx.codexConfig
+  let original = null
+  let mode = 0o600
+  if (st) {
+    file = fs.realpathSync(ctx.codexConfig)
+    const real = fs.statSync(file)
+    if (!real.isFile()) throw new InstallError(`${ctx.codexConfig} is not a regular file`)
+    original = fs.readFileSync(file)
+    mode = real.mode & 0o777
+  }
+  const block = codexBlock(ctx.serverPath, ctx.node.path).map((l) => Buffer.from(l, 'utf8').toString('latin1'))
+  let result
+  try {
+    result = rewriteCodexToml(original ? original.toString('latin1') : '', block)
+  } catch (error) {
+    throw new InstallError(`cannot safely rewrite ${ctx.codexConfig}: ${error.message}. Fix the [${CODEX_TABLE}] entry by hand.`)
+  }
+  return {
+    file,
+    viaLink: st?.isSymbolicLink() ? ctx.codexConfig : null,
+    exists: Boolean(st),
+    original,
+    mode,
+    next: Buffer.from(result.text, 'latin1'),
+    changed: result.changed,
+    replaced: result.replaced,
+    oldBlock: result.oldBlock ? Buffer.from(result.oldBlock, 'latin1').toString('utf8') : null
+  }
+}
+
+function applyCodex(ctx, plan, journal, changes) {
+  if (!plan.changed) return
+  if (plan.exists) {
+    const now = fs.readFileSync(plan.file)
+    if (!now.equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
+    const backup = `${plan.file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    fs.copyFileSync(plan.file, backup, fs.constants.COPYFILE_EXCL)
+    writeFileAtomic(plan.file, plan.next, plan.mode)
+    journal.add(`rewrote ${plan.file}`, () => {
+      writeFileAtomic(plan.file, plan.original, plan.mode)
+      fs.rmSync(backup, { force: true })
+    })
+    changes.push(`codex: ${plan.replaced ? 'replaced' : 'appended'} [${CODEX_TABLE}] in ${plan.file} (backup ${backup})`)
+  } else {
+    ensureDir(path.dirname(plan.file), journal)
+    writeFileAtomic(plan.file, plan.next, 0o600)
+    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
+    changes.push(`codex: created ${plan.file} with [${CODEX_TABLE}]`)
+  }
+  if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
+}
+
+// ── Claude Code: user-scope MCP registration ───────────────────────────────
+
+function runClaude(ctx, args) {
+  // A neutral cwd: `claude mcp get` resolves local and project scopes from it,
+  // and a project's .mcp.json must not be mistaken for the user registration.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-claude-'))
+  try {
+    const r = spawnSync(ctx.claudeBin, args, { cwd, env: childEnv(), encoding: 'utf8', timeout: 120_000 })
+    if (r.error) throw new InstallError(`could not run ${ctx.claudeBin} ${args.join(' ')}: ${r.error.message}`)
+    return r
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true })
+  }
+}
+
+// Text only. The exit code of `claude mcp get` says nothing: "not found" exits 0
+// too (Claude Code 2.1.270). `status` is used in error messages only.
+function parseClaudeGet({ status, stdout, stderr }, name = 'collab') {
+  const clean = (s) => String(s || '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+  const lines = clean(stdout).split(/\r?\n/)
+  const header = lines.findIndex((l) => l.trim() === `${name}:`)
+  if (header === -1) {
+    if (/no mcp server/i.test(`${clean(stdout)}\n${clean(stderr)}`)) return { found: false }
+    throw new InstallError(`could not interpret \`claude mcp get collab\` (exit ${status}):\n${tail(`${clean(stdout)}\n${clean(stderr)}`, 15)}`)
+  }
+  const reg = { found: true, scope: null, scopeLabel: null, type: null, command: null, args: null, env: {} }
+  let inEnv = false
+  for (const line of lines.slice(header + 1)) {
+    const field = /^ {2}(\w[\w ]*?): ?(.*)$/.exec(line)
+    const envLine = /^ {4}([^=\s][^=]*)=(.*)$/.exec(line)
+    if (inEnv && envLine) {
+      reg.env[envLine[1]] = envLine[2]
+      continue
+    }
+    inEnv = false
+    if (field) {
+      const [, key, value] = field
+      if (key === 'Scope') {
+        reg.scopeLabel = value.trim()
+        reg.scope = /^user/i.test(reg.scopeLabel) ? 'user' : 'other'
+      } else if (key === 'Type') reg.type = value.trim()
+      else if (key === 'Command') reg.command = value.trim()
+      else if (key === 'Args') reg.args = value.trim()
+      else if (key === 'Environment') inEnv = true
+      continue
+    }
+  }
+  return reg
+}
+
+function claudeMatches(ctx, reg) {
+  return (
+    reg.found &&
+    reg.scope === 'user' &&
+    (reg.type === null || reg.type === 'stdio') &&
+    reg.command === ctx.node.path &&
+    reg.args === ctx.serverPath &&
+    Object.keys(reg.env).length === 1 &&
+    reg.env.COLLAB_AGENT_ID === 'claude'
+  )
+}
+
+const describeRegistration = (reg) =>
+  `Scope: ${reg.scopeLabel || '(no Scope line)'}; ${reg.type || '?'}:${reg.command || '?'} ${reg.args || ''}; env ${
+    Object.entries(reg.env)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ') || '(none)'
+  }`
+
+function planClaude(ctx) {
+  const reg = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab']))
+  if (!reg.found) return { action: 'add', existing: null }
+  if (reg.scope !== 'user') {
+    throw new InstallError(
+      `\`claude mcp get collab\` (run from a neutral directory) shows "collab" with Scope: ${reg.scopeLabel || '(no Scope line)'}\n` +
+        'That is not user scope, so the installer will not touch it, not even with --replace-claude. Remove it yourself first.'
+    )
+  }
+  if (claudeMatches(ctx, reg)) return { action: 'ok', existing: reg }
+  if (!ctx.opts.replaceClaude) {
+    throw new InstallError(
+      `a different user-scope "collab" MCP server is registered with Claude Code (${describeRegistration(reg)}).\n` +
+        `Expected: ${ctx.node.path} ${ctx.serverPath}; env COLLAB_AGENT_ID=claude. Re-run with --replace-claude to replace it.`
+    )
+  }
+  return { action: 'replace', existing: reg }
+}
+
+function claudeAddArgs(ctx) {
+  return ['mcp', 'add', '-s', 'user', 'collab', '-e', 'COLLAB_AGENT_ID=claude', '--', ctx.node.path, ctx.serverPath]
+}
+
+function applyClaude(ctx, plan, journal, changes) {
+  if (plan.action === 'ok') return
+  if (plan.action === 'replace') {
+    const old = plan.existing
+    const removed = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'])
+    if (removed.status !== 0) throw new InstallError(`claude mcp remove -s user collab failed:\n${tail(removed.stdout + removed.stderr, 10)}`)
+    journal.add('removed the previous user-scope collab registration (re-added best effort; args are split on spaces)', () => {
+      const envArgs = Object.entries(old.env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+      const r = runClaude(ctx, ['mcp', 'add', '-s', 'user', 'collab', ...envArgs, '--', old.command, ...(old.args ? old.args.split(' ') : [])])
+      if (r.status !== 0) throw new Error(`re-adding failed: ${tail(r.stdout + r.stderr, 5)}`)
+    })
+  }
+  const added = runClaude(ctx, claudeAddArgs(ctx))
+  if (added.status !== 0) throw new InstallError(`claude ${claudeAddArgs(ctx).join(' ')} failed:\n${tail(added.stdout + added.stderr, 10)}`)
+  journal.add('registered collab with Claude Code (user scope)', () => {
+    const r = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'])
+    if (r.status !== 0) throw new Error(tail(r.stdout + r.stderr, 5))
+  })
+  const check = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab']))
+  if (!claudeMatches(ctx, check)) {
+    throw new InstallError(`after claude mcp add, \`claude mcp get collab\` does not show the expected registration: ${check.found ? describeRegistration(check) : 'not found'}`)
+  }
+  changes.push(`claude: ${plan.action === 'replace' ? `replaced (${describeRegistration(plan.existing)}) with` : 'registered'} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`)
+}
+
+// ── install ────────────────────────────────────────────────────────────────
+
+function rollbackCommand(ctx) {
+  const parts = [realpathOr(process.argv[1]), '--rollback']
+  if (ctx.home !== ctx.realHome) parts.push('--home', ctx.home, '--bindir', ctx.bindir, '--claude-bin', ctx.claudeBin)
+  else if (ctx.bindir !== DEFAULT_BINDIR) parts.push('--bindir', ctx.bindir)
+  return parts.map(shellQuote).join(' ')
+}
+
+function planAll(ctx) {
+  return { current: readCurrent(ctx), links: planLinks(ctx), codex: planCodex(ctx), claude: planClaude(ctx) }
+}
+
+async function install(ctx) {
+  const source = inspectSource(ctx)
+  out(`source: ${source.dir} at ${source.sha} (${source.commit})`)
+  out(`node for registrations: ${ctx.node.path}`)
+  if (ctx.node.warning) out(`warning: ${ctx.node.warning}`)
+  planAll(ctx) // refuse early, before the long build
+
+  const journal = new Journal()
+  let built = null
+  try {
+    built = await build(ctx, source, journal)
+    const plan = planAll(ctx) // authoritative: state may have moved during the build
+    const previous = plan.current?.sha || null
+    const releaseDir = path.join(ctx.releasesDir, source.sha)
+    const existing = lstatOrNull(releaseDir)
+    if (existing) {
+      const diff = existing.isDirectory() ? manifestDiff(manifest(releaseDir), built.manifest) : ['not a directory']
+      if (diff.length) {
+        throw new InstallError(`${releaseDir} already exists with different content than commit ${source.sha}:\n  ${diff.join('\n  ')}\nRemove it and install again.`)
+      }
+    }
+
+    const planned = []
+    planned.push(existing ? `release ${releaseDir} (exists, identical: reuse)` : `release ${releaseDir} (new)`)
+    if (previous !== source.sha) planned.push(`current -> releases/${source.sha} (was ${previous || 'none'}); history.jsonl += 1 line`)
+    for (const l of plan.links) if (l.action !== 'ok') planned.push(`link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
+    if (plan.codex.changed) planned.push(`codex: ${plan.codex.exists ? (plan.codex.replaced ? 'replace' : 'append') : 'create'} [${CODEX_TABLE}] in ${plan.codex.file}`)
+    if (plan.claude.action !== 'ok') planned.push(`claude: ${plan.claude.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`)
+
+    if (ctx.opts.dryRun) {
+      built.cleanup()
+      out('')
+      out(`DRY RUN — every check passed; nothing was changed.`)
+      out(`would install ${source.sha} (commit ${source.commit}); previous: ${previous || 'none'}`)
+      if (plan.codex.oldBlock && plan.codex.changed) out(`codex block that would be replaced:\n${plan.codex.oldBlock}`)
+      const effective = planned.filter((p) => !p.includes('identical: reuse'))
+      out(effective.length ? `planned changes:\n${planned.map((p) => `  - ${p}`).join('\n')}` : 'planned changes: none (already installed)')
+      return
+    }
+
+    const changes = []
+    ensureDir(ctx.releasesDir, journal)
+    if (existing) built.cleanup()
+    else {
+      fs.renameSync(built.dir, releaseDir)
+      journal.add(`created ${releaseDir}`, () => fs.rmSync(releaseDir, { recursive: true, force: true }))
+      changes.push(`release ${releaseDir} created`)
+    }
+    if (previous !== source.sha) {
+      switchCurrent(ctx, source.sha, journal, plan.current?.raw || null)
+      appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
+      changes.push(`current -> releases/${source.sha} (was ${previous || 'none'})`)
+    }
+    applyLinks(plan.links, journal, changes)
+    const broken = brokenLinks(ctx)
+    if (broken.length) throw new InstallError(`links do not resolve after install: ${broken.join(', ')}`)
+    applyCodex(ctx, plan.codex, journal, changes)
+    applyClaude(ctx, plan.claude, journal, changes)
+
+    const history = readHistory(ctx)
+    const pruned = pruneReleases(ctx, history, source.sha, previous)
+    for (const name of pruned) changes.push(`pruned release ${name}`)
+
+    out('')
+    out(`installed: ${source.sha} (commit ${source.commit})`)
+    out(`previous:  ${previous || 'none'}`)
+    if (plan.codex.replaced && plan.codex.oldBlock) out(`replaced codex block was:\n${plan.codex.oldBlock.trimEnd()}`)
+    out(changes.length ? `changed:\n${changes.map((c) => `  - ${c}`).join('\n')}` : 'changed: nothing (already installed and registered)')
+    out(`rollback:  ${rollbackCommand(ctx)}`)
+    out(RESTART)
+  } catch (error) {
+    if (built && lstatOrNull(built.dir)) built.cleanup()
+    const undone = journal.rollback()
+    if (undone.length) error.message += `\nthis run was rolled back:\n${undone.map((u) => `  ${u}`).join('\n')}`
+    throw error
+  }
+}
+
+// ── rollback ───────────────────────────────────────────────────────────────
+
+function rollback(ctx) {
+  const current = readCurrent(ctx)
+  if (!current) throw new InstallError(`nothing is installed: ${ctx.currentPath} does not exist`)
+  const history = readHistory(ctx)
+  const target = rollbackTarget(ctx, history, current.sha)
+  if (!target) throw new InstallError(`no earlier release to roll back to from ${current.sha} (history: ${ctx.historyPath})`)
+  const links = planLinks(ctx)
+  const missing = REQUIRED_PATHS.filter((rel) => !lstatOrNull(path.join(ctx.releasesDir, target, rel)))
+
+  if (ctx.opts.dryRun) {
+    out(`DRY RUN — nothing was changed.`)
+    out(`would switch current: ${current.sha} -> ${target}`)
+    for (const l of links) if (l.action !== 'ok') out(`would ${l.action} link ${l.dest} -> ${l.target}`)
+    if (missing.length) out(`warning: release ${target} lacks ${missing.join(', ')}; those links would dangle`)
+    return
+  }
+
+  const journal = new Journal()
+  const changes = []
+  try {
+    switchCurrent(ctx, target, journal, current.raw)
+    appendHistory(ctx, { at: new Date().toISOString(), sha: target, previous: current.sha, action: 'rollback' }, journal)
+    changes.push(`current -> releases/${target} (was ${current.sha})`)
+    applyLinks(links, journal, changes)
+  } catch (error) {
+    const undone = journal.rollback()
+    if (undone.length) error.message += `\nthis run was rolled back:\n${undone.map((u) => `  ${u}`).join('\n')}`
+    throw error
+  }
+  out(`rolled back: ${current.sha} -> ${target}`)
+  out(`changed:\n${changes.map((c) => `  - ${c}`).join('\n')}`)
+  const broken = brokenLinks(ctx)
+  if (broken.length) out(`warning: these links do not resolve in ${target}: ${broken.join(', ')}`)
+  out('registrations (Claude, Codex) point at ~/.agent-kit/current and need no change.')
+  out(`to return to ${current.sha}: run the installer on that commit, or --rollback again to go further back.`)
+  out(RESTART)
+}
+
+// ── main ───────────────────────────────────────────────────────────────────
+
+async function main(argv) {
+  const opts = parseArgs(argv)
+  if (opts.help) {
+    out(HELP)
+    return 0
+  }
+  const ctx = makeContext(opts)
+  const release = opts.dryRun ? () => {} : acquireLock(ctx)
+  try {
+    if (opts.rollback) rollback(ctx)
+    else await install(ctx)
+  } finally {
+    release()
+  }
+  return 0
+}
+
+module.exports = {
+  parseArgs,
+  tapVerdict,
+  rewriteCodexToml,
+  codexBlock,
+  parseClaudeGet,
+  rollbackTarget,
+  normalizeKey,
+  resolveNode,
+  compareToolNames,
+  missingPaths
+}
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code
+    },
+    (error) => {
+      process.stderr.write(`agent-kit-install: ${error instanceof InstallError ? error.message : error.stack || error}\n`)
+      process.exitCode = 1
+    }
+  )
+}

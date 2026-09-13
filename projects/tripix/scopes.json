@@ -1,0 +1,6 @@
+{
+  "implementer": {
+    "allow": ["Tripix/", "TripixTests/", "Modules/", "backend/", "rail-router/"],
+    "deny": ["backend/test/contracts/", "shared/", "scripts/", ".github/", "CLAUDE.md", "Tripix/CLAUDE.md"]
+  }
+}
