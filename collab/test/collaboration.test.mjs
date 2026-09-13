@@ -905,3 +905,27 @@ test('a delegation is recorded by whoever holds the task, and names a model', as
     w.cleanup()
   }
 })
+
+test('a pending review on a cancelled task stops counting as something the owner waits on', async () => {
+  const w = world()
+  try {
+    const task = await w.claude.createTask({ title: 'Abandoned mid-review', action: 'edit a file' })
+    await w.claude.claimTask({ task_id: task.id })
+    const requested = await w.claude.requestReview({ task_id: task.id, instructions: 'Look at the one file.' })
+    assert.equal((await w.claude.status()).reviews_pending, 1)
+
+    await w.claude.updateTask({ task_id: task.id, status: 'cancelled', reason: 'superseded by another approach' })
+
+    const snapshot = await w.claude.status()
+    assert.equal(snapshot.reviews_pending, 0, 'nobody is waiting on a review of a task that was cancelled')
+    assert.equal(snapshot.reviews_stale, 1, 'but the request is not pretended away either')
+
+    // The record itself is untouched: "asked and never answered" stays true, and
+    // `collab reviews` keeps reporting it as stale rather than as a verdict.
+    const stored = w.claude.listReviews({ task_id: task.id })[0]
+    assert.equal(stored.id, requested.review.id)
+    assert.equal(stored.verdict, 'pending')
+  } finally {
+    w.cleanup()
+  }
+})

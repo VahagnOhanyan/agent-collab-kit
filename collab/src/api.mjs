@@ -266,6 +266,17 @@ export function createApi({
       const all = tasks.listTasks(ctx, {})
       const byStatus = {}
       for (const task of all) byStatus[task.status] = (byStatus[task.status] || 0) + 1
+
+      // A pending review whose task was cancelled or completed is STALE, not
+      // waiting: nobody is going to answer it, because the work it asked about
+      // no longer exists. Counting it as pending made this line tell the owner
+      // that something was outstanding when nothing was — seen on 2026-09-13,
+      // where `reviews pending 1` pointed at a task cancelled the day before.
+      // `collab reviews` already draws this distinction (status: stale); status
+      // now agrees with it instead of contradicting it.
+      const liveTaskIds = new Set(all.filter((t) => !['completed', 'cancelled'].includes(t.status)).map((t) => t.id))
+      const pendingReviews = reviews.listReviews(ctx, { pending_only: true })
+      const waitingReviews = pendingReviews.filter((r) => liveTaskIds.has(r.task_id))
       return {
         journal_root: roots.journalRoot,
         agents: agents.listAgents(ctx).map((a) => ({
@@ -281,7 +292,8 @@ export function createApi({
           open: all.filter((t) => !['completed', 'cancelled'].includes(t.status)).length,
           stale: all.filter((t) => t.lease_expired).length
         },
-        reviews_pending: reviews.listReviews(ctx, { pending_only: true }).length,
+        reviews_pending: waitingReviews.length,
+        reviews_stale: pendingReviews.length - waitingReviews.length,
         approvals_pending: approvals.listApprovals(ctx, { pending_only: true }).length,
         decisions_open: decisions.listDecisions(ctx, {}).filter((d) => ['open', 'disputed', 'escalated'].includes(d.status)).length,
         runs_failed: runs.listRuns(ctx, { failed_only: true }).length,

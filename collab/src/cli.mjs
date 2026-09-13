@@ -199,6 +199,11 @@ const COMMANDS = {
       `  decisions open     ${s.decisions_open}`,
       `  runs failed        ${s.runs_failed}`
     )
+    if (s.reviews_stale) {
+      // Not folded into "reviews pending": nobody is waiting on these, and a
+      // number that includes them is a number that asks for work that is gone.
+      out(dim(`  ${s.reviews_stale} stale review(s) — their task is closed; see collab reviews --pending`))
+    }
 
     if (s.delegations?.length) {
       // What the lead handed to a subagent. A record of intent, not proof: the
