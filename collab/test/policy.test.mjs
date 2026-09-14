@@ -417,3 +417,85 @@ test('Russian phrasing classifies, and the dangerous side is covered wider than 
   // Still fails closed: a Russian phrase the table does not recognise asks.
   assert.equal(classifyAction(policy, 'Выход из вертолётика на альбомном детенте').requires_approval, true)
 })
+
+// ── real corpus from the Tripix .collab/tasks journal ─────────────────────
+//
+// On 2026-09-13 three ordinary tasks fell to SECURITY_SENSICE with
+// `matched: []` because their exact phrasing sat outside the table's
+// vocabulary: "Перенести файлы камеры…" (move), "Добавить … зонд
+// расхождения…" (add + probe), and the English "Add … an env kill switch"
+// (bare "add" with no object from the old enumerated list). Each is a real
+// action string copied from a task file, not a paraphrase, so this test
+// breaks the moment a future edit narrows the table back down to the gap.
+test('real task actions from the .collab/tasks journal classify without asking, dangerous ones still ask', () => {
+  const mustNotApprove = [
+    ['read backend/mcp/registry.js and summarise it', 'READ_ONLY'],
+    [
+      'Edit the trip map coordinator so that while the sheet band glide runs, the helicopter circle is held and any short orbit/strip approach is deferred until the band lands; make the three behaviour switches default to on.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Add a pure zoom-ceiling policy driven by strip speed and apply it in the trip map route scrub coordinator, with unit tests and an env kill switch.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Implement a zoom-ceiling policy in the trip map route scrub coordinator and write a test for it. Edit Swift sources and unit tests in the working tree only.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Add a pure spatial grouping rule for trip map photo pins: quality-ordered greedy seeding with a minimum separation radius, radius chosen from a fixed ladder by a pin-count ceiling, members snapped to their seed coordinate. Edit iOS client only.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Заменить закон подъёма карты (по пинам, задержка 0.5 с + ход 1.5 с) на синхронное следование за нарисованным краем шторки: подъём = половина хода края, привод — display-link по presentation-слою пробника.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Правка iOS: в releaseHelicopterOrbitIfNoLongerRequested не отдавать камеру autoFit, когда RouteScrub не engaged; мягкий выход (pitch/bearing→0 + зум по политике полосы) без смены центра.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Edit Tripix/TripMap/Presentation/Core/TripMapView+CoordinatorHelicopterOrbit.swift to fix the camera pull-back when the helicopter toggle is switched off on the album detent; implement a soft exit that keeps the centre and straightens pitch and bearing.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Read-only аудит кодовой базы: карта архитектуры, сквозные аспекты (camera choreography, playback session, caching, prefetch, ошибки, транспорт, route presentation и др.), кандидаты на модули, план миграции. Итог — документ docs/audit/ARCHITECTURE_CROSS_CUTTING_AUDIT.md. Код не меняется.',
+      'READ_ONLY'
+    ],
+    [
+      'Перенос объявлений без изменения поведения: EventTrackingPhase из Presentation/Detail в Domain/Policy; regionFitFlyScreenThreshold и playbackRestoreFlyScreenThreshold из TripMapView в TripMapCameraDirector; ImmersiveMapMediaCardMetrics из SwiftUI-файла в отдельный файл. Сборка iOS, preflight, независимая проверка.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Добавить characterization-тесты синхронизации контроллер↔биндер↔reducer, чистый exhaustive-маппинг TripPulsePlaybackState↔TripPlaybackSessionLifecycle с тестом и зонд расхождения logDiagnostic по фронту в биндере. Пять мест записи намерения, syncLifecycle, shouldPause и reducer не менять.',
+      'SAFE_WRITE'
+    ],
+    [
+      'Перенести чистые файлы камеры из Tripix/TripMap/Presentation/Core в папку Tripix/TripMap/CameraCore без изменения кода и добавить проверку, что файлы этой папки не импортируют MapboxMaps и SwiftUI',
+      'SAFE_WRITE'
+    ],
+    // the two examples that motivated this test
+    ['Перенести файлы камеры в новую папку', 'SAFE_WRITE'],
+    ['Add diagnostic logging to the binder', 'SAFE_WRITE']
+  ]
+  for (const [action, expected] of mustNotApprove) {
+    const verdict = classifyAction(policy, action)
+    assert.equal(verdict.action_class, expected, action)
+    assert.equal(verdict.requires_approval, false, `"${action}" is ordinary work and must not need the owner`)
+  }
+
+  // The broadened "write" rule (bare \badd\b, \bmove\b, "перенес", "добав", …)
+  // must not swallow phrasing that is dangerous for an unrelated reason —
+  // max-severity still has to pick the dangerous class over the safe one.
+  const stillDangerous = [
+    ['Добавить ключ API в конфиг деплоя', 'SECURITY_SENSITIVE'],
+    ['Add the API key to the deploy config', 'PRODUCTION'],
+    ['Перенести продакшн-базу на новый сервер', 'PRODUCTION'],
+    ['Move the billing script and buy the paid tier', 'FINANCIAL']
+  ]
+  for (const [action, expected] of stillDangerous) {
+    const verdict = classifyAction(policy, action)
+    assert.equal(verdict.action_class, expected, action)
+    assert.equal(verdict.requires_approval, true, `"${action}" must still stop and wait for the owner`)
+  }
+})

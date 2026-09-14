@@ -71,7 +71,7 @@
     {
       "id": "secrets",
       "class": "SECURITY_SENSITIVE",
-      "pattern": "credential|secret|\\btoken\\b|api ?key|password|\\.env\\b|serviceaccount|\\biam\\b|firewall|deploy key|rotate |секрет|пароль|уч[её]тн[а-яё]* данн|апи-? ?ключ|api ?ключ|ключ доступа|приватн[а-яё]* ключ|токен|креденш|ротаци[а-яё]* ключ",
+      "pattern": "credential|secret|\\btoken\\b|api ?key|key ?api|password|\\.env\\b|serviceaccount|\\biam\\b|firewall|deploy key|rotate |секрет|пароль|уч[её]тн[а-яё]* данн|апи-? ?ключ|api ?ключ|ключ ?(апи|api)|ключ доступа|приватн[а-яё]* ключ|токен|креденш|ротаци[а-яё]* ключ",
       "reason": "Credentials are never read, written or quoted through this layer."
     },
     {
@@ -89,7 +89,7 @@
     {
       "id": "write",
       "class": "SAFE_WRITE",
-      "pattern": "\\bedit\\b|refactor|implement|write (a )?test|\\bfix\\b|rename|add (a )?(file|test|field|case)|правк|поправ|исправ|починит|почини|реализова|внедрит|переименова|рефактор|переписат|вынест|написать тест|добавить (тест|файл|поле|метод|функци|экран|кнопк|случа|правил)|заменить (закон|правило|метод|функци|реализаци|значени|логику)|удалить (м[её]ртв|неиспользуем|дублиру)",
+      "pattern": "\\bedit\\b|refactor|implement|write (a )?test|\\bfix\\b|rename|\\badd\\b|\\bmove\\b|\\bextract\\b|\\bprobe\\b|logging|правк|поправ|исправ|починит|почини|реализова|внедрит|переименова|рефактор|переписат|вынест|перенес|перенос|перемест|перемещ|логиров|зонд|написать тест|добав|заменить (закон|правило|метод|функци|реализаци|значени|логику)|удалить (м[её]ртв|неиспользуем|дублиру)",
       "reason": "Ordinary work in the working tree."
     },
     {
