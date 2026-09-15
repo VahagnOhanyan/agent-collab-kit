@@ -76,7 +76,7 @@
     },
     {
       "id": "gemini",
-      "name": "Gemini CLI",
+      "name": "Gemini, via Antigravity CLI",
       "provider": "google",
       "roles": [
         "software_engineer",
@@ -96,11 +96,11 @@
       "adapter": {
         "kind": "cli",
         "enabled": false,
-        "binary": "gemini",
-        "args": [],
+        "binary": "agy",
+        "args": ["-p"],
         "note": "Owner decision 2026-09-15: queue first, launch by hand — same principle as Codex, nothing here starts a paid agent on its own.",
-        "verified_against": "not verified — @google/gemini-cli is not installed on this machine yet. `args` must be filled in from `gemini --help` / `gemini mcp --help` (not from memory) before `enabled` is ever set to true.",
-        "install_hint": "npm install -g @google/gemini-cli, then authenticate (`gemini`), then register the collab MCP server for Gemini and re-run: collab doctor"
+        "verified_against": "agy 1.1.8, verified live 2026-09-15: `agy -p \"<prompt>\" --model gemini-3.6-flash-low` reached collab's whoami through the mcp_config.json registration below. `@google/gemini-cli` (npm) is DEAD for this purpose — Google cut free/Pro/Ultra individual access to it on 2026-06-18 and replaced it with Antigravity CLI (`agy`), a different, closed-source binary. `args` deliberately omits --model/--effort, same convention as Codex's adapter: chosen at invocation time, not baked in.",
+        "install_hint": "brew install --cask antigravity-cli (or install the Antigravity app, which puts `agy` on PATH), then `agy` once to sign in. Headless calls also need an allow-rule or they auto-deny: add {\"permissions\":{\"allow\":[\"mcp(*)\"]}} to ~/.gemini/antigravity-cli/settings.json. Then: collab doctor"
       },
       "briefing_file": "briefings/gemini.md",
       "briefing": "You are an independent engineer on this project, and a different vendor from Claude and Codex — useful for a genuinely independent second opinion. Your default work is review, test analysis, bug detection and implementation. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application, so never claim UI was verified. Full instructions: collab brief gemini."

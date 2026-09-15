@@ -1,7 +1,7 @@
 {
   "//": "Which model a LEVEL means, per vendor. This is the only place a model name appears in the collaboration layer: tasks, delegations and the rules speak in levels (L0..L3) and in the stable `ref` below, so a vendor shipping a new model is an edit here and nothing else. Models come and go — the level ladder does not.",
   "//levels": "A level is HOW HARD the work is, never who does it. `rank` orders them and nothing reads the name. A task classified above a model's `max_level` escalates to the next rung instead of being handed to it; a task below `level` does not need that rung, and taking it anyway is how everything quietly runs on the most expensive model.",
-  "//ref": "`ref` is the stable name (`sonnet`, `terra`, `gemini-pro`) that rules, delegations and the journal use. `id` is the vendor's own model id, which changes under you. Two rungs may share one `id` with different `effort` — that is why the key is `ref` and not `id`.",
+  "//ref": "`ref` is the stable name (`sonnet`, `terra`, `gemini-pro-high`) that rules, delegations and the journal use. `id` is the vendor's own model id, which changes under you. Two rungs may share one `id` with different `effort` — that is why the key is `ref` and not `id`.",
   "//verified": "How much the `id` beside it can be trusted. `catalog` — checked against the vendor's own catalog file on this machine, and `collab doctor` re-checks it and reports drift. `owner` — the owner confirmed it; there is no catalog here to check against. `unverified` — copied from documentation and never confirmed on this machine; do not rely on it until somebody has.",
   "//adapters": "Nothing here starts anything. Choosing and launching a model is the lead session's own doing; this file is what it chooses FROM, and the journal records what it says it chose. The layer cannot verify which model actually ran.",
   "levels": {
@@ -48,8 +48,9 @@
     "google": {
       "agent": "gemini",
       "catalog_file": null,
-      "verified": "unverified",
-      "note": "@google/gemini-cli is not installed on this machine, so nothing below is confirmed. Fill the ids in from `gemini --help` / the CLI's own model list before relying on them."
+      "verified": "owner",
+      "verified_at": "2026-09-15",
+      "note": "The npm package @google/gemini-cli is dead for this purpose — Google cut free/Pro/Ultra individual access to it on 2026-06-18. The working client is Antigravity CLI (`agy`), which has no local catalog file for `doctor` to check automatically; `agy models` was run by hand on 2026-09-15 and its output copied below, with a real headless call confirmed against collab's own whoami on the cheapest rung (gemini-3.6-flash-low)."
     }
   },
   "models": [
@@ -212,69 +213,88 @@
       "note": "Previous generation, kept only as the last fallback when a rung is unavailable. Holds no rung of its own."
     },
     {
-      "ref": "gemini-flash-lite",
-      "id": "gemini-2.5-flash-lite",
+      "ref": "gemini-flash-low",
+      "id": "gemini-3.6-flash-low",
       "vendor": "google",
       "agent": "gemini",
       "level": "L0",
       "max_level": "L0",
-      "maturity": "unverified",
-      "verified": "unverified",
+      "maturity": "stable",
+      "verified": "owner",
       "modalities": ["text", "image"],
       "tool_use": true,
+      "effort": "low",
       "cost_class": "low",
       "latency_class": "fast",
       "fallback": null,
-      "note": "Bulk mechanical passes over many files. Id not confirmed on this machine."
+      "note": "Bulk mechanical passes over many files. Confirmed live 2026-09-15 via `agy models` and a real whoami call through collab."
     },
     {
-      "ref": "gemini-flash",
-      "id": "gemini-3-flash",
+      "ref": "gemini-flash-medium",
+      "id": "gemini-3.6-flash-medium",
       "vendor": "google",
       "agent": "gemini",
       "level": "L1",
       "max_level": "L1",
-      "maturity": "unverified",
-      "verified": "unverified",
+      "maturity": "stable",
+      "verified": "owner",
       "modalities": ["text", "image"],
       "tool_use": true,
+      "effort": "medium",
       "cost_class": "medium",
       "latency_class": "fast",
-      "fallback": "gemini-flash-lite",
-      "note": "Ordinary wide or visual analysis — many files, several screens, long logs. Id not confirmed on this machine."
+      "fallback": "gemini-flash-low",
+      "note": "Ordinary wide or visual analysis — many files, several screens, long logs. Confirmed live 2026-09-15 via `agy models`."
     },
     {
-      "ref": "gemini-pro",
-      "id": "gemini-3-pro",
+      "ref": "gemini-flash-high",
+      "id": "gemini-3.6-flash-high",
+      "vendor": "google",
+      "agent": "gemini",
+      "level": null,
+      "maturity": "stable",
+      "verified": "owner",
+      "modalities": ["text", "image"],
+      "tool_use": true,
+      "effort": "high",
+      "cost_class": "medium",
+      "latency_class": "medium",
+      "fallback": "gemini-flash-medium",
+      "note": "Holds no rung of its own — a real step between flash-medium and pro-low, kept only as the fallback pro-low degrades to. Confirmed live 2026-09-15 via `agy models`."
+    },
+    {
+      "ref": "gemini-pro-low",
+      "id": "gemini-3.1-pro-low",
       "vendor": "google",
       "agent": "gemini",
       "level": "L2",
       "max_level": "L2",
-      "maturity": "unverified",
-      "verified": "unverified",
+      "maturity": "stable",
+      "verified": "owner",
       "modalities": ["text", "image"],
       "tool_use": true,
+      "effort": "low",
       "cost_class": "high",
       "latency_class": "medium",
-      "fallback": "gemini-flash",
-      "note": "Independent deep analysis across a large context, where being a different vendor is the point. Id not confirmed on this machine."
+      "fallback": "gemini-flash-high",
+      "note": "Independent deep analysis across a large context, where being a different vendor is the point. Confirmed live 2026-09-15 via `agy models`; runs on the owner's Google AI Pro subscription."
     },
     {
-      "ref": "gemini-pro-max",
-      "id": "gemini-3-pro",
+      "ref": "gemini-pro-high",
+      "id": "gemini-3.1-pro-high",
       "vendor": "google",
       "agent": "gemini",
       "level": "L3",
       "max_level": "L3",
-      "maturity": "unverified",
-      "verified": "unverified",
+      "maturity": "stable",
+      "verified": "owner",
       "modalities": ["text", "image"],
       "tool_use": true,
-      "effort": "max",
+      "effort": "high",
       "cost_class": "highest",
       "latency_class": "slow",
-      "fallback": "gemini-pro",
-      "note": "The same model as gemini-pro with the most reasoning the CLI allows — which is why the key here is `ref` and not `id`. Neither the id nor the effort flag is confirmed on this machine."
+      "fallback": "gemini-pro-low",
+      "note": "The critical rung — arbitration and the hardest independent review. Confirmed live 2026-09-15 via `agy models`; runs on the owner's Google AI Pro subscription, with overage credits at Google's Enterprise Agent Platform pricing above the plan's baseline quota."
     }
   ]
 }

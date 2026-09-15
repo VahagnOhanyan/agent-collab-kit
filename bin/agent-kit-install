@@ -307,7 +307,7 @@ function makeContext(opts) {
     lockPath: path.join(home, '.agent-kit.lock'),
     serverPath: path.join(currentPath, SERVER_REL),
     codexConfig: path.join(home, '.codex', 'config.toml'),
-    geminiConfig: path.join(home, '.gemini', 'settings.json'),
+    geminiConfig: path.join(home, '.gemini', 'config', 'mcp_config.json'),
     claudeBin: opts.claudeBin || 'claude',
     source: path.resolve(opts.source || path.join(home, 'agent-kit'))
   }
@@ -1187,20 +1187,36 @@ function summarizeClaude(ctx, plan) {
   return plan.action !== 'ok' ? `claude: ${plan.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}` : null
 }
 
-// ── Gemini CLI: ~/.gemini/settings.json ─────────────────────────────────────
-// A JSON object, not TOML, so — unlike Codex — no line-scanner is needed:
-// mcpServers.collab is merged in structurally and every other top-level
-// setting (ide, security, ...) is kept exactly as parsed, never touched as
-// text.
+// ── Gemini (Google's Antigravity CLI, `agy`): ~/.gemini/config/mcp_config.json
+// The npm package `@google/gemini-cli` this used to target is gone: Google cut
+// free/Pro/Ultra individual access to it on 2026-06-18 and pointed everyone at
+// Antigravity CLI instead — a different, closed-source binary. Confirmed live
+// on this machine (agy 1.1.8, `brew install --cask antigravity-cli`): `agy mcp
+// add` writes exactly this file, in exactly this shape, and a real headless
+// call (`agy -p ... --model gemini-3.6-flash-low`) reached collab's `whoami`
+// through it. A JSON object, not TOML, so — unlike Codex — no line-scanner is
+// needed: mcpServers.collab is merged in structurally and every other
+// top-level key is kept exactly as parsed, never touched as text.
 
 function geminiServerEntry(ctx) {
   return { command: ctx.node.path, args: [ctx.serverPath], env: { COLLAB_AGENT_ID: 'gemini' } }
 }
 
+// `disabled` is agy's own toggle (`agy mcp disable collab`), not ours: an
+// install that ran after the owner disabled it must not silently re-enable
+// what they turned off. So it is excluded from the equality check below and
+// preserved verbatim from whatever is already on disk; only a fresh entry
+// gets the `disabled: false` agy itself would write for a new one.
+function geminiEqual(existing, desired) {
+  if (!existing) return false
+  const { disabled: _existingDisabled, ...existingRest } = existing
+  return jsonEqual(existingRest, desired)
+}
+
 // Structural equality for the JSON-shaped values compared here (plain
-// objects, arrays, strings): good enough that a settings.json re-saved by
-// the Gemini CLI itself, with keys in a different order, still reads as
-// "unchanged" instead of triggering a needless rewrite on the next install.
+// objects, arrays, strings): good enough that mcp_config.json re-saved by
+// agy itself, with keys in a different order, still reads as "unchanged"
+// instead of triggering a needless rewrite on the next install.
 function jsonEqual(a, b) {
   if (a === b) return true
   if (typeof a !== typeof b || a === null || b === null) return false
@@ -1242,8 +1258,10 @@ function planGemini(ctx) {
     throw new InstallError(`${ctx.geminiConfig} has a non-object "mcpServers" key. Fix it by hand.`)
   }
   const desired = geminiServerEntry(ctx)
-  const changed = !jsonEqual(servers?.collab, desired)
-  const next = { ...current, mcpServers: { ...(servers || {}), collab: desired } }
+  const existing = servers?.collab
+  const changed = !geminiEqual(existing, desired)
+  const entry = existing && typeof existing.disabled === 'boolean' ? { ...desired, disabled: existing.disabled } : { ...desired, disabled: false }
+  const next = { ...current, mcpServers: { ...(servers || {}), collab: entry } }
   return {
     file,
     exists: Boolean(st),

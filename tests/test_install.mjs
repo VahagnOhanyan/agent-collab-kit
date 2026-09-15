@@ -623,6 +623,73 @@ test('Codex config: the existing collab block is replaced, everything else byte-
   assert.equal(readdirSync(join(W.home, '.codex')).filter((f) => f.startsWith('config.toml.backup-')).length, 1, 'already correct: no write, no backup')
 })
 
+// The npm package `@google/gemini-cli` this targeted no longer exists for an
+// individual account (Google cut it off 2026-06-18); the working, already
+// authenticated client is Antigravity CLI (`agy`), confirmed live on
+// 2026-09-15 to read exactly this file in exactly this shape.
+const geminiEntry = (home) => ({
+  command: NODE,
+  args: [join(home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')],
+  env: { COLLAB_AGENT_ID: 'gemini' }
+})
+
+test('Gemini config: created fresh with disabled:false, an existing unrelated server and disabled:true are kept', () => {
+  const W = makeWorld('gemini-fresh')
+  let r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /gemini: created .*mcp_config\.json with mcpServers\.collab/)
+  const configPath = join(W.home, '.gemini', 'config', 'mcp_config.json')
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')), {
+    mcpServers: { collab: { ...geminiEntry(W.home), disabled: false } }
+  })
+
+  const again = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(again.status, 0, again.all)
+  assert.match(again.stdout, /changed: nothing/)
+  assert.equal(readFileSync(configPath, 'utf8').includes('gemini: created'), false)
+})
+
+test('Gemini config: an existing collab entry is updated, disabled:true and an unrelated server survive, backup written', () => {
+  const configDir = join('.gemini', 'config')
+  const original = JSON.stringify(
+    {
+      mcpServers: {
+        // Not ours: must survive byte-for-byte.
+        other: { command: 'other-server', args: [], env: {} },
+        // Stale command (an older release path) AND explicitly disabled by
+        // the owner via `agy mcp disable collab` — the install must fix the
+        // command without silently re-enabling what was turned off.
+        collab: { command: 'node', args: ['/old/path/server.mjs'], env: { COLLAB_AGENT_ID: 'gemini' }, disabled: true }
+      }
+    },
+    null,
+    2
+  ) + '\n'
+  const W = makeWorld('gemini-update')
+  mkdirSync(join(W.home, configDir), { recursive: true })
+  writeFileSync(join(W.home, configDir, 'mcp_config.json'), original)
+
+  const r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /gemini: updated mcpServers\.collab/)
+  const configPath = join(W.home, configDir, 'mcp_config.json')
+  const written = JSON.parse(readFileSync(configPath, 'utf8'))
+  assert.deepEqual(written.mcpServers.other, { command: 'other-server', args: [], env: {} }, 'unrelated server untouched')
+  assert.deepEqual(written.mcpServers.collab, { ...geminiEntry(W.home), disabled: true }, 'command fixed, disabled:true preserved')
+
+  const backups = readdirSync(join(W.home, configDir)).filter((f) => f.startsWith('mcp_config.json.backup-'))
+  assert.equal(backups.length, 1)
+  assert.equal(readFileSync(join(W.home, configDir, backups[0]), 'utf8'), original)
+
+  const again = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(again.status, 0, again.all)
+  assert.equal(
+    readdirSync(join(W.home, configDir)).filter((f) => f.startsWith('mcp_config.json.backup-')).length,
+    1,
+    'already correct (disabled:true and all): no write, no backup'
+  )
+})
+
 test('dry-run runs the checks and the smoke test but changes nothing', () => {
   const W = makeWorld('dry')
   const before = W.snapshot()
@@ -635,6 +702,7 @@ test('dry-run runs the checks and the smoke test but changes nothing', () => {
   assert.match(r.stdout, /link .*verifier\.md -> .*current\/agents\/verifier\.md \(create\)/)
   assert.match(r.stdout, /codex: append \[mcp_servers\.collab\]/)
   assert.match(r.stdout, /claude: add user-scope collab/)
+  assert.match(r.stdout, /gemini: create mcpServers\.collab/)
   assert.deepEqual(W.snapshot(), before)
   assert.ok(W.claudeCalls().every((argv) => argv[1] === 'get'))
 
