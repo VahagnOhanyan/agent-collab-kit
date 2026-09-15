@@ -13,7 +13,9 @@
 // so the caller can go and talk to them instead of guessing.
 
 import { CODES, CollabError } from '../errors.mjs'
+import { effectiveReviewRisk } from '../models.mjs'
 import { classifyAction } from '../policy.mjs'
+import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
 import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
@@ -52,12 +54,39 @@ export function projectTask(task, { now, leaseSeconds }) {
   }
 }
 
+// Derived on read, from things the layer knows for itself: how long each open
+// delegation has been running, and what the review risk EFFECTIVELY is once the
+// floor implied by the action class is applied to what the task declared. Both
+// are computed rather than stored so neither can drift away from the record.
+function withDerived(ctx, task) {
+  const risk = effectiveReviewRisk(ctx.config, {
+    declared: task.spec?.review_risk || null,
+    actionClass: task.action_class || null
+  })
+  const now = ctx.clock.now()
+  return {
+    ...task,
+    review_risk: risk.level,
+    review_risk_declared: task.spec?.review_risk || null,
+    review_risk_floor: risk.floor,
+    review_risk_raised_by_floor: risk.raised,
+    delegations: (task.delegations || []).map((d) => ({
+      ...d,
+      running_ms: d.finished_at ? null : Math.max(0, now - Date.parse(d.started_at)),
+      took_ms: d.finished_at ? Math.max(0, Date.parse(d.finished_at) - Date.parse(d.started_at)) : null
+    }))
+  }
+}
+
 const project = (ctx, task) =>
   task
-    ? projectTask(task, {
-        now: ctx.clock.now(),
-        leaseSeconds: ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
-      })
+    ? withDerived(
+        ctx,
+        projectTask(task, {
+          now: ctx.clock.now(),
+          leaseSeconds: ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
+        })
+      )
     : null
 
 export function getTask(ctx, id) {
@@ -84,11 +113,12 @@ export function listTasks(ctx, { status = null, owner = null, role = null, open 
 }
 
 export function createTask(ctx, input) {
-  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, files = [], depends_on = [] } = input
+  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, files = [], depends_on = [], spec = null } = input
   if (!title || title.length < 3) {
     throw new CollabError(CODES.INVALID_INPUT, 'a task needs a title that says what is to be done')
   }
   if (role) ctx.registry.role(role)
+  const taskSpec = normaliseSpec(ctx.config, spec)
 
   // Classification is computed here, from the table — never taken from the
   // caller. An agent that supplies its own action_class has it ignored.
@@ -112,6 +142,7 @@ export function createTask(ctx, input) {
       approval_id: null,
       files,
       depends_on,
+      spec: taskSpec,
       lease: null,
       git_base: null,
       branch: null,
@@ -119,10 +150,20 @@ export function createTask(ctx, input) {
       waiting_on: null
     })
     touchAgent(tx, ctx)
+    // The spec itself is deliberately NOT in the payload: an event is capped at
+    // 16 KB and a truncated one loses the whole `data`, so what goes here is the
+    // three levels, which is what a later reading of the journal needs.
     tx.emit('task.created', { collection: 'tasks', id: task.id }, {
       title,
       action_class: verdict.action_class,
-      requires_approval: verdict.requires_approval
+      requires_approval: verdict.requires_approval,
+      levels: taskSpec
+        ? {
+            complexity: taskSpec.complexity || null,
+            implementation_risk: taskSpec.implementation_risk || null,
+            review_risk: taskSpec.review_risk || null
+          }
+        : null
     })
     return project(ctx, task)
   })
@@ -228,6 +269,10 @@ export function assignTask(ctx, { task_id, to_agent = null, role = null, capabil
 }
 
 export function updateTask(ctx, { task_id, status = null, expected_version, note = null, reason = null, patch = {} }) {
+  // Shape-checked before the lock, like the title in createTask: a malformed
+  // patch has no business first taking a transaction on a shared journal. The
+  // merge itself needs the stored spec, so it happens again inside.
+  if (patch.spec !== undefined) normaliseSpec(ctx.config, patch.spec)
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
@@ -235,6 +280,12 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
     // Field edits (title, description, files…) by any agent keep their old
     // behaviour. STATUS changes do not: see below.
     const fields = { ...task, ...pick(patch, ['title', 'description', 'priority', 'files', 'depends_on', 'branch', 'waiting_on']) }
+    // `spec` is merged, not replaced: it is filled in as the work is understood,
+    // and having to re-send the whole thing to add one criterion is how a field
+    // like this ends up unused. It is handled here rather than in `pick` for
+    // that reason — and because a field the MCP layer does not validate must be
+    // normalised before it reaches the disk, or it silently stores nonsense.
+    if (patch.spec !== undefined) fields.spec = normaliseSpec(ctx.config, patch.spec, task.spec)
     let admission = null
     if (status && status !== task.status) {
       const pendingApproval =
@@ -261,7 +312,8 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
   })
 }
 
-export function completeTask(ctx, { task_id, summary = '', expected_version }) {
+export function completeTask(ctx, { task_id, summary = '', evidence = null, expected_version }) {
+  const bundle = normaliseEvidence(evidence)
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
     if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
@@ -272,11 +324,15 @@ export function completeTask(ctx, { task_id, summary = '', expected_version }) {
     assertTransition(task, TASK_STATUS.COMPLETED, { pendingApproval })
     const next = tx.put(
       'tasks',
-      { ...task, status: TASK_STATUS.COMPLETED, lease: null, completion_summary: summary },
+      { ...task, status: TASK_STATUS.COMPLETED, lease: null, completion_summary: summary, evidence: bundle },
       { expectedVersion: expected_version }
     )
     touchAgent(tx, ctx, { status: 'available', current_task_id: null })
-    tx.emit('task.completed', { collection: 'tasks', id: task_id }, { by: ctx.agentId, summary })
+    tx.emit('task.completed', { collection: 'tasks', id: task_id }, {
+      by: ctx.agentId,
+      summary,
+      unverified: bundle?.unverified?.length || 0
+    })
     return project(ctx, next)
   })
 }

@@ -16,12 +16,28 @@
 // keeping it there means one read answers "what happened to this task".
 
 import { CODES, CollabError } from '../errors.mjs'
+import { resolveModel } from '../models.mjs'
 import { assertNoSecret } from '../policy.mjs'
 import { TERMINAL } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { assertOwnerOrContributor } from './gate.mjs'
+import { boundaryWarnings } from './spec.mjs'
 
 const MAX = 120
+
+// The level this subtask was judged to be, if one was named. Checked against the
+// declared ladder, because a level nobody declared cannot be counted later.
+function declaredLevel(config, value) {
+  if (value === undefined || value === null || value === '') return null
+  const levels = config.models?.levels || {}
+  if (!levels[value]) {
+    throw new CollabError(CODES.INVALID_INPUT, `level "${value}" is not a declared level — list_models says what they are`, {
+      value,
+      known: Object.keys(levels)
+    })
+  }
+  return value
+}
 
 function label(value, field) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -51,15 +67,25 @@ function brief(value, field) {
   return clean
 }
 
-export function addDelegation(ctx, { task_id, to, model, purpose = '' }) {
+export function addDelegation(ctx, { task_id, to, model, purpose = '', level = null, reasons = '', fallback_from = null }) {
   const target = label(to, 'the subagent it goes to')
   // The model is REQUIRED, and that is the point of the field. Project agents
-  // declare `model: inherit`, so a delegation with no model named is not "the
-  // system chose sensibly" — it is the lead's own model, the most expensive
-  // option, taken by omission.
+  // declare a default model, so a delegation with no model named is not "the
+  // system chose sensibly" — it is whatever the lead happened to be running,
+  // taken by omission.
   const chosen = label(model, 'the model it runs on')
+  // Resolved against the registry so the journal can be counted later instead of
+  // being a pile of near-synonyms: `sonnet`, `claude-sonnet-5` and
+  // `gpt-5.6-terra (effort high)` all became separate strings in it before this.
+  // An unknown name is kept as named and marked unknown — that is a fact the
+  // owner wants to see, not an error to refuse.
+  const resolved = resolveModel(ctx.config, chosen)
+  const rung = declaredLevel(ctx.config, level)
+  const fallbackFrom = fallback_from ? label(fallback_from, 'the model this fell back from') : null
   assertNoSecret(purpose, 'delegation purpose')
   const why = brief(purpose, 'the delegation purpose')
+  assertNoSecret(reasons, 'delegation reasons')
+  const chose = brief(reasons, 'the reason for this executor and model')
 
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
@@ -78,27 +104,41 @@ export function addDelegation(ctx, { task_id, to, model, purpose = '' }) {
       id: `d${existing.length + 1}`,
       to: target,
       model: chosen,
+      model_ref: resolved.ref,
+      model_id: resolved.id,
+      model_known: resolved.known,
+      effort: resolved.effort,
+      level: rung,
+      reasons: chose,
+      fallback_from: fallbackFrom,
       purpose: why,
       by: ctx.agentId,
       started_at: tx.iso(),
       finished_at: null,
-      outcome: null
+      outcome: null,
+      rework_required: null
     }
     tx.put('tasks', { ...task, delegations: [...existing, delegation] })
     touchAgent(tx, ctx)
     tx.emit('task.delegated', { collection: 'tasks', id: task_id }, {
       to: target,
       model: chosen,
+      model_ref: resolved.ref,
+      level: rung,
+      fallback_from: fallbackFrom,
       by: ctx.agentId,
       purpose: delegation.purpose
     })
-    return { task_id, delegation }
+    return { task_id, delegation, warnings: boundaryWarnings(task, { what: 'the work' }) }
   })
 }
 
-export function completeDelegation(ctx, { task_id, delegation_id, outcome = '' }) {
+export function completeDelegation(ctx, { task_id, delegation_id, outcome = '', rework_required = null }) {
   assertNoSecret(outcome, 'delegation outcome')
   const summary = brief(outcome, 'the delegation outcome')
+  if (rework_required !== null && rework_required !== undefined && typeof rework_required !== 'boolean') {
+    throw new CollabError(CODES.INVALID_INPUT, 'rework_required is true or false', { rework_required })
+  }
 
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)
@@ -120,13 +160,21 @@ export function completeDelegation(ctx, { task_id, delegation_id, outcome = '' }
         finished_at: found.finished_at
       })
     }
-    const closed = { ...found, finished_at: tx.iso(), outcome: summary || 'finished' }
+    const closed = {
+      ...found,
+      finished_at: tx.iso(),
+      outcome: summary || 'finished',
+      rework_required: rework_required ?? null
+    }
     tx.put('tasks', { ...task, delegations: existing.map((d) => (d.id === delegation_id ? closed : d)) })
     touchAgent(tx, ctx)
     tx.emit('task.delegation_closed', { collection: 'tasks', id: task_id }, {
       delegation_id,
       to: closed.to,
       model: closed.model,
+      model_ref: closed.model_ref || null,
+      level: closed.level || null,
+      rework_required: closed.rework_required,
       outcome: closed.outcome
     })
     return { task_id, delegation: closed }

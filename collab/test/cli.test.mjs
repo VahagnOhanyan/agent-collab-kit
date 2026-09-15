@@ -93,12 +93,27 @@ test('task shows the review round and its findings', async () => {
       review_id: review.review.id,
       verdict: 'changes_requested',
       summary: 'One path is unhandled.',
-      findings: [{ severity: 'major', file: 'a.js', line: 12, note: 'This throw escapes.' }]
+      findings: [
+        { severity: 'major', file: 'a.js', line: 12, note: 'This throw escapes.' },
+        {
+          severity: 'major',
+          file: 'b.js',
+          line: 4,
+          note: 'The retry loses the cause.',
+          evidence: 'the catch at b.js:9 rethrows a new Error without `cause`',
+          recommendation: 'pass the original as cause'
+        }
+      ]
     })
     const result = run(w, ['task', task.id])
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /changes_requested/)
-    assert.match(result.stdout, /\[major\] a\.js:12 This throw escapes\./)
+    // Severity is left as filed and confidence is printed beside it: a finding
+    // with nothing to show for it reads as unproven rather than as a blocker.
+    assert.match(result.stdout, /\[major\/hypothesis\] a\.js:12 This throw escapes\./)
+    assert.match(result.stdout, /\[major\/likely\] b\.js:4 The retry loses the cause\./)
+    assert.match(result.stdout, /shown by: the catch at b\.js:9/)
+    assert.match(result.stdout, /do: pass the original as cause/)
   } finally {
     w.cleanup()
   }

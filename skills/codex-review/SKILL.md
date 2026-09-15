@@ -54,7 +54,7 @@ codex exec --skip-git-repo-check -s read-only -m gpt-5.6-sol -C "<tree>" \
 
 - `run_in_background: true` — a review takes minutes. Never `sleep`-poll.
 - `-s read-only`: Codex reads code and runs read-only commands; `submit_review` still works because the MCP server runs outside the sandbox.
-- `gpt-5.6-sol` is the default model. Raising it is fine on your own judgement; moving to the stronger "Astra" tier needs the cost named to the owner and a yes first — never swap it in silently.
+- `gpt-5.6-sol` is the **L2 rung** for this vendor and the default for a review — most reviews belong there. Do not name a model from memory: `collab models` is the ladder, and `collab doctor` says whether the ids in it are still true. Dropping to L1 (`terra`) is fine for a small local diff on your own judgement; the L3 rung (`astra`) needs the cost named to the owner and a yes first — never swap it in silently.
 - Several pending reviews → run them one after another, not in parallel (each spends the plan's Codex allowance).
 - `-i` takes several values: always put the prompt BEFORE any `-i`.
 - The review run keeps the `collab` MCP server ON: Codex needs it for `whoami`, `get_messages`, `get_task` and `submit_review` — without it the verdict never reaches the journal. Any other Codex run from this skill that does not need collab (an ad-hoc question, a dry run of the prompt) gets `-c mcp_servers.collab.enabled=false`, so it cannot read or write the journal as `codex`.

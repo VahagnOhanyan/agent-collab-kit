@@ -53,7 +53,8 @@ const STATUS_COLOUR = {
   changes_requested: C.yellow,
   waiting_for_user: C.yellow,
   waiting_for_agent: C.yellow,
-  nothing_ran: C.yellow
+  nothing_ran: C.yellow,
+  released: C.yellow
 }
 const paint = (status) => `${STATUS_COLOUR[status] || ''}${status}${C.off}`
 
@@ -210,7 +211,12 @@ const COMMANDS = {
       // layer never started these and cannot check which model actually ran.
       out('', `${C.bold}delegations${C.off} ${dim('(declared by the lead, not verified)')}`)
       for (const d of s.delegations) {
-        out(`  ${d.by} -> ${d.to} ${dim(`(${d.model})`)}  ${d.task_id}`, dim(`  ${' '.repeat(6)} ${d.purpose || d.task_title}`))
+        const rung = d.level ? ` ${dim(d.level)}` : ''
+        const unknown = d.model_known === false ? ` ${C.yellow}model unknown to the registry${C.off}` : ''
+        out(
+          `  ${d.by} -> ${d.to} ${dim(`(${d.model})`)}${rung}${unknown}  ${d.task_id}`,
+          dim(`  ${' '.repeat(6)} ${d.purpose || d.task_title}`)
+        )
       }
     }
 
@@ -261,11 +267,63 @@ const COMMANDS = {
     )
     if (task.blocked_reason) out(`${C.red}blocked${C.off}      ${task.blocked_reason}`)
     if (task.waiting_on) out(`${C.yellow}waiting on${C.off}   ${task.waiting_on.kind} ${task.waiting_on.ref}`)
+
+    const spec = task.spec
+    if (spec) {
+      const levels = [
+        spec.complexity ? `complexity ${spec.complexity}` : null,
+        spec.implementation_risk ? `implementation ${spec.implementation_risk}` : null,
+        task.review_risk ? `review ${task.review_risk}${task.review_risk_raised_by_floor ? ` ${C.yellow}(floored by ${task.action_class})${C.off}` : ''}` : null
+      ].filter(Boolean)
+      out('', `${C.bold}levels${C.off} ${dim('(declared by the lead, not verified)')}`)
+      out(`  ${levels.join('  ')}` || dim('  none declared'))
+      if (spec.classification_reason) out(dim(`  ${spec.classification_reason}`))
+      for (const [field, title] of [
+        ['acceptance_criteria', 'done when'],
+        ['non_goals', 'not this'],
+        ['constraints', 'constraints'],
+        ['assumptions', 'assumed']
+      ]) {
+        if (!spec[field]?.length) continue
+        out('', `${C.bold}${title}${C.off}`)
+        for (const item of spec[field]) out(`  · ${item}`)
+      }
+    } else if (task.review_risk) {
+      out(`review risk  ${task.review_risk} ${dim(`(floor from ${task.action_class}; none declared)`)}`)
+    }
+
+    if ((task.runs || []).length) {
+      out('', `${C.bold}checks${C.off} ${dim('(runs recorded against this task)')}`)
+      for (const r of task.runs) out(`  ${r.runner.padEnd(20)} ${paint(r.status)}  ${dim(r.headline || '')}`)
+    }
+
+    const bundle = task.evidence
+    if (bundle) {
+      out('', `${C.bold}evidence${C.off}`)
+      for (const c of bundle.criteria_status || []) out(`  ${paint(c.status).padEnd(18)} ${c.criterion}`)
+      for (const [field, title] of [
+        ['unverified', 'NOT checked'],
+        ['limitations', 'does not handle'],
+        ['risks', 'could still break']
+      ]) {
+        for (const item of bundle[field] || []) out(`  ${C.yellow}${title}${C.off}  ${item}`)
+      }
+    }
+
     if ((task.delegations || []).length) {
       out('', `${C.bold}delegations${C.off}`)
       for (const d of task.delegations) {
         const state = d.finished_at ? d.outcome || 'finished' : `${C.yellow}running${C.off}`
-        out(`  ${d.id}  ${d.to} ${dim(`(${d.model})`)}  ${state}`, dim(`      ${d.purpose || '(no purpose given)'}`))
+        const model = d.model_known === false ? `${d.model} ${C.yellow}unknown to the registry${C.off}` : d.model
+        const extra = [
+          d.level ? `level ${d.level}` : null,
+          d.effort ? `effort ${d.effort}` : null,
+          d.fallback_from ? `${C.yellow}fallback from ${d.fallback_from}${C.off}` : null,
+          d.rework_required === true ? `${C.red}rework was needed${C.off}` : null
+        ].filter(Boolean)
+        out(`  ${d.id}  ${d.to} ${dim(`(${model})`)}  ${state}${extra.length ? `  ${extra.join(' · ')}` : ''}`)
+        out(dim(`      ${d.purpose || '(no purpose given)'}`))
+        if (d.reasons) out(dim(`      why: ${d.reasons}`))
       }
     }
 
@@ -273,8 +331,22 @@ const COMMANDS = {
     if (reviews.length) {
       out('', `${C.bold}reviews${C.off}`)
       for (const r of reviews) {
-        out(`  round ${r.round}  ${r.reviewer}  ${paint(r.verdict)}  ${dim(r.summary || '')}`)
-        for (const f of r.findings || []) out(`    [${f.severity}] ${f.file || '—'}${f.line ? `:${f.line}` : ''} ${f.note}`)
+        const slot = r.slot ? ` ${dim(`slot ${r.slot}`)}` : ''
+        const gate = r.blocking === false ? ` ${dim('(not blocking)')}` : ''
+        out(`  round ${r.round}  ${r.reviewer}${slot}${gate}  ${paint(r.verdict)}  ${dim(r.summary || '')}`)
+        for (const f of r.findings || []) {
+          // A finding with no evidence reads as what it is: unproven. Severity is
+          // left as filed, so nothing is hidden by the normalisation. A finding
+          // written before confidence existed shows none — printing a default
+          // would put a claim in a reviewer's mouth that they never made.
+          const conf = f.confidence
+            ? `/${f.confidence === 'hypothesis' ? `${C.yellow}hypothesis${C.off}` : dim(f.confidence)}`
+            : ''
+          out(`    [${f.severity}${conf}] ${f.file || '—'}${f.line ? `:${f.line}` : ''} ${f.note}`)
+          if (f.evidence) out(dim(`        shown by: ${f.evidence}`))
+          if (f.criterion) out(dim(`        criterion: ${f.criterion}`))
+          if (f.recommendation) out(dim(`        do: ${f.recommendation}`))
+        }
       }
     }
     const messages = await api.getMessages({ task_id: task.id, agent_id: task.owner || api.agentId })
@@ -328,13 +400,13 @@ const COMMANDS = {
         task_id: r.task_id,
         round: r.round,
         verdict: r.verdict,
-        status: r.verdict !== 'pending' ? 'answered' : finished ? 'stale' : 'pending',
+        status: r.verdict === 'released' ? 'released' : r.verdict !== 'pending' ? 'answered' : finished ? 'stale' : 'pending',
         author: r.author,
         reviewer: r.reviewer,
         requested_by: r.requested_by,
         created_at: r.created_at,
         submitted_at: r.submitted_at || null,
-        summary: r.summary || null,
+        summary: r.summary || r.release_reason || null,
         task_title: task ? task.title : null,
         task_status: task ? task.status : null
       }
@@ -347,6 +419,14 @@ const COMMANDS = {
       out(dim(`   ${r.task_title || '(task no longer exists)'}`))
       if (r.summary) out(dim(`   ${r.summary}`))
     }
+  },
+
+  // A stuck review the owner sees in `collab reviews --pending` and wants
+  // cleared by hand, rather than through the agent that requested or was routed
+  // it. `collab task <id>` names the review id this takes.
+  async 'release-review'(api, { args, flags }) {
+    const result = await api.releaseReview({ review_id: args[0], reason: flags.reason || flags.why || '' })
+    out(`${C.yellow}released${C.off} ${result.review.id}${result.task_status ? dim(`  task now ${result.task_status}`) : ''}`)
   },
 
   async decisions(api, { flags }) {
@@ -410,6 +490,28 @@ const COMMANDS = {
     out(`${run.runner}  ${paint(run.status)}  ${run.result?.headline || ''}`, dim(run.command), '', run.log_tail || '')
   },
 
+  // The ladder, for a human or a script that needs a model name and should not
+  // carry one in its own source. `doctor` says whether the ids are still true.
+  async models(api, { flags }) {
+    const answer = api.listModels()
+    if (flags.json) return out(JSON.stringify(answer, null, 2))
+    for (const level of answer.levels) {
+      out(`${C.bold}${level.id}${C.off} ${dim(level.summary)}`)
+      for (const ref of level.models) {
+        const model = answer.models.find((m) => m.ref === ref)
+        const caveat = model.verified === 'unverified' ? ` ${C.yellow}unverified${C.off}` : ''
+        const effort = model.effort ? ` ${dim(`effort ${model.effort}`)}` : ''
+        out(`  ${ref.padEnd(18)} ${model.id.padEnd(28)} ${dim(`${model.vendor} · ${model.agent} · ${model.cost_class}`)}${effort}${caveat}`)
+      }
+      out('')
+    }
+    const spare = answer.models.filter((m) => !m.level)
+    if (spare.length) out(dim(`no rung of their own (fallback only): ${spare.map((m) => m.ref).join(', ')}`), '')
+    for (const vendor of answer.vendors) {
+      if (!vendor.checkable) out(dim(`${vendor.name}: no catalog here — ids are ${vendor.verified || 'unconfirmed'}, see collab doctor`))
+    }
+  },
+
   async log(api, { flags }) {
     for (const e of api.events({ limit: Number(flags.tail || 40) })) {
       out(`${dim(e.ts)}  ${e.actor.padEnd(8)} ${C.bold}${e.type.padEnd(22)}${C.off} ${e.subject?.id || ''} ${dim(JSON.stringify(e.data))}`)
@@ -468,6 +570,26 @@ const COMMANDS = {
     out('', `${C.bold}runners${C.off}`)
     if (!report.runners.length) out(dim('  none — declare them in the project registry entry'))
     for (const r of report.runners) out(`  ${r.id.padEnd(22)} ${dim(r.summary)}`)
+    out('', `${C.bold}models${C.off} ${dim('(the level ladder; ids are checked against the vendor where that is possible)')}`)
+    for (const v of report.models || []) {
+      const mark =
+        v.status === 'ok'
+          ? `${C.green}ok${C.off}`
+          : v.status === 'drift'
+            ? `${C.red}drift${C.off}`
+            : v.status === 'unreadable'
+              ? `${C.yellow}unreadable${C.off}`
+              : `${C.yellow}unverifiable${C.off}`
+      out(`  ${v.vendor.padEnd(12)} ${mark}  ${dim(`${v.declared} model${v.declared === 1 ? '' : 's'} for ${v.agent}`)}`)
+      if (v.status === 'drift') {
+        out(`  ${' '.repeat(12)} ${C.red}gone from the catalog:${C.off} ${v.missing.join(', ')}`)
+      }
+      if (v.appeared?.length) out(`  ${' '.repeat(12)} ${dim(`the catalog also has: ${v.appeared.join(', ')}`)}`)
+      if (v.detail) out(`  ${' '.repeat(12)} ${dim(v.detail)}`)
+      if (v.status === 'unverifiable' && ['owner', 'catalog'].includes(v.verified)) {
+        out(`  ${' '.repeat(12)} ${dim(`verified by ${v.verified}${v.verified_at ? ` on ${v.verified_at}` : ''} — not re-checked here`)}`)
+      }
+    }
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
     }
@@ -493,6 +615,7 @@ const COMMANDS = {
       '  inbox [agent]          messages addressed to an agent',
       '  thread <id>            one conversation',
       '  reviews [--reviewer <agent>] [--pending] [--task <id>] [--json]  reviews, verdicts and their tasks (read-only)',
+      '  release-review <id> [--reason "..."]  void a stuck pending review; gating it moves the task to blocked',
       '  decisions [--status]   decisions and open disagreements',
       '  approvals              what is waiting on you',
       `  approve <id>           ${C.yellow}authorise a request. Interactive terminal only${C.off}`,
@@ -500,6 +623,7 @@ const COMMANDS = {
       '  decide <id> <outcome>  settle a disagreement the agents could not',
       '  runs [--failed]        check results',
       '  run <id>               one check result with its log tail',
+      '  models [--json]        what each level (L0..L3) means per vendor — ask here instead of naming a model from memory',
       '  log [--tail N]         the audit log',
       '  brief [agent]          what an agent is told about itself — paste this into a new session',
       '  doctor                 roots, config source, agents, adapters, what is unavailable and how to fix it',

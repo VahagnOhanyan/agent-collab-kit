@@ -42,6 +42,56 @@ const TASK_STATUSES = [
   'cancelled'
 ]
 
+const LEVELS = ['L0', 'L1', 'L2', 'L3']
+
+// Mirrors domain/reviews.mjs SLOTS, the way TASK_STATUSES below mirrors
+// transitions.mjs: this file deliberately imports nothing, so the two lists are
+// kept identical by a test (test/routing.test.mjs) rather than by an import.
+const SLOTS = [
+  'requirements',
+  'architecture',
+  'implementation',
+  'tests',
+  'ui',
+  'consistency',
+  'security',
+  'challenger'
+]
+
+// What "done" means, and how hard the work was judged to be. Every field is
+// optional and a task without it behaves as before; it earns its keep when the
+// work crosses an agent boundary, which is when a reviewer has to tell drift
+// from intent. The three levels are the LEAD'S OWN READING — the layer cannot
+// compute how hard a task is. It checks only that a level is a declared one and
+// that a review risk is not claimed below the floor the policy table implies.
+const SPEC = object({
+  acceptance_criteria: arr('What must be true for this to be done. Reviewers check findings against these.', { type: 'string' }),
+  non_goals: arr('What this deliberately does NOT do, so a second agent does not "fix" it.', { type: 'string' }),
+  constraints: arr('What the implementation may not do — a pinned version, a boundary, a forbidden path.', { type: 'string' }),
+  assumptions: arr('What is taken as true without checking. The first place to look when the result is wrong.', { type: 'string' }),
+  complexity: str('How hard the work is: L0 mechanical, L1 ordinary, L2 hard, L3 critical. list_models has the ladder.', {
+    enum: LEVELS
+  }),
+  implementation_risk: str('How easily this is done WRONG, which is not the same as how hard it is.', { enum: LEVELS }),
+  review_risk: str('What a missed mistake would cost. One line in auth is L3 however small the diff.', { enum: LEVELS }),
+  classification_reason: str('One line on why those levels — read later to see whether the reading was right.')
+})
+
+const EVIDENCE = object({
+  criteria_status: arr('Per acceptance criterion: met, not_met or unverified.', {
+    type: 'object',
+    properties: {
+      criterion: str('The criterion, as written on the task.'),
+      status: str('met, not_met or unverified.', { enum: ['met', 'not_met', 'unverified'] })
+    },
+    required: ['criterion', 'status'],
+    additionalProperties: false
+  }),
+  unverified: arr('What was NOT checked. "Tests not run" is a better report than "should work".', { type: 'string' }),
+  limitations: arr('What this knowingly does not handle.', { type: 'string' }),
+  risks: arr('What could still break because of this.', { type: 'string' })
+})
+
 const MESSAGE_TYPES = [
   'question',
   'answer',
@@ -128,7 +178,8 @@ export const TOOLS = [
         needs_review: bool('Whether it must pass an independent review before it can be completed. Defaults to true.'),
         action: str('The concrete action, if it differs from the title. This is what gets classified.'),
         files: arr('Files or directories this work will touch.', { type: 'string' }),
-        depends_on: arr('Task ids this one waits for.', { type: 'string' })
+        depends_on: arr('Task ids this one waits for.', { type: 'string' }),
+        spec: SPEC
       },
       ['title']
     ),
@@ -207,7 +258,8 @@ export const TOOLS = [
           description: str('New description.'),
           priority: str('New priority.', { enum: ['p0', 'p1', 'p2', 'p3'] }),
           files: arr('Replacement file list.', { type: 'string' }),
-          branch: str('The branch this work lives on.')
+          branch: str('The branch this work lives on.'),
+          spec: SPEC
         })
       },
       ['task_id']
@@ -220,8 +272,18 @@ export const TOOLS = [
     title: 'Finish a task',
     description:
       'Mark work done. Refused if it still needs a review that has not been approved, or if the owner has not answered ' +
-      'an approval it is waiting on — so "completed" always means what it says.',
-    inputSchema: object({ task_id: str('The task id.'), summary: str('What was done and what was verified.'), expected_version: int('The version you read.') }, ['task_id']),
+      'an approval it is waiting on — so "completed" always means what it says. The evidence asked for here is only the ' +
+      'part the layer cannot see for itself: which criteria you believe are met and what you did NOT check. Changed ' +
+      'files are in git and the checks are in the runs, and get_task already attaches those.',
+    inputSchema: object(
+      {
+        task_id: str('The task id.'),
+        summary: str('What was done and what was verified.'),
+        evidence: EVIDENCE,
+        expected_version: int('The version you read.')
+      },
+      ['task_id']
+    ),
     annotations: WRITE,
     handler: (input, api) => api.completeTask(input)
   },
@@ -262,8 +324,17 @@ export const TOOLS = [
       {
         task_id: str('The task the work belongs to.'),
         to: str('The subagent, e.g. "ios-implementer", "verifier", "Explore".'),
-        model: str('The model it runs on, e.g. "haiku", "sonnet", "opus", "fable". Required: omitting it is how work quietly inherits the most expensive model.'),
-        purpose: str('One line on what it was asked to do.')
+        model: str(
+          'The model it runs on, as a ref or id from list_models ("sonnet", "terra", "gpt-5.6-sol"). Required: omitting ' +
+            'it is how work quietly runs on whatever the lead happens to be, which is the most expensive option. An ' +
+            'unrecognised name is kept as written and marked unknown rather than refused.'
+        ),
+        purpose: str('One line on what it was asked to do.'),
+        level: str('The level this subtask was judged to be. Escalating past the task level is a choice worth recording.', {
+          enum: LEVELS
+        }),
+        reasons: str('Why this executor and this model — read later to see whether the escalation was worth it.'),
+        fallback_from: str('The model originally chosen, if this one is a fallback after a limit, an outage or an error.')
       },
       ['task_id', 'to', 'model']
     ),
@@ -278,7 +349,8 @@ export const TOOLS = [
       {
         task_id: str('The task the delegation is on.'),
         delegation_id: str('The delegation id returned by add_delegation.'),
-        outcome: str('How it went, in one line.')
+        outcome: str('How it went, in one line.'),
+        rework_required: bool('Whether its output had to be redone. This is what tells the owner a rung was too low — or too high.')
       },
       ['task_id', 'delegation_id']
     ),
@@ -363,8 +435,21 @@ export const TOOLS = [
         reviewer_role: str('The role you need. Defaults to code_reviewer.'),
         reviewer_capability: str('Or select by capability instead.'),
         reviewer_agent: str('A specific agent, when you genuinely mean that one. Prefer role.'),
-        instructions: str('What to look at and what you are unsure about.'),
-        scope: arr('Files the reviewer should read.', { type: 'string' })
+        instructions: str(
+          'What to look at and what you are unsure about. Read LAST by the reviewer and labelled as your claim: the ' +
+            'acceptance criteria and the checks that ran come first, so your account cannot anchor the review.'
+        ),
+        scope: arr('Files the reviewer should read.', { type: 'string' }),
+        slot: str(
+          'Which question this review answers, when more than one needs answering: requirements, architecture, ' +
+            'implementation, tests, ui, consistency, security or challenger. How many a task deserves is judgement.',
+          { enum: SLOTS }
+        ),
+        blocking: bool(
+          'Whether this is the review that gates the task. Defaults to true, which is the old behaviour. Ask for extra ' +
+            'slots with false: they record a verdict beside the task without moving it, so a reviewer that never answers ' +
+            'cannot strand the work.'
+        )
       },
       ['task_id']
     ),
@@ -376,7 +461,9 @@ export const TOOLS = [
     title: 'Return a review verdict',
     description:
       'Answer a review routed to you: approved, or changes_requested with at least one finding. A changes_requested ' +
-      'with no findings is refused — it tells the author nothing. The task moves with your verdict, in the same write.',
+      'with no findings is refused — it tells the author nothing. A gating review moves the task with your verdict, in ' +
+      'the same write; a slot records it beside the task. A finding with no evidence is stored as a hypothesis, however ' +
+      'it was labelled — say what SHOWS it if you want it to block.',
     inputSchema: object(
       {
         review_id: str('The review id from the request.'),
@@ -386,9 +473,19 @@ export const TOOLS = [
           type: 'object',
           properties: {
             severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+            confidence: {
+              type: 'string',
+              enum: ['proven', 'likely', 'hypothesis'],
+              description: 'How sure you are. Without evidence this is recorded as hypothesis whatever you put here.'
+            },
             file: { type: 'string' },
             line: { type: 'integer' },
-            note: { type: 'string' }
+            note: { type: 'string' },
+            criterion: { type: 'string', description: 'The acceptance criterion this is about, if it is about one.' },
+            evidence: { type: 'string', description: 'What shows it: a failing path, a run, a line of code. No evidence, no blocker.' },
+            repro: { type: 'string', description: 'The shortest way to see it happen.' },
+            impact: { type: 'string', description: 'What goes wrong for a user or a caller.' },
+            recommendation: { type: 'string', description: 'What to do instead.' }
           },
           required: ['note'],
           additionalProperties: false
@@ -398,6 +495,21 @@ export const TOOLS = [
     ),
     annotations: WRITE,
     handler: (input, api) => api.submitReview(input)
+  },
+  {
+    name: 'release_review',
+    title: 'Withdraw a review nobody is going to answer',
+    description:
+      'Void a pending review instead of leaving it stuck: the reviewer is offline for good, hit a limit, or the ' +
+      'question no longer applies. The reviewer, the requester, or the task\'s owner/a contributor may do this — the ' +
+      'same people who could have asked for it. Releasing the review that GATES the task moves it to blocked with the ' +
+      'reason, rather than leaving it silently "in review" waiting on nothing; a non-blocking slot just disappears.',
+    inputSchema: object(
+      { review_id: str('The review id.'), reason: str('Why — recorded, and used as the block reason if this was gating the task.') },
+      ['review_id']
+    ),
+    annotations: WRITE,
+    handler: (input, api) => api.releaseReview(input)
   },
   {
     name: 'list_reviews',
@@ -515,6 +627,18 @@ export const TOOLS = [
     handler: (input, api) => api.listApprovals(input)
   },
 
+  {
+    name: 'list_models',
+    title: 'What each level of difficulty means, per vendor',
+    description:
+      'The level ladder (L0 mechanical, L1 ordinary, L2 hard, L3 critical) and which model each level means for each ' +
+      'vendor, with maturity, cost and fallback. Ask here instead of naming a model from memory: line-ups drift, and ' +
+      'the level is what the rules are written in. This is a list to choose FROM — nothing here starts anything, and ' +
+      'the layer cannot verify which model actually ran.',
+    inputSchema: object({}),
+    annotations: READ,
+    handler: (_input, api) => api.listModels()
+  },
   {
     name: 'list_runners',
     title: 'Which checks can be run',

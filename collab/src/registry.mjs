@@ -12,9 +12,10 @@
 // The merge rule is WHOLE-FILE REPLACEMENT: a file present in 1 or 2 replaces
 // the built-in file of the same name, and a missing one falls back to it. There
 // is no deep merge, so no partial rule can slip in between two layers. Nothing
-// from the project repository itself is ever read. Two things a replacement can
-// NOT do: change an agent's adapter (always the built-in one), and weaken the
-// built-in policy (guardPolicy below).
+// from the project repository itself is ever read. Three things a replacement can
+// NOT do: change an agent's adapter (always the built-in one), weaken the
+// built-in policy (guardPolicy below), and change the model registry (models.json
+// is machine-level — a project copy is ignored and reported).
 //
 // validateRegistry is PURE and returns every problem it finds. createRegistry is
 // the fail-fast wrapper that throws. `collab check-config` calls the first so a
@@ -36,7 +37,8 @@ export const CONFIG_FILES = Object.freeze({
   roles: 'roles.json',
   agents: 'agents.json',
   policy: 'policy.json',
-  runners: 'runners.json'
+  runners: 'runners.json',
+  models: 'models.json'
 })
 
 const readConfig = (file, name) => {
@@ -48,7 +50,7 @@ const readConfig = (file, name) => {
 }
 
 export function validateRegistry(config) {
-  const { capabilities, roles, agents, policy, runners } = config
+  const { capabilities, roles, agents, policy, runners, models } = config
   const problems = []
   const warnings = [...(config.meta?.warnings || [])]
 
@@ -142,6 +144,10 @@ export function validateRegistry(config) {
   problems.push(...validatePolicy(policy))
   if (config.meta?.builtinPolicy) problems.push(...guardPolicy(config.meta.builtinPolicy, policy))
   problems.push(...validateRunners(runners))
+
+  const modelCheck = validateModels(models, { agentIds: seen, policyClasses: new Set(Object.keys(policy?.classes || {})) })
+  problems.push(...modelCheck.problems)
+  warnings.push(...modelCheck.warnings)
 
   return { problems, warnings }
 }
@@ -349,6 +355,153 @@ export function validateRunners(runners) {
   return problems
 }
 
+export const MODEL_MATURITY = Object.freeze(['stable', 'preview', 'deprecated', 'unverified'])
+export const MODEL_VERIFIED = Object.freeze(['catalog', 'owner', 'unverified'])
+const REF = /^[a-z][a-z0-9_-]{1,31}$/
+
+// models.json says which model each LEVEL means, per vendor. Nothing here starts
+// anything: the lead session picks and launches, and this is the list it picks
+// from. What is checked is that the list cannot lie to a reader — a rung with two
+// defaults, a fallback that does not exist, a preview model with nothing to fall
+// back to, or a level nobody can serve are all ways the registry would answer a
+// routing question with nonsense.
+export function validateModels(models, { agentIds = new Set(), policyClasses = new Set() } = {}) {
+  const problems = []
+  const warnings = []
+  if (!models) return { problems: ['models.json is missing'], warnings }
+
+  const levels = models.levels
+  if (!levels || typeof levels !== 'object' || Array.isArray(levels)) {
+    return { problems: ['models.json: "levels" must be an object'], warnings }
+  }
+  const ranks = new Map()
+  for (const [id, level] of Object.entries(levels)) {
+    if (!Number.isFinite(level?.rank)) problems.push(`models.json: level "${id}" has no numeric rank`)
+    else if (ranks.has(level.rank)) problems.push(`models.json: levels "${ranks.get(level.rank)}" and "${id}" share rank ${level.rank}`)
+    else ranks.set(level.rank, id)
+    if (!level?.summary) problems.push(`models.json: level "${id}" has no summary — a level nobody can explain is a level nobody applies`)
+  }
+  if (!ranks.size) problems.push('models.json declares no levels')
+
+  const floor = models.review_risk_floor || {}
+  if (typeof floor !== 'object' || Array.isArray(floor)) problems.push('models.json: "review_risk_floor" must be an object')
+  else {
+    for (const [cls, level] of Object.entries(floor)) {
+      if (!levels[level]) problems.push(`models.json: review_risk_floor["${cls}"] names unknown level "${level}"`)
+      if (policyClasses.size && !policyClasses.has(cls)) {
+        // A class name that matches nothing would be a floor that never applies:
+        // the kind of rule that reads as protection and is not one.
+        problems.push(`models.json: review_risk_floor names action class "${cls}", which policy.json does not declare`)
+      }
+    }
+  }
+
+  const vendors = models.vendors
+  if (!vendors || typeof vendors !== 'object' || Array.isArray(vendors)) {
+    return { problems: [...problems, 'models.json: "vendors" must be an object'], warnings }
+  }
+  for (const [name, vendor] of Object.entries(vendors)) {
+    if (!vendor?.agent) problems.push(`models.json: vendor "${name}" names no agent`)
+    else if (!agentIds.has(vendor.agent)) {
+      // Not a problem: a project registry may replace agents.json and drop one.
+      // The models stay readable, they just have nobody to run them here.
+      warnings.push(`models.json: vendor "${name}" names agent "${vendor.agent}", which is not registered for this project`)
+    }
+    if (vendor?.catalog_file !== null && vendor?.catalog_file !== undefined && typeof vendor.catalog_file !== 'string') {
+      problems.push(`models.json: vendor "${name}" has a non-string catalog_file`)
+    }
+    if (vendor?.verified && !MODEL_VERIFIED.includes(vendor.verified)) {
+      problems.push(`models.json: vendor "${name}" has verified "${vendor.verified}" — expected one of ${MODEL_VERIFIED.join(', ')}`)
+    }
+  }
+
+  const list = models.models
+  if (!Array.isArray(list) || list.length === 0) {
+    return { problems: [...problems, 'models.json declares no models'], warnings }
+  }
+
+  const byRef = new Map()
+  const rungs = new Map()
+  for (const model of list) {
+    const where = `models.json: model "${model?.ref}"`
+    if (!REF.test(model?.ref || '')) {
+      problems.push(`${where} has a ref that is not [a-z][a-z0-9_-]{1,31} — refs are what the rules and the journal name`)
+    }
+    if (byRef.has(model?.ref)) problems.push(`${where} is declared twice`)
+    byRef.set(model?.ref, model)
+
+    if (!model?.id || typeof model.id !== 'string') problems.push(`${where} has no id`)
+    if (!model?.vendor || !vendors[model.vendor]) problems.push(`${where} names unknown vendor "${model?.vendor}"`)
+    else if (model.agent && model.agent !== vendors[model.vendor].agent) {
+      problems.push(`${where} says agent "${model.agent}" but vendor "${model.vendor}" says "${vendors[model.vendor].agent}"`)
+    }
+    if (!MODEL_MATURITY.includes(model?.maturity)) {
+      problems.push(`${where} has maturity "${model?.maturity}" — expected one of ${MODEL_MATURITY.join(', ')}`)
+    }
+    if (!MODEL_VERIFIED.includes(model?.verified)) {
+      problems.push(`${where} has verified "${model?.verified}" — expected one of ${MODEL_VERIFIED.join(', ')}`)
+    }
+    // A preview model may be withdrawn or change under you mid-task, so the
+    // registry refuses to offer one without somewhere to fall back to.
+    if (model?.maturity === 'preview' && !model?.fallback) {
+      problems.push(`${where} is preview with no fallback — a preview model is not somewhere work can be left stranded`)
+    }
+    if (model?.verified !== 'catalog' && vendors[model?.vendor]?.catalog_file) {
+      warnings.push(`${where} is not marked verified against the catalog its vendor declares`)
+    }
+
+    if (model?.level !== null && model?.level !== undefined) {
+      if (!levels[model.level]) problems.push(`${where} claims unknown level "${model.level}"`)
+      else {
+        const key = `${model.vendor}/${model.level}`
+        if (rungs.has(key)) problems.push(`${where} and "${rungs.get(key)}" both claim level ${model.level} for vendor ${model.vendor}`)
+        else rungs.set(key, model.ref)
+      }
+    }
+    if (model?.max_level !== null && model?.max_level !== undefined) {
+      if (!levels[model.max_level]) problems.push(`${where} claims unknown max_level "${model.max_level}"`)
+      else if (levels[model.level] && levels[model.max_level].rank < levels[model.level].rank) {
+        problems.push(`${where} has max_level ${model.max_level} below its own level ${model.level}`)
+      }
+    }
+  }
+
+  for (const model of list) {
+    if (!model?.fallback) continue
+    if (model.fallback === model.ref) {
+      problems.push(`models.json: model "${model.ref}" falls back to itself`)
+      continue
+    }
+    if (!byRef.has(model.fallback)) {
+      problems.push(`models.json: model "${model.ref}" falls back to "${model.fallback}", which is not declared`)
+      continue
+    }
+    const seenRefs = new Set([model.ref])
+    let cursor = byRef.get(model.fallback)
+    while (cursor?.fallback) {
+      if (seenRefs.has(cursor.ref)) {
+        problems.push(`models.json: the fallback chain from "${model.ref}" loops through "${cursor.ref}"`)
+        break
+      }
+      seenRefs.add(cursor.ref)
+      cursor = byRef.get(cursor.fallback)
+    }
+  }
+
+  for (const id of Object.keys(levels)) {
+    if (![...rungs.keys()].some((key) => key.endsWith(`/${id}`))) {
+      warnings.push(`models.json: level ${id} has no model on any vendor — work classified there has nowhere to go`)
+    }
+  }
+  for (const agentId of agentIds) {
+    if (!list.some((model) => vendors[model?.vendor]?.agent === agentId)) {
+      warnings.push(`models.json: agent "${agentId}" has no model, so no level can be named for it`)
+    }
+  }
+
+  return { problems, warnings }
+}
+
 // Adapters decide whether the layer may start a process for an agent, so they
 // come from the built-in config only. A replacement agents.json that declares one
 // has it ignored (and is told so); an agent unknown to the built-in config is
@@ -396,6 +549,20 @@ export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }
     config.agents = applyBuiltinAdapters(config.agents, readConfig(join(builtinDir, 'agents.json'), 'agents.json'), meta.warnings)
   }
   if (meta.overridden.policy) meta.builtinPolicy = readConfig(join(builtinDir, 'policy.json'), 'policy.json')
+  // Which model a level means is machine-level, like an adapter: a project
+  // cannot make a model cheaper, smarter or newer by declaring one, and the only
+  // thing a replacement could express is a rung the vendor does not have. So a
+  // project copy is read, ignored and reported, and the meta says the built-in
+  // file is the one in force.
+  if (meta.overridden.models) {
+    meta.warnings.push(
+      `models.json: the model registry comes only from the built-in config, so ${meta.files.models} is ignored`
+    )
+    config.models = readConfig(join(builtinDir, 'models.json'), 'models.json')
+    meta.files.models = join(builtinDir, 'models.json')
+    meta.dirs.models = builtinDir
+    meta.overridden.models = false
+  }
   Object.defineProperty(config, 'meta', { value: meta, enumerable: false })
   return config
 }

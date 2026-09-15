@@ -21,6 +21,7 @@ import { systemClock } from './ids.mjs'
 import { DEFAULT_REGISTRY_DIR, INSTALL_ROOT, ignoredEnv, journalState, resolveRoots, runGit, safeRealpath } from './paths.mjs'
 import { findProject } from './projects.mjs'
 import { classifyAction } from './policy.mjs'
+import { catalogDrift, listModels } from './models.mjs'
 import { createRegistry, loadConfig } from './registry.mjs'
 import { createStore } from './store.mjs'
 import * as agents from './domain/agents.mjs'
@@ -208,7 +209,28 @@ export function createApi({
 
     // ── tasks ─────────────────────────────────────────────────────────────
     createTask: (input) => tasks.createTask(ctx, input),
-    getTask: ({ task_id }) => tasks.getTask(ctx, task_id),
+    // The runs are attached here rather than stored on the task: the layer
+    // already knows which checks ran against it, so evidence that can be
+    // DERIVED is never asked for again as a declaration. What a reader gets is
+    // the counters, because a suite that skipped everything exits zero.
+    getTask({ task_id }) {
+      const task = tasks.getTask(ctx, task_id)
+      return {
+        ...task,
+        runs: runs
+          .listRuns(ctx, { limit: 200 })
+          .filter((run) => run.task_id === task_id)
+          .map((run) => ({
+            id: run.id,
+            runner: run.runner,
+            status: run.status,
+            headline: run.result?.headline || null,
+            counts: run.result?.counts || null,
+            started_at: run.started_at,
+            finished_at: run.finished_at
+          }))
+      }
+    },
     async listTasks(input = {}) {
       await maybeSweep()
       return tasks.listTasks(ctx, input)
@@ -238,6 +260,7 @@ export function createApi({
     // ── reviews ───────────────────────────────────────────────────────────
     requestReview: (input) => reviews.requestReview(ctx, input),
     submitReview: (input) => reviews.submitReview(ctx, input),
+    releaseReview: (input) => reviews.releaseReview(ctx, input),
     listReviews: (input = {}) => reviews.listReviews(ctx, input),
 
     // ── decisions ─────────────────────────────────────────────────────────
@@ -251,6 +274,9 @@ export function createApi({
     requestUserApproval: (input) => approvals.requestApproval(ctx, input),
     listApprovals: (input = {}) => approvals.listApprovals(ctx, input),
     checkPolicy: ({ action }) => classifyAction(config.policy, action),
+
+    // ── models: the level ladder, read only ───────────────────────────────
+    listModels: () => listModels(ctx),
 
     // ── checks ────────────────────────────────────────────────────────────
     listRunners: () => runs.listRunners(ctx),
@@ -326,6 +352,7 @@ export function createApi({
           }
         }),
         runners: runs.listRunners(ctx),
+        models: catalogDrift(config),
         unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0)
       }
     }

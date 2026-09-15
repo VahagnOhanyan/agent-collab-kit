@@ -3,7 +3,7 @@ name: verifier
 description: Независимая read-only проверка выполненной работы по плану и diff — гейт проекта из реестра, целевые тесты, diff ⊆ план, негативный контроль, честное «не проверено». Не правит и не чинит. Use after any implementation, before the lead declares the task done.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
-model: inherit
+model: sonnet
 hooks:
   PreToolUse:
     - matcher: "Bash"

@@ -2,7 +2,7 @@
 name: implementer
 description: Реализует делегированную задачу по готовому плану от ведущего сеанса, в пределах области, которую владелец описал в реестре проекта, и возвращает diff + отчёт. Не решает, что делать, — делает то, что решено, и честно сообщает о расхождениях с планом. Use for any delegated implementation work in a registered project.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: inherit
+model: sonnet
 hooks:
   PreToolUse:
     - matcher: "Edit|Write|NotebookEdit"

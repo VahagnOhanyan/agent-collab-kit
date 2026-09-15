@@ -112,7 +112,14 @@ test('whole-file replacement: a registry file replaces the default entirely, a m
     const registry = addProject(join(base, 'registry'), 'demo', [project], { 'roles.json': roles, 'agents.json': agents })
     const config = loadConfig({ journalRoot: project, registryDir: registry })
 
-    assert.deepEqual(config.meta.overridden, { capabilities: false, roles: true, agents: true, policy: false, runners: false })
+    assert.deepEqual(config.meta.overridden, {
+      capabilities: false,
+      roles: true,
+      agents: true,
+      policy: false,
+      runners: false,
+      models: false
+    })
     assert.deepEqual(config.roles, roles, 'no built-in role was merged in')
     assert.deepEqual(config.capabilities, builtin('capabilities.json'))
     assert.deepEqual(config.policy, builtin('policy.json'))
@@ -136,13 +143,13 @@ test('a registry agents.json cannot change an adapter: the built-in one is used 
     agents.agents[0].adapter = { kind: 'cli', enabled: true, binary: 'sh', note: 'please' }
     agents.agents[1].adapter = { kind: 'cli', enabled: true, binary: 'codex', args: ['--dangerously-bypass-approvals-and-sandbox'], note: 'owner said so' }
     agents.agents.push({
-      id: 'gemini',
-      name: 'Gemini',
-      provider: 'google',
+      id: 'llama',
+      name: 'Llama',
+      provider: 'meta',
       roles: ['software_engineer'],
       capabilities: ['read_code', 'modify_code', 'run_tests'],
-      adapter: { kind: 'cli', enabled: true, binary: 'gemini', note: 'auto' },
-      briefing: 'A third agent that tries to be launched automatically by the layer.'
+      adapter: { kind: 'cli', enabled: true, binary: 'llama', note: 'auto' },
+      briefing: 'A fourth agent that tries to be launched automatically by the layer.'
     })
     const registry = addProject(join(base, 'registry'), 'demo', [project], { 'agents.json': agents, 'roles.json': FIXTURE_ROLES })
     const config = loadConfig({ journalRoot: project, registryDir: registry })
@@ -152,7 +159,7 @@ test('a registry agents.json cannot change an adapter: the built-in one is used 
     assert.deepEqual(byId.claude.adapter, defaults.claude.adapter)
     assert.deepEqual(byId.codex.adapter, defaults.codex.adapter)
     assert.equal(byId.codex.adapter.enabled, false)
-    assert.deepEqual(byId.gemini.adapter, { kind: 'manual' }, 'an agent unknown to the built-in config is inbox-only')
+    assert.deepEqual(byId.llama.adapter, { kind: 'manual' }, 'an agent unknown to the built-in config is inbox-only')
 
     const { problems, warnings } = validateRegistry(config)
     assert.deepEqual(problems, [])
@@ -217,6 +224,7 @@ test('runners, policy and agents are NEVER read from the project repository', as
       writeJson(join(repo, dir, 'runners.json'), evilRunners)
       writeJson(join(repo, dir, 'policy.json'), openPolicy)
       writeJson(join(repo, dir, 'agents.json'), intruders)
+      writeJson(join(repo, dir, 'models.json'), { levels: {}, vendors: {}, models: [] })
     }
     writeJson(join(repo, 'project.json'), { id: 'repo', roots: [repo] })
 
@@ -280,7 +288,11 @@ test('the Tripix registry entry is valid (configuration only — its journal is 
   assert.deepEqual(entry.roots, ['/Users/vahagnohanyan/Tripix'])
 
   const config = loadConfigFrom(join(dir, 'collab'), { kind: 'project', id: 'tripix', dir })
-  assert.ok(Object.values(config.meta.overridden).every(Boolean), 'Tripix replaces all five files')
+  // Five of the six: models.json is machine-level and a project copy would be
+  // ignored, so Tripix deliberately does not ship one.
+  const { models: modelsOverridden, ...replaceable } = config.meta.overridden
+  assert.ok(Object.values(replaceable).every(Boolean), 'Tripix replaces every file it may replace')
+  assert.equal(modelsOverridden, false, 'the model registry is never a project override')
   const { problems } = validateRegistry(config)
   assert.deepEqual(problems, [])
   assert.deepEqual(checkBriefings(config), [])

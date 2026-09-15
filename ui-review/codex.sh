@@ -28,6 +28,8 @@
 #   UI_REVIEW_MODEL    default: gpt-6-astra (rendering needs it). This is a paid, non-default
 #                       model — the ui-review SKILL states its cost and waits for the owner's
 #                       consent before every run; do not call this script without that.
+#                       It is the L3 rung for this vendor (`collab models` is the ladder), chosen
+#                       here because generating images needs it — never as a review default.
 #   UI_REVIEW_EFFORT   default: high.
 set -euo pipefail
 shopt -s nullglob
