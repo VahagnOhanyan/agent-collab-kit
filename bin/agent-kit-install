@@ -29,7 +29,12 @@ const { pathToFileURL } = require('node:url')
 
 const KEEP_RELEASES = 3
 const MIN_NODE_MAJOR = 18
-const DEFAULT_BINDIR = '/opt/homebrew/bin'
+// No single default is right everywhere: Apple Silicon Homebrew, Intel
+// Homebrew and a typical Linux box each expect launchers in a different
+// place. The first of these that already exists as a directory wins; none
+// existing is a clear, actionable error (--bindir) instead of a silent
+// macOS-only assumption.
+const BINDIR_CANDIDATES = Object.freeze(['/opt/homebrew/bin', '/usr/local/bin'])
 const SERVER_REL = 'collab/src/mcp/server.mjs'
 const REQUIRED_PATHS = Object.freeze([
   'agents/implementer.md',
@@ -45,7 +50,7 @@ const REQUIRED_PATHS = Object.freeze([
 ])
 // The node written into both registrations. A stable symlink survives a Node
 // upgrade; process.execPath (a Homebrew Cellar path) does not.
-const NODE_CANDIDATES = Object.freeze(['/opt/homebrew/bin/node', '/usr/local/bin/node'])
+const NODE_CANDIDATES = Object.freeze(['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'])
 const GIT_CANDIDATES = Object.freeze(['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'])
 const TAR = '/usr/bin/tar'
 const RELEASE_NAME = /^[0-9a-f]{7,40}$/
@@ -145,6 +150,35 @@ function resolveNode({ candidates = NODE_CANDIDATES, pathEnv = process.env.PATH 
   throw new InstallError(`no node found: none of ${candidates.join(', ') || '(no candidates)'} exists and there is no node on PATH`)
 }
 
+// First existing BINDIR_CANDIDATE. Unlike resolveNode there is no PATH-scan
+// fallback — a launcher symlink needs a specific directory chosen on purpose,
+// not the first directory some command happens to resolve into.
+function resolveBindir(explicit, { candidates = BINDIR_CANDIDATES } = {}) {
+  if (explicit) {
+    const resolved = path.resolve(explicit)
+    if (!lstatOrNull(resolved) || !fs.statSync(resolved).isDirectory()) throw new InstallError(`bindir ${resolved} is not a directory`)
+    return resolved
+  }
+  for (const candidate of candidates) {
+    if (lstatOrNull(candidate) && fs.statSync(candidate).isDirectory()) return candidate
+  }
+  throw new InstallError(`no usable bindir found among ${candidates.join(', ')} — pass --bindir explicitly`)
+}
+
+// Whether a command is runnable without spawning it: an absolute/relative
+// path is checked directly, a bare name is scanned across PATH exactly like a
+// shell would. Used to decide whether a vendor's CLI is even present before
+// planning to touch its config — a vendor with no CLI installed yet should
+// not be told apart from one that errored.
+function commandExists(cmd) {
+  if (!cmd) return false
+  if (cmd.includes(path.sep)) return isExecutableFile(cmd)
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (dir && isExecutableFile(path.join(dir, cmd))) return true
+  }
+  return false
+}
+
 // ── undo journal ───────────────────────────────────────────────────────────
 
 class Journal {
@@ -229,23 +263,44 @@ collab MCP server with Claude Code (user scope) and Codex.
 
   --source <dir>       source git repository (default: <home>/agent-kit)
   --home <dir>         home directory to install into (default: $HOME)
-  --bindir <dir>       where the collab launcher is linked (default: ${DEFAULT_BINDIR})
+  --bindir <dir>       where the collab launcher is linked (default: first of ${BINDIR_CANDIDATES.join(', ')} that exists)
   --claude-bin <path>  Claude Code executable (default: claude)
   --replace-claude     replace a different user-scope "collab" MCP registration
+  --skip-claude        do not register with Claude Code even if it is on PATH
+  --skip-codex         do not touch ~/.codex/config.toml
+  --skip-gemini        do not touch ~/.gemini/config/mcp_config.json
   --dry-run            run every check, tests and smoke included; change nothing
   --rollback           switch current back to the previous release
   -h, --help           this text
 
+A vendor whose CLI is not on PATH and whose config directory does not exist yet
+is skipped automatically (Claude: not found -> skipped rather than failing the
+whole install; Codex/Gemini: nothing is created for an account nobody has).
+Already-registered state for a vendor is always kept in sync, whether or not
+its CLI happens to be present right now.
+
 With a non-default --home, --bindir and --claude-bin must be given explicitly.`
 
 function parseArgs(argv) {
-  const opts = { replaceClaude: false, dryRun: false, rollback: false, skipKitTests: false, help: false }
+  const opts = {
+    replaceClaude: false,
+    dryRun: false,
+    rollback: false,
+    skipKitTests: false,
+    skipClaude: false,
+    skipCodex: false,
+    skipGemini: false,
+    help: false
+  }
   const valued = { '--source': 'source', '--home': 'home', '--bindir': 'bindir', '--claude-bin': 'claudeBin' }
   const flags = {
     '--replace-claude': 'replaceClaude',
     '--dry-run': 'dryRun',
     '--rollback': 'rollback',
     '--skip-kit-tests': 'skipKitTests', // hidden: for the installer's own tests only
+    '--skip-claude': 'skipClaude',
+    '--skip-codex': 'skipCodex',
+    '--skip-gemini': 'skipGemini',
     '--help': 'help',
     '-h': 'help'
   }
@@ -277,8 +332,7 @@ function makeContext(opts) {
   }
   const homeStat = lstatOrNull(home)
   if (!homeStat || !fs.statSync(home).isDirectory()) throw new InstallError(`home ${home} is not a directory`)
-  const bindir = path.resolve(opts.bindir || DEFAULT_BINDIR)
-  if (!lstatOrNull(bindir) || !fs.statSync(bindir).isDirectory()) throw new InstallError(`bindir ${bindir} is not a directory`)
+  const bindir = resolveBindir(opts.bindir)
 
   let node = null
   if (!opts.rollback) {
@@ -1001,7 +1055,16 @@ function rewriteCodexToml(text, blockLines) {
 }
 
 function planCodex(ctx) {
+  if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
   const st = lstatOrNull(ctx.codexConfig)
+  // Nothing to fix yet and no sign codex was ever set up here: do not create
+  // ~/.codex out of nothing for an account nobody has. Once either exists —
+  // the binary, or a config directory from some earlier setup — this keeps
+  // registering exactly as before, whether or not the binary is on PATH
+  // right now.
+  if (!st && !commandExists('codex') && !lstatOrNull(path.dirname(ctx.codexConfig))) {
+    return { skipped: true, reason: 'codex is not installed and ~/.codex does not exist yet' }
+  }
   let file = ctx.codexConfig
   let original = null
   let mode = 0o600
@@ -1136,6 +1199,12 @@ const describeRegistration = (reg) =>
   }`
 
 function planClaude(ctx) {
+  if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
+  // Unlike Codex/Gemini, there is no plain file to fall back to checking:
+  // reading Claude's registration means running its binary. Not on PATH is a
+  // reason to skip, not to fail the whole install over a vendor the caller
+  // may not even use.
+  if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
   const reg = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab']))
   if (!reg.found) return { action: 'add', existing: null }
   if (reg.scope !== 'user') {
@@ -1233,7 +1302,15 @@ function jsonEqual(a, b) {
 }
 
 function planGemini(ctx) {
+  if (ctx.opts.skipGemini) return { skipped: true, reason: 'requested with --skip-gemini' }
   const st = lstatOrNull(ctx.geminiConfig)
+  // Same reasoning as Codex: no fresh ~/.gemini for an account nobody has.
+  // Checked two levels up (~/.gemini, not ~/.gemini/config) because agy keeps
+  // other state there (antigravity-cli/, settings.json) before it ever writes
+  // config/mcp_config.json — that wider directory is the real "used before" signal.
+  if (!st && !commandExists('agy') && !lstatOrNull(path.dirname(path.dirname(ctx.geminiConfig)))) {
+    return { skipped: true, reason: 'agy (Antigravity CLI) is not installed and ~/.gemini does not exist yet' }
+  }
   let file = ctx.geminiConfig
   let original = null
   let mode = 0o600
@@ -1303,7 +1380,7 @@ function summarizeGemini(ctx, plan) {
 function rollbackCommand(ctx) {
   const parts = [realpathOr(process.argv[1]), '--rollback']
   if (ctx.home !== ctx.realHome) parts.push('--home', ctx.home, '--bindir', ctx.bindir, '--claude-bin', ctx.claudeBin)
-  else if (ctx.bindir !== DEFAULT_BINDIR) parts.push('--bindir', ctx.bindir)
+  else if (!BINDIR_CANDIDATES.includes(ctx.bindir)) parts.push('--bindir', ctx.bindir)
   return parts.map(shellQuote).join(' ')
 }
 
@@ -1335,6 +1412,13 @@ async function install(ctx) {
   try {
     built = await build(ctx, source, journal)
     const plan = planAll(ctx) // authoritative: state may have moved during the build
+    // Announced once, up front, then quietly excluded from every loop below —
+    // a vendor with no CLI and no prior state is steady state, not a change
+    // to report on every single run.
+    for (const c of MCP_CLIENTS) {
+      const p = plan.clients[c.id]
+      if (p.skipped) out(`${c.id}: skipped — ${p.reason}`)
+    }
     const previous = plan.current?.sha || null
     const releaseDir = path.join(ctx.releasesDir, source.sha)
     const existing = lstatOrNull(releaseDir)
@@ -1350,7 +1434,9 @@ async function install(ctx) {
     if (previous !== source.sha) planned.push(`current -> releases/${source.sha} (was ${previous || 'none'}); history.jsonl += 1 line`)
     for (const l of plan.links) if (l.action !== 'ok') planned.push(`link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
     for (const c of MCP_CLIENTS) {
-      const line = c.summary(ctx, plan.clients[c.id])
+      const p = plan.clients[c.id]
+      if (p.skipped) continue
+      const line = c.summary(ctx, p)
       if (line) planned.push(line)
     }
 
@@ -1360,7 +1446,9 @@ async function install(ctx) {
       out(`DRY RUN — every check passed; nothing was changed.`)
       out(`would install ${source.sha} (commit ${source.commit}); previous: ${previous || 'none'}`)
       for (const c of MCP_CLIENTS) {
-        const detail = c.detailPlanned?.(ctx, plan.clients[c.id])
+        const p = plan.clients[c.id]
+        if (p.skipped) continue
+        const detail = c.detailPlanned?.(ctx, p)
         if (detail) out(detail)
       }
       const effective = planned.filter((p) => !p.includes('identical: reuse'))
@@ -1384,7 +1472,11 @@ async function install(ctx) {
     applyLinks(plan.links, journal, changes)
     const broken = brokenLinks(ctx)
     if (broken.length) throw new InstallError(`links do not resolve after install: ${broken.join(', ')}`)
-    for (const c of MCP_CLIENTS) c.apply(ctx, plan.clients[c.id], journal, changes)
+    for (const c of MCP_CLIENTS) {
+      const p = plan.clients[c.id]
+      if (p.skipped) continue
+      c.apply(ctx, p, journal, changes)
+    }
 
     const history = readHistory(ctx)
     const pruned = pruneReleases(ctx, history, source.sha, previous)
@@ -1394,7 +1486,9 @@ async function install(ctx) {
     out(`installed: ${source.sha} (commit ${source.commit})`)
     out(`previous:  ${previous || 'none'}`)
     for (const c of MCP_CLIENTS) {
-      const detail = c.detailApplied?.(ctx, plan.clients[c.id])
+      const p = plan.clients[c.id]
+      if (p.skipped) continue
+      const detail = c.detailApplied?.(ctx, p)
       if (detail) out(detail)
     }
     out(changes.length ? `changed:\n${changes.map((c) => `  - ${c}`).join('\n')}` : 'changed: nothing (already installed and registered)')

@@ -18,6 +18,6 @@
 
 [mcp_servers.collab]
 command = "node"
-args = ["/Users/vahagnohanyan/agent-kit/collab/src/mcp/server.mjs"]
+args = ["/absolute/path/to/agent-kit/collab/src/mcp/server.mjs"]
 env = { COLLAB_AGENT_ID = "codex" }
 startup_timeout_sec = 20

@@ -690,6 +690,57 @@ test('Gemini config: an existing collab entry is updated, disabled:true and an u
   )
 })
 
+const NO_VENDOR_PATH = '/no-vendor-cli-on-this-path'
+
+test('--skip-codex and --skip-gemini leave both untouched and say why, without touching Claude', () => {
+  const W = makeWorld('explicit-skip', { codex: null })
+  const r = W.run(['--source', SOURCE, '--skip-kit-tests', '--skip-codex', '--skip-gemini'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /codex: skipped — requested with --skip-codex/)
+  assert.match(r.stdout, /gemini: skipped — requested with --skip-gemini/)
+  assert.equal(existsSync(join(W.home, '.codex')), false, 'no ~/.codex for a flag nobody asked to skip past')
+  assert.equal(existsSync(join(W.home, '.gemini')), false)
+  // Claude, not skipped, still registered normally.
+  assert.deepEqual(mutating(W.claudeCalls()).length > 0, true)
+})
+
+test('a vendor with no CLI and no prior state is skipped automatically, creating nothing', () => {
+  const W = makeWorld('no-vendor', { codex: null })
+  // run() always appends its own --claude-bin pointing at the fake binary
+  // makeWorld created; parseArgs keeps the LAST occurrence of a flag, so a
+  // second --claude-bin here is what actually simulates Claude being absent —
+  // overriding PATH alone cannot, since claudeBin is an absolute path, not a
+  // bare command looked up on it.
+  const r = W.run(['--source', SOURCE, '--skip-kit-tests', '--claude-bin', join(W.root, 'no-such-claude')], { PATH: NO_VENDOR_PATH })
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /claude: skipped — .* not found on PATH/)
+  assert.match(r.stdout, /codex: skipped — codex is not installed and ~\/\.codex does not exist yet/)
+  assert.match(r.stdout, /gemini: skipped — agy \(Antigravity CLI\) is not installed and ~\/\.gemini does not exist yet/)
+  assert.equal(existsSync(join(W.home, '.codex')), false)
+  assert.equal(existsSync(join(W.home, '.gemini')), false)
+  assert.deepEqual(W.claudeCalls(), [], 'claude was never even invoked — its binary is not on this PATH')
+
+  // The rest of the install still succeeds: an absent vendor is not fatal.
+  assert.equal(existsSync(join(W.home, '.agent-kit', 'current')), true)
+})
+
+test('a vendor with no CLI but a pre-existing config is still kept in sync, not skipped', () => {
+  const original = `# Codex settings\nmodel = "gpt-5"\n`
+  const W = makeWorld('stale-vendor', { codex: original })
+  mkdirSync(join(W.home, '.gemini', 'config'), { recursive: true })
+  const geminiOriginal = JSON.stringify({ mcpServers: { collab: { command: 'node', args: ['/old/server.mjs'], env: { COLLAB_AGENT_ID: 'gemini' } } } }, null, 2) + '\n'
+  writeFileSync(join(W.home, '.gemini', 'config', 'mcp_config.json'), geminiOriginal)
+
+  const r = W.run(['--source', SOURCE, '--skip-kit-tests'], { PATH: NO_VENDOR_PATH })
+  assert.equal(r.status, 0, r.all)
+  assert.doesNotMatch(r.stdout, /codex: skipped/)
+  assert.doesNotMatch(r.stdout, /gemini: skipped/)
+  assert.match(r.stdout, /codex: appended \[mcp_servers\.collab\]/)
+  assert.match(r.stdout, /gemini: updated mcpServers\.collab/)
+  assert.equal(readFileSync(join(W.home, '.codex', 'config.toml'), 'utf8'), `${original}\n${expectedBlock(W.home)}\n`)
+  assert.equal(JSON.parse(readFileSync(join(W.home, '.gemini', 'config', 'mcp_config.json'), 'utf8')).mcpServers.collab.args[0], join(W.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs'))
+})
+
 test('dry-run runs the checks and the smoke test but changes nothing', () => {
   const W = makeWorld('dry')
   const before = W.snapshot()

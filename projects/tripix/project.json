@@ -1,8 +1,0 @@
-{
-  "//": "Trusted registry entry for Tripix. `roots` are journal roots (the parent of the git common dir), matched by exact realpath; every worktree of the repository resolves to this one root. Files in collab/ replace the built-in defaults of the same name, whole-file.",
-  "id": "tripix",
-  "roots": [
-    "/Users/vahagnohanyan/Tripix"
-  ],
-  "gate": "scripts/preflight.sh"
-}

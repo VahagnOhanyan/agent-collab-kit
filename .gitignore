@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 tests/.tmp-test-*/
 .DS_Store
+
+# Trusted per-project registries live outside this repository's history on
+# purpose (README.md: "вне самих репозиториев") — they hold another project's
+# absolute paths, product details and policy specifics, none of it this
+# tool's business to version. Add yours locally under projects/<id>/.
+/projects/*
+!/projects/README.md

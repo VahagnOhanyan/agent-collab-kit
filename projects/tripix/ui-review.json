@@ -1,9 +1,0 @@
-{
-  "platform": "ios-simulator",
-  "project": "Tripix.xcodeproj",
-  "scheme": "Tripix",
-  "bundleId": "com.vahagn.Tripix",
-  "product": "Tripix",
-  "device": "iPhone 17 Pro Max",
-  "appearanceNote": "The simulator's system appearance only reaches the app when the app's own in-app appearance setting (AppearanceManager) is \"system\" — otherwise overriding the simulator appearance has no visible effect."
-}
