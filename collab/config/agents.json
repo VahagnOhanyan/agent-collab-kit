@@ -73,6 +73,37 @@
       },
       "briefing_file": "briefings/codex.md",
       "briefing": "You are the independent engineer on this project. Your default work is review, test analysis, bug detection and implementation. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application, so never claim UI was verified. Full instructions: collab brief codex."
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "provider": "google",
+      "roles": [
+        "software_engineer",
+        "code_reviewer",
+        "test_engineer"
+      ],
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "use_mcp_tool",
+        "research"
+      ],
+      "adapter": {
+        "kind": "cli",
+        "enabled": false,
+        "binary": "gemini",
+        "args": [],
+        "note": "Owner decision 2026-09-15: queue first, launch by hand — same principle as Codex, nothing here starts a paid agent on its own.",
+        "verified_against": "not verified — @google/gemini-cli is not installed on this machine yet. `args` must be filled in from `gemini --help` / `gemini mcp --help` (not from memory) before `enabled` is ever set to true.",
+        "install_hint": "npm install -g @google/gemini-cli, then authenticate (`gemini`), then register the collab MCP server for Gemini and re-run: collab doctor"
+      },
+      "briefing_file": "briefings/gemini.md",
+      "briefing": "You are an independent engineer on this project, and a different vendor from Claude and Codex — useful for a genuinely independent second opinion. Your default work is review, test analysis, bug detection and implementation. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application, so never claim UI was verified. Full instructions: collab brief gemini."
     }
   ]
 }

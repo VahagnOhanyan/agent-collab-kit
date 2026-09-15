@@ -49,7 +49,7 @@ const NODE_CANDIDATES = Object.freeze(['/opt/homebrew/bin/node', '/usr/local/bin
 const GIT_CANDIDATES = Object.freeze(['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'])
 const TAR = '/usr/bin/tar'
 const RELEASE_NAME = /^[0-9a-f]{7,40}$/
-const RESTART = 'перезапустите открытые сессии Claude и Codex'
+const RESTART = 'перезапустите открытые сессии Claude, Codex и Gemini'
 
 
 class InstallError extends Error {}
@@ -307,6 +307,7 @@ function makeContext(opts) {
     lockPath: path.join(home, '.agent-kit.lock'),
     serverPath: path.join(currentPath, SERVER_REL),
     codexConfig: path.join(home, '.codex', 'config.toml'),
+    geminiConfig: path.join(home, '.gemini', 'settings.json'),
     claudeBin: opts.claudeBin || 'claude',
     source: path.resolve(opts.source || path.join(home, 'agent-kit'))
   }
@@ -1053,6 +1054,18 @@ function applyCodex(ctx, plan, journal, changes) {
   if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
 }
 
+function summarizeCodex(ctx, plan) {
+  return plan.changed ? `codex: ${plan.exists ? (plan.replaced ? 'replace' : 'append') : 'create'} [${CODEX_TABLE}] in ${plan.file}` : null
+}
+
+function detailPlannedCodex(ctx, plan) {
+  return plan.oldBlock && plan.changed ? `codex block that would be replaced:\n${plan.oldBlock}` : null
+}
+
+function detailAppliedCodex(ctx, plan) {
+  return plan.replaced && plan.oldBlock ? `replaced codex block was:\n${plan.oldBlock.trimEnd()}` : null
+}
+
 // ── Claude Code: user-scope MCP registration ───────────────────────────────
 
 function runClaude(ctx, args) {
@@ -1170,6 +1183,103 @@ function applyClaude(ctx, plan, journal, changes) {
   changes.push(`claude: ${plan.action === 'replace' ? `replaced (${describeRegistration(plan.existing)}) with` : 'registered'} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`)
 }
 
+function summarizeClaude(ctx, plan) {
+  return plan.action !== 'ok' ? `claude: ${plan.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}` : null
+}
+
+// ── Gemini CLI: ~/.gemini/settings.json ─────────────────────────────────────
+// A JSON object, not TOML, so — unlike Codex — no line-scanner is needed:
+// mcpServers.collab is merged in structurally and every other top-level
+// setting (ide, security, ...) is kept exactly as parsed, never touched as
+// text.
+
+function geminiServerEntry(ctx) {
+  return { command: ctx.node.path, args: [ctx.serverPath], env: { COLLAB_AGENT_ID: 'gemini' } }
+}
+
+// Structural equality for the JSON-shaped values compared here (plain
+// objects, arrays, strings): good enough that a settings.json re-saved by
+// the Gemini CLI itself, with keys in a different order, still reads as
+// "unchanged" instead of triggering a needless rewrite on the next install.
+function jsonEqual(a, b) {
+  if (a === b) return true
+  if (typeof a !== typeof b || a === null || b === null) return false
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((v, i) => jsonEqual(v, b[i]))
+  }
+  if (typeof a === 'object') {
+    const ak = Object.keys(a)
+    const bk = Object.keys(b)
+    return ak.length === bk.length && ak.every((k) => Object.prototype.hasOwnProperty.call(b, k) && jsonEqual(a[k], b[k]))
+  }
+  return false
+}
+
+function planGemini(ctx) {
+  const st = lstatOrNull(ctx.geminiConfig)
+  let file = ctx.geminiConfig
+  let original = null
+  let mode = 0o600
+  let current = {}
+  if (st) {
+    file = fs.realpathSync(ctx.geminiConfig)
+    const real = fs.statSync(file)
+    if (!real.isFile()) throw new InstallError(`${ctx.geminiConfig} is not a regular file`)
+    original = fs.readFileSync(file)
+    mode = real.mode & 0o777
+    try {
+      current = JSON.parse(original.toString('utf8'))
+    } catch (error) {
+      throw new InstallError(`cannot safely merge ${ctx.geminiConfig}: it is not valid JSON (${error.message}). Fix it by hand.`)
+    }
+    if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+      throw new InstallError(`${ctx.geminiConfig} does not contain a JSON object at the top level`)
+    }
+  }
+  const servers = current.mcpServers
+  if (servers !== undefined && (servers === null || typeof servers !== 'object' || Array.isArray(servers))) {
+    throw new InstallError(`${ctx.geminiConfig} has a non-object "mcpServers" key. Fix it by hand.`)
+  }
+  const desired = geminiServerEntry(ctx)
+  const changed = !jsonEqual(servers?.collab, desired)
+  const next = { ...current, mcpServers: { ...(servers || {}), collab: desired } }
+  return {
+    file,
+    exists: Boolean(st),
+    original,
+    mode,
+    next: Buffer.from(`${JSON.stringify(next, null, 2)}\n`, 'utf8'),
+    changed
+  }
+}
+
+function applyGemini(ctx, plan, journal, changes) {
+  if (!plan.changed) return
+  if (plan.exists) {
+    const now = fs.readFileSync(plan.file)
+    if (!now.equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
+    const backup = `${plan.file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    fs.copyFileSync(plan.file, backup, fs.constants.COPYFILE_EXCL)
+    writeFileAtomic(plan.file, plan.next, plan.mode)
+    journal.add(`rewrote ${plan.file}`, () => {
+      writeFileAtomic(plan.file, plan.original, plan.mode)
+      fs.rmSync(backup, { force: true })
+    })
+    changes.push(`gemini: updated mcpServers.collab in ${plan.file} (backup ${backup})`)
+  } else {
+    ensureDir(path.dirname(plan.file), journal)
+    writeFileAtomic(plan.file, plan.next, 0o600)
+    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
+    changes.push(`gemini: created ${plan.file} with mcpServers.collab`)
+  }
+  if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
+}
+
+function summarizeGemini(ctx, plan) {
+  return plan.changed ? `gemini: ${plan.exists ? 'update' : 'create'} mcpServers.collab in ${plan.file}` : null
+}
+
 // ── install ────────────────────────────────────────────────────────────────
 
 function rollbackCommand(ctx) {
@@ -1179,8 +1289,20 @@ function rollbackCommand(ctx) {
   return parts.map(shellQuote).join(' ')
 }
 
+// One registrar per MCP client. plan()/apply() do the work (each defined in
+// its own section above); summary()/detailPlanned()/detailApplied() build the
+// installer's own output. Adding a vendor — the whole reason this is a list
+// and not four separate call sites — means writing its plan/apply/summary
+// functions and adding one entry here; nothing below this point knows how
+// many clients there are or what they are called.
+const MCP_CLIENTS = [
+  { id: 'codex', plan: planCodex, apply: applyCodex, summary: summarizeCodex, detailPlanned: detailPlannedCodex, detailApplied: detailAppliedCodex },
+  { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
+  { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini }
+]
+
 function planAll(ctx) {
-  return { current: readCurrent(ctx), links: planLinks(ctx), codex: planCodex(ctx), claude: planClaude(ctx) }
+  return { current: readCurrent(ctx), links: planLinks(ctx), clients: Object.fromEntries(MCP_CLIENTS.map((c) => [c.id, c.plan(ctx)])) }
 }
 
 async function install(ctx) {
@@ -1209,15 +1331,20 @@ async function install(ctx) {
     planned.push(existing ? `release ${releaseDir} (exists, identical: reuse)` : `release ${releaseDir} (new)`)
     if (previous !== source.sha) planned.push(`current -> releases/${source.sha} (was ${previous || 'none'}); history.jsonl += 1 line`)
     for (const l of plan.links) if (l.action !== 'ok') planned.push(`link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
-    if (plan.codex.changed) planned.push(`codex: ${plan.codex.exists ? (plan.codex.replaced ? 'replace' : 'append') : 'create'} [${CODEX_TABLE}] in ${plan.codex.file}`)
-    if (plan.claude.action !== 'ok') planned.push(`claude: ${plan.claude.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`)
+    for (const c of MCP_CLIENTS) {
+      const line = c.summary(ctx, plan.clients[c.id])
+      if (line) planned.push(line)
+    }
 
     if (ctx.opts.dryRun) {
       built.cleanup()
       out('')
       out(`DRY RUN — every check passed; nothing was changed.`)
       out(`would install ${source.sha} (commit ${source.commit}); previous: ${previous || 'none'}`)
-      if (plan.codex.oldBlock && plan.codex.changed) out(`codex block that would be replaced:\n${plan.codex.oldBlock}`)
+      for (const c of MCP_CLIENTS) {
+        const detail = c.detailPlanned?.(ctx, plan.clients[c.id])
+        if (detail) out(detail)
+      }
       const effective = planned.filter((p) => !p.includes('identical: reuse'))
       out(effective.length ? `planned changes:\n${planned.map((p) => `  - ${p}`).join('\n')}` : 'planned changes: none (already installed)')
       return
@@ -1239,8 +1366,7 @@ async function install(ctx) {
     applyLinks(plan.links, journal, changes)
     const broken = brokenLinks(ctx)
     if (broken.length) throw new InstallError(`links do not resolve after install: ${broken.join(', ')}`)
-    applyCodex(ctx, plan.codex, journal, changes)
-    applyClaude(ctx, plan.claude, journal, changes)
+    for (const c of MCP_CLIENTS) c.apply(ctx, plan.clients[c.id], journal, changes)
 
     const history = readHistory(ctx)
     const pruned = pruneReleases(ctx, history, source.sha, previous)
@@ -1249,7 +1375,10 @@ async function install(ctx) {
     out('')
     out(`installed: ${source.sha} (commit ${source.commit})`)
     out(`previous:  ${previous || 'none'}`)
-    if (plan.codex.replaced && plan.codex.oldBlock) out(`replaced codex block was:\n${plan.codex.oldBlock.trimEnd()}`)
+    for (const c of MCP_CLIENTS) {
+      const detail = c.detailApplied?.(ctx, plan.clients[c.id])
+      if (detail) out(detail)
+    }
     out(changes.length ? `changed:\n${changes.map((c) => `  - ${c}`).join('\n')}` : 'changed: nothing (already installed and registered)')
     out(`rollback:  ${rollbackCommand(ctx)}`)
     out(RESTART)

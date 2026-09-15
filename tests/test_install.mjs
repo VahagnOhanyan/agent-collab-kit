@@ -422,7 +422,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.match(r.stdout, new RegExp(`installed: ${SHA1}`))
   assert.match(r.stdout, /previous: {2}none/)
   assert.match(r.stdout, /rollback: {2}.*agent-kit-install --rollback/)
-  assert.match(r.stdout, /перезапустите открытые сессии Claude и Codex/)
+  assert.match(r.stdout, /перезапустите открытые сессии Claude, Codex и Gemini/)
 
   assert.equal(readlinkSync(A.kit('current')), `releases/${SHA1}`)
   assert.ok(existsSync(A.kit('releases', SHA1, 'collab', 'src', 'mcp', 'server.mjs')))
