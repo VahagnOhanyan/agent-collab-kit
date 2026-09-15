@@ -116,6 +116,13 @@ test('the full cycle: create, claim, review, changes requested, fix, re-review, 
     })
     assert.equal(rejected.task_status, 'changes_requested')
 
+    // The review-request message closes on its own: get_messages found it
+    // above but a pure read does not mark anything, and codex never called
+    // ack_message — submit_review is what makes an answered review stop
+    // showing as an unread question.
+    assert.equal((await w.codex.getMessages({ unread_only: true })).some((m) => m.id === inbox[0].id), false)
+    assert.equal((await w.codex.getMessages({ thread_id: round1.review.id })).find((m) => m.id === inbox[0].id).status, 'answered')
+
     // The author hears about it in their inbox, not by polling a status field.
     const authorInbox = await w.claude.getMessages({ unread_only: true })
     assert.equal(authorInbox[0].message_type, 'review_response')

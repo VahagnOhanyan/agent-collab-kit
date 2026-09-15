@@ -354,6 +354,28 @@ export function submitReview(ctx, { review_id, verdict, summary = '', findings =
     // it. See the note above requestReview for why there is no quorum.
     if (gates) tx.put('tasks', { ...task, status: nextStatus, waiting_on: null })
 
+    // ⛔ THE DEFECT THIS CLOSES. get_messages(unread_only: true) is what a
+    // reviewer uses to find this review — and being a pure read, it does not
+    // mark anything read (see getMessages above: no side effect, on purpose).
+    // Only ack_message/reply_message do. The codex-review skill's own prompt
+    // tells Codex to call get_messages and finish with submit_review, never
+    // ack_message — so every review it has ever answered left its
+    // review-request message "unread" forever, even though the review itself
+    // has a real verdict. Fixing the one skill would not fix the next one: the
+    // review being answered IS the message being answered, structurally, so
+    // it is marked here, once, for whichever workflow gets a reviewer this far
+    // — this skill, a different one, or a different vendor entirely.
+    const requested = tx
+      .list('messages', { filter: (m) => m.thread_id === review_id && m.message_type === 'review_request' })
+      .find((m) => m.to?.agent === ctx.agentId)
+    if (requested && !requested.read_by?.[ctx.agentId]) {
+      tx.put('messages', {
+        ...requested,
+        status: 'answered',
+        read_by: { ...(requested.read_by || {}), [ctx.agentId]: tx.iso() }
+      })
+    }
+
     tx.create('messages', {
       from_agent: ctx.agentId,
       to: { agent: review.author, role: null, capability: null },
