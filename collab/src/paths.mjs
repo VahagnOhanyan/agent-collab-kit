@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from './errors.mjs'
 import { writeJsonAtomic } from './jsonio.mjs'
@@ -51,13 +51,19 @@ export const ignoredEnv = (env = process.env) => IGNORED_ENV.filter((name) => ty
 
 // ── executables and their environment ─────────────────────────────────────
 
+const IS_WINDOWS = process.platform === 'win32'
+
 // The node running this layer is the owner's registration, so its directory is
 // on the fixed PATH (runners commonly need `node`/`npm`). A fixed PATH is not a
 // trust anchor against a same-user process — see SECURITY.md.
 export const FIXED_PATH_DIRS = Object.freeze([
-  ...new Set([dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin'])
+  ...new Set(
+    IS_WINDOWS
+      ? [dirname(process.execPath), process.env.WINDIR ? `${process.env.WINDIR}\\System32` : 'C:\\Windows\\System32']
+      : [dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin']
+  )
 ])
-export const FIXED_PATH = FIXED_PATH_DIRS.join(':')
+export const FIXED_PATH = FIXED_PATH_DIRS.join(IS_WINDOWS ? ';' : ':')
 
 export function isExecutableFile(path) {
   try {

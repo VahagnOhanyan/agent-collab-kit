@@ -77,7 +77,7 @@
     {
       "id": "destructive",
       "class": "DESTRUCTIVE",
-      "pattern": "reset --hard|git clean|drop (table|database|column)|truncate |delete .*(user|media|account|bucket)|migrate reset|force-reset|wipe|rm -rf|удалить .*(пользовател|медиа|аккаунт|бакет|базу|таблиц|колонк|миграци)|дропнуть|снести (базу|таблиц|данн)|очистить (базу|таблиц|бакет|данн)|стереть|затереть|обнулить",
+      "pattern": "reset --hard|git clean|drop (table|database|column)|truncate |delete .*(user|media|account|bucket)|migrate reset|force-reset|wipe|rm -rf|rmdir /s|rd /s|del /[fsq]|remove-item.*-recurse.*-force|remove-item.*-force.*-recurse|\\bformat [a-z]:|удалить .*(пользовател|медиа|аккаунт|бакет|базу|таблиц|колонк|миграци)|дропнуть|снести (базу|таблиц|данн)|очистить (базу|таблиц|бакет|данн)|стереть|затереть|обнулить",
       "reason": "Discards work or data git cannot restore."
     },
     {

@@ -1,0 +1,54 @@
+name: test
+
+# Not yet active: this workflow ships with the Windows-portability work but
+# only starts running once this repository has a GitHub remote and this file
+# is pushed to it. Until then it is dormant, on purpose.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The collab library's own suite — the part of the layer every platform
+      # runs identically, including the Windows-specific link-strategy and
+      # PATHEXT-resolution branches added for portability.
+      - name: collab test suite
+        working-directory: collab
+        run: node --test test/
+
+      # The installer's own suite — the only place that actually exercises a
+      # real install end to end (git archive, tar extraction, the release
+      # symlink/junction switch, the link strategy, Codex/Gemini config
+      # rewriting) rather than just unit-testing pieces of it.
+      - name: installer test suite
+        run: node --test tests/test_install.mjs
+        env:
+          AGENT_KIT_TEST_SOURCE: ${{ github.workspace }}
+
+      # A real dry-run against this checkout itself, outside the test
+      # harness's own temp-world fixtures — the thing an owner would actually
+      # type after cloning. --home/--bindir point at a throwaway directory so
+      # this never touches the runner's real profile; every vendor CLI is
+      # correctly absent on a bare CI runner, so no --skip-* flags are needed
+      # for the auto-skip logic to do the right thing.
+      - name: real dry-run against this checkout
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-kit-dryrun-home" "$RUNNER_TEMP/agent-kit-dryrun-bin"
+          node bin/agent-kit-install --dry-run \
+            --source "$PWD" \
+            --home "$RUNNER_TEMP/agent-kit-dryrun-home" \
+            --bindir "$RUNNER_TEMP/agent-kit-dryrun-bin" \
+            --claude-bin claude

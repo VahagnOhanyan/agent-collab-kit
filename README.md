@@ -30,7 +30,7 @@ bin/agent-kit-install --rollback     # вернуть предыдущий ре�
 2. Собирает релиз через `git archive` и прогоняет в нём тесты `collab`: должно быть 0 падений и 0 пропусков.
 3. Делает дымовой тест MCP: сверяет полный список инструментов и что без журнала ничего не создаётся.
 4. Атомарно переключает `~/.agent-kit/current`.
-5. Создаёт симлинки: `~/.claude/skills/{codex-review,ui-review}`, `~/.claude/agents/{implementer,verifier}.md`, `/opt/homebrew/bin/collab`.
+5. Линкует `~/.claude/skills/{codex-review,ui-review}`, `~/.claude/agents/{implementer,verifier}.md` и лаунчер `collab` в bindir (по умолчанию первый существующий из `/opt/homebrew/bin`, `/usr/local/bin` на macOS/Linux, `%LOCALAPPDATA%\Microsoft\WindowsApps` на Windows) — симлинками на POSIX, junction/копией по хэшу/`.cmd`-шимом на Windows, где симлинк на файл без прав администратора недоступен.
 6. Регистрирует MCP `collab` для Claude (уровень пользователя) и Codex (`~/.codex/config.toml`, с бэкапом).
 
 Любой сбой откатывает всё, что успело измениться. После установки перезапустите открытые сессии Claude и Codex.

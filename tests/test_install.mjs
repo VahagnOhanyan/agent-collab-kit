@@ -31,8 +31,28 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+const IS_WINDOWS = process.platform === 'win32'
+const LAUNCHER_NAME = IS_WINDOWS ? 'collab.cmd' : 'collab'
+
+// Strips the noise a Windows junction's target can read back with (an
+// extended-length "\\?\" prefix, a trailing separator) — mirrors
+// agent-kit-install's own normaliseLinkTarget, so these tests compare
+// like-for-like with what the installer itself considers equal.
+function normaliseTarget(raw) {
+  if (!IS_WINDOWS) return raw
+  let s = raw
+  if (s.startsWith('\\\\?\\')) s = s.slice(4)
+  if (s.length > 3 && (s.endsWith('\\') || s.endsWith('/'))) s = s.slice(0, -1)
+  return s
+}
+const readLink = (dest) => normaliseTarget(readlinkSync(dest))
+// What `current` should point at right now: a relative "releases/<sha>" on
+// POSIX, an absolute release path on Windows (junctions need one) — see
+// switchCurrent's comment in agent-kit-install.
+const currentTarget = (home, sha) => (IS_WINDOWS ? join(home, '.agent-kit', 'releases', sha) : `releases/${sha}`)
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INSTALLER = join(HERE, '..', 'bin', 'agent-kit-install')
@@ -45,7 +65,9 @@ let BASE
 let TEMPLATE
 let SOURCE // shared clean source repo
 
-const GIT = ['/usr/bin/git', '/opt/homebrew/bin/git'].find(existsSync)
+const GIT = IS_WINDOWS
+  ? ['C:\\Program Files\\Git\\bin\\git.exe', 'C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\bin\\git.exe'].find(existsSync)
+  : ['/usr/bin/git', '/opt/homebrew/bin/git'].find(existsSync)
 function git(cwd, args) {
   const r = spawnSync(GIT, ['-c', 'user.name=installer-test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', ...args], {
     cwd,
@@ -152,9 +174,21 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
   const bindir = join(root, 'bin')
   const fakebin = join(root, 'fakebin')
   for (const d of [home, bindir, fakebin]) mkdirSync(d, { recursive: true })
-  const claude = join(fakebin, 'claude')
-  writeFileSync(claude, `#!${process.execPath}\n${FAKE_CLAUDE}`, { mode: 0o755 })
-  writeFileSync(join(fakebin, 'codex'), `#!${process.execPath}\n${FAKE_CODEX}`, { mode: 0o755 })
+  // Windows cannot execute an extension-less shebang file at all — write the
+  // fake's JS logic to its own file and front it with a .cmd shim, the same
+  // shape a real npm-installed CLI takes there (see agent-kit-install's own
+  // cmdShimContent). POSIX keeps the original single shebang-script shape.
+  const claude = join(fakebin, IS_WINDOWS ? 'claude.cmd' : 'claude')
+  const codexBin = join(fakebin, IS_WINDOWS ? 'codex.cmd' : 'codex')
+  if (!IS_WINDOWS) {
+    writeFileSync(claude, `#!${process.execPath}\n${FAKE_CLAUDE}`, { mode: 0o755 })
+    writeFileSync(codexBin, `#!${process.execPath}\n${FAKE_CODEX}`, { mode: 0o755 })
+  } else {
+    writeFileSync(join(fakebin, 'claude-impl.js'), FAKE_CLAUDE)
+    writeFileSync(claude, `@node "${join(fakebin, 'claude-impl.js')}" %*\r\n`)
+    writeFileSync(join(fakebin, 'codex-impl.js'), FAKE_CODEX)
+    writeFileSync(codexBin, `@node "${join(fakebin, 'codex-impl.js')}" %*\r\n`)
+  }
   const claudeLog = join(root, 'claude-argv.jsonl')
   const claudeStateFile = join(root, 'claude-state.json')
   const codexLog = join(root, 'codex-argv.jsonl')
@@ -169,7 +203,7 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
 
   const env = {
     ...cleanEnv(),
-    PATH: `${fakebin}:${process.env.PATH}`,
+    PATH: `${fakebin}${delimiter}${process.env.PATH}`,
     FAKE_CLAUDE_LOG: claudeLog,
     FAKE_CLAUDE_STATE: claudeStateFile,
     FAKE_CODEX_LOG: codexLog
@@ -347,9 +381,9 @@ test('node for registrations: stable candidate path as-is, else realpath of the 
     const missing = join(dir, 'missing', 'node')
 
     assert.deepEqual(lib.resolveNode({ candidates: [missing, join(brewBin, 'node')], pathEnv: '' }), { path: join(brewBin, 'node'), warning: null })
-    const viaPath = lib.resolveNode({ candidates: [missing], pathEnv: `relative/dir:${join(dir, 'empty')}:${brewBin}` })
+    const viaPath = lib.resolveNode({ candidates: [missing], pathEnv: `relative/dir${delimiter}${join(dir, 'empty')}${delimiter}${brewBin}` })
     assert.equal(viaPath.path, real)
-    assert.match(viaPath.warning, /realpath of `command -v node`.*may break when Node is upgraded/)
+    assert.match(viaPath.warning, /resolved from PATH.*may break when Node is upgraded/)
     assert.throws(() => lib.resolveNode({ candidates: [missing], pathEnv: join(dir, 'empty') }), /no node found/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -424,7 +458,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.match(r.stdout, /rollback: {2}.*agent-kit-install --rollback/)
   assert.match(r.stdout, /перезапустите открытые сессии Claude, Codex и Gemini/)
 
-  assert.equal(readlinkSync(A.kit('current')), `releases/${SHA1}`)
+  assert.equal(readLink(A.kit('current')), currentTarget(A.home, SHA1))
   assert.ok(existsSync(A.kit('releases', SHA1, 'collab', 'src', 'mcp', 'server.mjs')))
   assert.deepEqual(readdirSync(A.kit('tmp')), [], 'build dir moved away')
   const [entry] = A.history()
@@ -435,14 +469,28 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.ok(!Number.isNaN(Date.parse(entry.at)))
 
   const cur = A.kit('current')
-  assert.equal(readlinkSync(join(A.home, '.claude', 'skills', 'codex-review')), join(cur, 'skills', 'codex-review'))
-  assert.equal(readlinkSync(join(A.home, '.claude', 'skills', 'ui-review')), join(cur, 'skills', 'ui-review'))
-  assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'implementer.md')), join(cur, 'agents', 'implementer.md'))
-  assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'verifier.md')), join(cur, 'agents', 'verifier.md'))
-  assert.equal(readlinkSync(join(A.bindir, 'collab')), join(cur, 'bin', 'collab'))
+  // Skill directories: on POSIX a symlink, on Windows a junction — either way
+  // the target string is the same (join(currentPath, rel)), so only the raw
+  // readlink noise needs normalising, not the expected value.
+  assert.equal(readLink(join(A.home, '.claude', 'skills', 'codex-review')), join(cur, 'skills', 'codex-review'))
+  assert.equal(readLink(join(A.home, '.claude', 'skills', 'ui-review')), join(cur, 'skills', 'ui-review'))
+  // agents/*.md and the bindir launcher genuinely change mechanism on Windows
+  // (a tracked copy and a generated .cmd shim, not a symlink — see
+  // windowsHybridStrategy in agent-kit-install) — a Windows readlinkSync on
+  // either would simply throw, so what's checked there is behavioural
+  // equivalence (same content as the current release) instead.
+  if (!IS_WINDOWS) {
+    assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'implementer.md')), join(cur, 'agents', 'implementer.md'))
+    assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'verifier.md')), join(cur, 'agents', 'verifier.md'))
+    assert.equal(readlinkSync(join(A.bindir, 'collab')), join(cur, 'bin', 'collab'))
+  } else {
+    assert.ok(readFileSync(join(A.home, '.claude', 'agents', 'implementer.md')).equals(readFileSync(join(cur, 'agents', 'implementer.md'))))
+    assert.ok(readFileSync(join(A.home, '.claude', 'agents', 'verifier.md')).equals(readFileSync(join(cur, 'agents', 'verifier.md'))))
+    assert.match(readFileSync(join(A.bindir, 'collab.cmd'), 'utf8'), /node "/)
+  }
   assert.ok(existsSync(join(A.home, '.claude', 'skills', 'codex-review', 'SKILL.md')), 'links resolve')
   assert.ok(existsSync(join(A.home, '.claude', 'skills', 'my-own-skill', 'SKILL.md')), 'unrelated skill kept')
-  const launcher = spawnSync(join(A.bindir, 'collab'), ['check-config'], { encoding: 'utf8', env: cleanEnv() })
+  const launcher = spawnSync(join(A.bindir, LAUNCHER_NAME), ['check-config'], { encoding: 'utf8', env: cleanEnv(), shell: IS_WINDOWS })
   assert.equal(launcher.status, 0, launcher.stderr)
 
   const server = join(A.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
@@ -477,7 +525,7 @@ test('rollback switches current and the links follow; repeated rollback walks ba
   const sha2 = commitChange(SOURCE, 'skills/codex-review/SKILL.md', `${original}\nrelease-two marker\n`)
   let r = A.run(['--source', SOURCE, '--skip-kit-tests'])
   assert.equal(r.status, 0, r.all)
-  assert.equal(readlinkSync(A.kit('current')), `releases/${sha2}`)
+  assert.equal(readLink(A.kit('current')), currentTarget(A.home, sha2))
   assert.match(readFileSync(skill, 'utf8'), /release-two marker/)
   assert.match(r.stdout, new RegExp(`previous: {2}${SHA1}`))
   const callsBefore = A.claudeCalls().length
@@ -486,9 +534,15 @@ test('rollback switches current and the links follow; repeated rollback walks ba
   r = A.run(['--rollback'])
   assert.equal(r.status, 0, r.all)
   assert.match(r.stdout, new RegExp(`rolled back: ${sha2} -> ${SHA1}`))
-  assert.equal(readlinkSync(A.kit('current')), `releases/${SHA1}`)
+  assert.equal(readLink(A.kit('current')), currentTarget(A.home, SHA1))
   assert.doesNotMatch(readFileSync(skill, 'utf8'), /release-two marker/)
-  assert.equal(realpathSync(join(A.bindir, 'collab')), realpathSync(A.kit('releases', SHA1, 'bin', 'collab')))
+  if (!IS_WINDOWS) {
+    assert.equal(realpathSync(join(A.bindir, 'collab')), realpathSync(A.kit('releases', SHA1, 'bin', 'collab')))
+  } else {
+    // The shim only ever names ctx.currentPath, never a specific release — it
+    // does not change across a rollback, unlike the POSIX symlink it replaces.
+    assert.equal(readFileSync(join(A.bindir, 'collab.cmd'), 'utf8'), lib.cmdShimContent({ currentPath: A.kit('current') }).toString('utf8'))
+  }
   assert.deepEqual(A.history().at(-1), { ...A.history().at(-1), sha: SHA1, previous: sha2, action: 'rollback' })
   assert.equal(A.claudeCalls().length, callsBefore, 'rollback does not touch the Claude registration')
   assert.equal(readFileSync(join(A.home, '.codex', 'config.toml'), 'utf8'), codexBefore)
@@ -503,10 +557,10 @@ test('rollback switches current and the links follow; repeated rollback walks ba
 
   r = A.run(['--rollback'])
   assert.equal(r.status, 0, r.all)
-  assert.equal(readlinkSync(A.kit('current')), `releases/${sha3}`)
+  assert.equal(readLink(A.kit('current')), currentTarget(A.home, sha3))
   r = A.run(['--rollback'])
   assert.equal(r.status, 0, r.all)
-  assert.equal(readlinkSync(A.kit('current')), `releases/${sha2}`, 'a second rollback goes further back, it does not toggle')
+  assert.equal(readLink(A.kit('current')), currentTarget(A.home, sha2), 'a second rollback goes further back, it does not toggle')
   r = A.run(['--rollback'])
   assert.notEqual(r.status, 0)
   assert.match(r.stderr, /no earlier release/)
@@ -556,12 +610,23 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   const W = makeWorld('foreign-link')
   mkdirSync(join(W.home, '.claude', 'agents'), { recursive: true })
   writeFileSync(join(W.home, '.claude', 'agents', 'verifier.md'), 'my own verifier\n')
-  symlinkSync('/somewhere/else/collab', join(W.bindir, 'collab'))
+  if (!IS_WINDOWS) {
+    symlinkSync('/somewhere/else/collab', join(W.bindir, 'collab'))
+  } else {
+    // No symlink mechanism to abuse on Windows — a foreign file the manifest
+    // has no record of is the equivalent conflict there.
+    writeFileSync(join(W.bindir, 'collab.cmd'), '@echo off\r\necho someone else\'s shim\r\n')
+  }
   const before = W.snapshot()
   const r = W.run(['--source', SOURCE, '--skip-kit-tests'])
   assert.notEqual(r.status, 0)
-  assert.match(r.stderr, /verifier\.md exists and is a regular file/)
-  assert.match(r.stderr, /collab is a symlink to \/somewhere\/else\/collab/)
+  if (!IS_WINDOWS) {
+    assert.match(r.stderr, /verifier\.md exists and is a regular file/)
+    assert.match(r.stderr, /collab is a symlink to \/somewhere\/else\/collab/)
+  } else {
+    assert.match(r.stderr, /verifier\.md exists and was not created by this installer/)
+    assert.match(r.stderr, /collab\.cmd exists and was not created by this installer/)
+  }
   assert.deepEqual(W.snapshot(), before)
   assert.deepEqual(mutating(W.claudeCalls()), [])
 })
@@ -616,7 +681,8 @@ test('Codex config: the existing collab block is replaced, everything else byte-
   const backups = readdirSync(join(W.home, '.codex')).filter((f) => f.startsWith('config.toml.backup-'))
   assert.equal(backups.length, 1)
   assert.equal(readFileSync(join(W.home, '.codex', backups[0]), 'utf8'), original)
-  assert.equal((lstatSync(configPath).mode & 0o777).toString(8), '644', 'mode kept')
+  // NTFS has no POSIX permission bits to preserve.
+  if (!IS_WINDOWS) assert.equal((lstatSync(configPath).mode & 0o777).toString(8), '644', 'mode kept')
 
   const again = W.run(['--source', SOURCE, '--skip-kit-tests'])
   assert.equal(again.status, 0, again.all)
@@ -750,7 +816,7 @@ test('dry-run runs the checks and the smoke test but changes nothing', () => {
   assert.match(r.stdout, /DRY RUN — every check passed; nothing was changed\./)
   assert.match(r.stdout, /planned changes:/)
   assert.match(r.stdout, /current -> releases\//)
-  assert.match(r.stdout, /link .*verifier\.md -> .*current\/agents\/verifier\.md \(create\)/)
+  assert.match(r.stdout, /link .*verifier\.md -> .*current[\\/]agents[\\/]verifier\.md \(create\)/)
   assert.match(r.stdout, /codex: append \[mcp_servers\.collab\]/)
   assert.match(r.stdout, /claude: add user-scope collab/)
   assert.match(r.stdout, /gemini: create mcpServers\.collab/)

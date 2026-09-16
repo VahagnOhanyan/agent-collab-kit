@@ -46,7 +46,11 @@ test('R5-1: an invalid DEVELOPER_DIR does not turn a tracked journal into an acc
   }
 })
 
-test('R5-1: git is chosen by a working --version probe, and Apple toolchain variables are stripped', () => {
+test('R5-1: git is chosen by a working --version probe (POSIX shebang fakes)', () => {
+  // GIT_CANDIDATES itself is a POSIX-only absolute-path list (see paths.mjs);
+  // the Windows candidate list and its own fake-binary probe are covered by
+  // the sibling test right below, using .cmd fakes instead of #!/bin/sh ones.
+  if (process.platform === 'win32') return
   const base = tempDir('collab-r5-probe-')
   try {
     const failing = join(base, 'failing-git')
@@ -57,23 +61,49 @@ test('R5-1: git is chosen by a working --version probe, and Apple toolchain vari
     assert.ok(real, 'this machine has a working git')
     assert.equal(paths.selectGit([join(base, 'missing-git'), failing, liar, real]), real)
     assert.equal(paths.selectGit([failing, liar]), null)
-
-    const env = paths.sanitisedEnv({
-      HOME: '/home/owner',
-      LANG: 'en_US.UTF-8',
-      DEVELOPER_DIR: '/x',
-      SDKROOT: '/x',
-      TOOLCHAINS: 'x',
-      xcrun_verbose: '1',
-      XCRUN_LOG: '1',
-      XCODE_VERSION_ACTUAL: '1',
-      GIT_DIR: '/x',
-      NODE_OPTIONS: '--x'
-    })
-    assert.deepEqual(Object.keys(env).sort(), ['HOME', 'LANG', 'PATH'])
   } finally {
     rmSync(base, { recursive: true, force: true })
   }
+})
+
+test('R5-1 (Windows): git is chosen by a working --version probe (.cmd fakes)', () => {
+  if (process.platform !== 'win32') return
+  // selectGit() spawns candidates with shell:false (correct — real GIT_CANDIDATES
+  // are always .exe, which never need a shell). A .cmd fake therefore fails to
+  // launch at all here rather than genuinely running and misbehaving — but
+  // that failure is caught by the same try/catch as a bad --version output, so
+  // the property under test (skip every broken candidate, land on the real
+  // one) still holds; it just isn't proof that a launchable-but-lying .cmd
+  // would also be skipped, the way the POSIX sibling test proves for #!/bin/sh.
+  const base = tempDir('collab-r5-probe-win-')
+  try {
+    const failing = join(base, 'failing-git.cmd')
+    writeFileSync(failing, '@echo off\r\nexit /b 1\r\n')
+    const liar = join(base, 'liar-git.cmd')
+    writeFileSync(liar, '@echo off\r\necho hello\r\n')
+    const real = paths.gitBinary()
+    assert.ok(real, 'this machine has a working git')
+    assert.equal(paths.selectGit([join(base, 'missing-git.cmd'), failing, liar, real]), real)
+    assert.equal(paths.selectGit([failing, liar]), null)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('R5-1: sanitisedEnv strips Apple-toolchain and loader variables, keeping a minimal set', () => {
+  const env = paths.sanitisedEnv({
+    HOME: '/home/owner',
+    LANG: 'en_US.UTF-8',
+    DEVELOPER_DIR: '/x',
+    SDKROOT: '/x',
+    TOOLCHAINS: 'x',
+    xcrun_verbose: '1',
+    XCRUN_LOG: '1',
+    XCODE_VERSION_ACTUAL: '1',
+    GIT_DIR: '/x',
+    NODE_OPTIONS: '--x'
+  })
+  assert.deepEqual(Object.keys(env).sort(), ['HOME', 'LANG', 'PATH'])
 })
 
 test('R5-1: a git error that is not "not a git repository" makes a journal invalid, never accepted', () => {

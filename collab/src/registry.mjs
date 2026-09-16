@@ -339,8 +339,9 @@ export function validateRunners(runners) {
       problems.push(`runners.json: runner "${id}" has a non-string command part`)
     }
     // A shell in the command list would turn every argument into a possible
-    // second command. There is no reason for one here, ever.
-    if (Array.isArray(def.command) && /^(sh|bash|zsh|eval)$/.test(def.command[0])) {
+    // second command. There is no reason for one here, ever — covers both
+    // POSIX shells and their Windows equivalents (cmd.exe, PowerShell).
+    if (Array.isArray(def.command) && /^(sh|bash|zsh|eval|cmd(\.exe)?|powershell(\.exe)?|pwsh(\.exe)?)$/i.test(def.command[0])) {
       problems.push(`runners.json: runner "${id}" invokes a shell; runners take argv, never a shell string`)
     }
     if (def.cwd !== undefined && (typeof def.cwd !== 'string' || isAbsolute(def.cwd) || def.cwd.split(/[\\/]/).includes('..'))) {

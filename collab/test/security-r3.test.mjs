@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 
 import { createApi, legacyJournalLookup } from '../src/api.mjs'
 import { initJournal } from '../src/paths.mjs'
@@ -152,7 +152,7 @@ test('R3-3: a fake git on PATH and GIT_DIR / GIT_WORK_TREE do not change where t
     const marker = join(base, 'FAKE_GIT_RAN')
     writeFileSync(join(fakeBin, 'git'), `#!/bin/sh\n: > '${marker}'\necho '${other}/.git'\necho '${other}'\n`, { mode: 0o755 })
 
-    const viaPath = runCli(['project', '--json'], { cwd: repo, env: { PATH: `${fakeBin}:${process.env.PATH}` } })
+    const viaPath = runCli(['project', '--json'], { cwd: repo, env: { PATH: `${fakeBin}${delimiter}${process.env.PATH}` } })
     assert.equal(viaPath.status, 0, viaPath.stderr)
     assert.equal(JSON.parse(viaPath.stdout).journalRoot, repo)
     assert.equal(existsSync(marker), false, 'the git on PATH never ran')
@@ -187,7 +187,7 @@ test('R3-3: runners find command[0] only on the fixed PATH and run with a saniti
   const server = startServer({
     cwd: sbx.root,
     options: { ...sbx.options, configDir },
-    env: { PATH: `${fakeBin}:${process.env.PATH}`, GIT_DIR: '/nowhere/.git', NODE_OPTIONS: '--no-warnings' }
+    env: { PATH: `${fakeBin}${delimiter}${process.env.PATH}`, GIT_DIR: '/nowhere/.git', NODE_OPTIONS: '--no-warnings' }
   })
   try {
     await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })

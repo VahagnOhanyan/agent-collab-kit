@@ -22,6 +22,7 @@
 
 import { existsSync, readdirSync } from 'node:fs'
 import { hostname } from 'node:os'
+import { join } from 'node:path'
 import { CODES, CollabError } from './errors.mjs'
 import { appendEvent, readEvents } from './events.mjs'
 import { assertValidId, newId, systemClock } from './ids.mjs'
@@ -51,7 +52,7 @@ export function createStore({ root, agentId = 'unknown', clock = systemClock, lo
     const out = []
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.json')) continue
-      const record = readJson(`${dir}/${name}`)
+      const record = readJson(join(dir, name))
       if (!record) continue
       if (filter && !filter(record)) continue
       out.push(record)

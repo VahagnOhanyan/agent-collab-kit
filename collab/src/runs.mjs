@@ -35,6 +35,17 @@ import { CODES, CollabError } from './errors.mjs'
 import { FIXED_PATH, FIXED_PATH_DIRS, isExecutableFile, sanitisedEnv } from './paths.mjs'
 import { touchAgent } from './domain/agents.mjs'
 
+const IS_WINDOWS = process.platform === 'win32'
+// Windows' CreateProcess refuses to launch a .cmd/.bat file directly — only
+// true .exe/.com binaries qualify — so an npm-installed runner shim needs
+// shell:true specifically for those two extensions. Everything else (native
+// .exe, or any POSIX runner) keeps shell:false, so rule 1's "fixed argv,
+// never a shell string" guarantee is unchanged for the common case; even here
+// `argv` stays an array and Node quotes each element itself before handing
+// the line to cmd.exe, so a runner argument still cannot inject a second
+// command the way a hand-built shell string could.
+const needsWindowsShell = (executable) => IS_WINDOWS && /\.(cmd|bat)$/i.test(executable)
+
 // 5. The inherited environment is not trusted (a repository's .mcp.json can set
 //    it). A bare command name is looked up on the FIXED PATH only, and the child
 //    gets a sanitised environment: no GIT_*, NODE_OPTIONS or loader variables,
@@ -93,7 +104,10 @@ function workingTree(ctx) {
 }
 
 function resolveCommand(command) {
-  if (command.includes('/')) return command
+  // A path, not a bare name, needs no PATH lookup — but a Windows relative
+  // path (".\scripts\test.cmd") uses "\", which a POSIX-only `/`-check would
+  // miss, sending it through the FIXED_PATH_DIRS lookup below by mistake.
+  if (isAbsolute(command) || command.includes('/') || command.includes(sep)) return command
   for (const dir of FIXED_PATH_DIRS) {
     const candidate = join(dir, command)
     if (isExecutableFile(candidate)) return candidate
@@ -215,7 +229,7 @@ export async function startRun(ctx, { runner, args = [], task_id = null, wait_se
 
   const logFile = ctx.store.paths.runLog(record.id)
   const finished = new Promise((resolve) => {
-    const child = spawn(executable, argv, { cwd, shell: false, env: sanitisedEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(executable, argv, { cwd, shell: needsWindowsShell(executable), env: sanitisedEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     let timedOut = false
     const timer = setTimeout(() => {

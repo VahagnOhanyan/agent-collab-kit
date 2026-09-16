@@ -9,12 +9,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, parse as parsePath } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
 import { CODES } from '../src/errors.mjs'
 import { initJournal, resolveRoots } from '../src/paths.mjs'
 import { git, gitRepo, initialisedJournal, tempDir, writeFixtureConfig } from './helpers.mjs'
+
+// '/' on POSIX, 'C:\' on Windows.
+const FILESYSTEM_ROOT = parsePath(process.cwd()).root
 
 function repoWithWorktree() {
   const base = tempDir('collab-roots-')
@@ -139,7 +142,7 @@ test('the home directory and / are refused, however they were reached', () => {
     gitRepo(home, { commit: false })
     assert.throws(() => resolveRoots({ cwd: join(home, 'Downloads'), home }), (e) => e.code === CODES.ROOT_REFUSED && /home directory/.test(e.message))
 
-    assert.throws(() => resolveRoots({ cwd: base, projectRoot: '/', home }), (e) => e.code === CODES.ROOT_REFUSED && /filesystem root/.test(e.message))
+    assert.throws(() => resolveRoots({ cwd: base, projectRoot: FILESYSTEM_ROOT, home }), (e) => e.code === CODES.ROOT_REFUSED && /filesystem root/.test(e.message))
     assert.throws(() => resolveRoots({ cwd: base, projectRoot: home, home }), (e) => e.code === CODES.ROOT_REFUSED)
     assert.throws(() => resolveRoots({ cwd: base, projectRoot: 'relative/dir', home }), (e) => e.code === CODES.ROOT_REFUSED && /absolute/.test(e.message))
 

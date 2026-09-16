@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, parse as parsePath } from 'node:path'
 import { CollabConfigError } from './errors.mjs'
 import { safeRealpath } from './paths.mjs'
 
@@ -48,7 +48,10 @@ export function readProjectEntry(dir, name, { home = homedir() } = {}) {
       continue
     }
     const real = safeRealpath(root)
-    if (real === '/' || real === realHome) entry.problems.push(`${where}: root ${root} is the filesystem root or the home directory`)
+    // A literal '/' check never fires on Windows, where a drive root looks
+    // like "C:\" — path.parse(real).root is '/' there and 'C:\' here, so this
+    // catches both without a platform branch.
+    if (real === parsePath(real).root || real === realHome) entry.problems.push(`${where}: root ${root} is the filesystem root or the home directory`)
     if (!existsSync(root)) entry.warnings.push(`${where}: root ${root} does not exist on this machine`)
     entry.roots.push(root)
     entry.realRoots.push(real)

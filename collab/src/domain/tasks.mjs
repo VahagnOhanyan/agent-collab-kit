@@ -140,7 +140,7 @@ export function createTask(ctx, input) {
       action_class: verdict.action_class,
       requires_approval: verdict.requires_approval,
       approval_id: null,
-      files,
+      files: normalisePaths(files),
       depends_on,
       spec: taskSpec,
       lease: null,
@@ -280,6 +280,7 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
     // Field edits (title, description, files…) by any agent keep their old
     // behaviour. STATUS changes do not: see below.
     const fields = { ...task, ...pick(patch, ['title', 'description', 'priority', 'files', 'depends_on', 'branch', 'waiting_on']) }
+    if (patch.files !== undefined) fields.files = normalisePaths(fields.files)
     // `spec` is merged, not replaced: it is filled in as the work is understood,
     // and having to re-send the whole thing to add one criterion is how a field
     // like this ends up unused. It is handled here rather than in `pick` for
@@ -395,6 +396,17 @@ export function claimFiles(ctx, { task_id, paths }) {
     return project(ctx, next)
   })
 }
+
+// Claimed paths are free-form strings an agent chooses, never run through
+// node:path — overlaps() below treats a literal '/' as the nesting separator
+// (matching git's own path spelling, which never uses '\' even on a Windows
+// checkout). Normalising every path to that form here, once, wherever one
+// enters `files` (create_task, update_task, claim_files), keeps the
+// comparison correct regardless of which OS the calling agent runs on —
+// without a Windows-flavoured agent's backslashed claim silently failing to
+// register as nested under a POSIX-spelled directory claim.
+const toPosixPath = (p) => String(p).replace(/\\/g, '/')
+const normalisePaths = (paths) => (Array.isArray(paths) ? paths.map(toPosixPath) : paths)
 
 // Directory-prefix aware: claiming `Tripix/TripMap/` conflicts with a claim on a
 // file inside it, which is the case that actually bites.

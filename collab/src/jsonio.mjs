@@ -28,20 +28,41 @@ export function readJson(file, fallback = null) {
   }
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+const RETRYABLE_RENAME = new Set(['EPERM', 'EBUSY', 'EACCES'])
+const RENAME_ATTEMPTS = 5
+
 export function writeJsonAtomic(file, value, { tmpDir } = {}) {
   const staging = tmpDir || join(dirname(file), '.tmp')
   if (!existsSync(staging)) mkdirSync(staging, { recursive: true })
   const temp = join(staging, `${basename(file)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`)
   writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  try {
-    renameSync(temp, file)
-  } catch (error) {
+  for (let attempt = 1; ; attempt += 1) {
     try {
-      unlinkSync(temp)
-    } catch {
-      // The rename is the failure worth reporting; a leftover staging file is not.
+      renameSync(temp, file)
+      return value
+    } catch (error) {
+      // POSIX rename(2) atomically replaces an existing destination no matter
+      // what — every record update here overwrites the previous version.
+      // Windows' MoveFileEx equivalent can transiently fail with EPERM/EBUSY/
+      // EACCES if something else (an AV scanner, an editor's file watch, a
+      // reader mid-open) holds `file` without FILE_SHARE_DELETE for a moment —
+      // a window that does not exist on POSIX. A short retry absorbs it; on
+      // POSIX this loop always succeeds on the first attempt, so it costs
+      // nothing there.
+      if (attempt < RENAME_ATTEMPTS && RETRYABLE_RENAME.has(error.code)) {
+        sleepSync(10 * attempt)
+        continue
+      }
+      try {
+        unlinkSync(temp)
+      } catch {
+        // The rename is the failure worth reporting; a leftover staging file is not.
+      }
+      throw error
     }
-    throw error
   }
-  return value
 }

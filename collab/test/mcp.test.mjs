@@ -14,7 +14,7 @@ import { join } from 'node:path'
 
 import { TOOLS } from '../src/mcp/tools.mjs'
 import { SUPPORTED_PROTOCOL_VERSIONS } from '../src/mcp/server.mjs'
-import { runCli, sandbox, startServer, tempDir, toolPayload } from './helpers.mjs'
+import { homeEnv, runCli, sandbox, startServer, tempDir, toolPayload } from './helpers.mjs'
 
 // A server inside an initialised sandbox project.
 const serverIn = (sbx, extra = {}) => startServer({ cwd: sbx.root, options: sbx.options, ...extra })
@@ -99,7 +99,7 @@ test('a session opened where the root resolves to the home directory gets ROOT_R
   const home = tempDir('collab-mcp-home-')
   mkdirSync(join(home, '.collab'))
   mkdirSync(join(home, 'Desktop'))
-  const server = startServer({ cwd: join(home, 'Desktop'), env: { HOME: home }, options: { registryDir: join(home, 'registry') } })
+  const server = startServer({ cwd: join(home, 'Desktop'), env: homeEnv(home), options: { registryDir: join(home, 'registry') } })
   try {
     await server.request(1, 'initialize', { protocolVersion: '2025-06-18' })
     const who = await server.request(2, 'tools/call', { name: 'whoami', arguments: {} })

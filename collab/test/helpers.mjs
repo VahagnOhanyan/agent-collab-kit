@@ -20,6 +20,13 @@ export const KIT_REGISTRY = join(HERE, '..', '..', 'projects')
 
 export const tempDir = (prefix = 'collab-') => realpathSync(mkdtempSync(join(tmpdir(), prefix)))
 
+// os.homedir() reads $HOME on POSIX but %USERPROFILE% on Windows — a test
+// that spawns a child process and sets only HOME to fake its home directory
+// silently stops overriding anything there, and the child ends up resolving
+// the machine's real home instead of the fixture. Use this wherever a test
+// needs a child process to believe `home` is its home directory.
+export const homeEnv = (home) => (process.platform === 'win32' ? { USERPROFILE: home } : { HOME: home })
+
 export function cleanEnv(extra = {}) {
   const env = {}
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith('COLLAB_')) env[key] = value

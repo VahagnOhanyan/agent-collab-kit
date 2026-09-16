@@ -8,6 +8,15 @@ import { spawn } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+const IS_WINDOWS = process.platform === 'win32'
+// A directory symlink needs no elevation on POSIX; on Windows the equivalent
+// that doesn't need admin/Developer Mode is a junction, which every call site
+// below can use unchanged since all of their targets are already absolute
+// (tempDir()/sbx.base always return an absolute realpath, and junctions
+// require an absolute target). There is no such escape hatch for a *file*
+// symlink (see the one call site below that still calls symlinkSync directly).
+const linkDir = (target, dest) => symlinkSync(target, dest, IS_WINDOWS ? 'junction' : undefined)
+
 import { createApi } from '../src/api.mjs'
 import { CODES } from '../src/errors.mjs'
 import { resolveApproval } from '../src/domain/approvals.mjs'
@@ -182,13 +191,13 @@ test('D: a symlinked .collab is not a journal — NOT_INITIALIZED, and its targe
     const target = join(base, 'elsewhere')
     mkdirSync(target)
     const repo = gitRepo(join(base, 'repo'))
-    symlinkSync(target, join(repo, '.collab'))
+    linkDir(target, join(repo, '.collab'))
     assert.throws(() => createApi({ agentId: 'claude', cwd: repo, configDir }), (e) => e.code === CODES.NOT_INITIALIZED)
     assert.deepEqual(readdirSync(target), [])
 
     const plain = join(base, 'plain')
     mkdirSync(join(plain, 'sub'), { recursive: true })
-    symlinkSync(target, join(plain, '.collab'))
+    linkDir(target, join(plain, '.collab'))
     assert.throws(() => createApi({ agentId: 'claude', cwd: join(plain, 'sub'), configDir }), (e) => e.code === CODES.NOT_INITIALIZED)
     assert.deepEqual(readdirSync(target), [])
 
@@ -264,7 +273,7 @@ test('D: a journal whose layout entry is a symlink is refused', () => {
     const repo = gitRepo(join(base, 'repo'))
     const state = join(repo, '.collab')
     for (const dir of LAYOUT.filter((d) => d !== 'runs')) mkdirSync(join(state, dir), { recursive: true })
-    symlinkSync(outside, join(state, 'runs'))
+    linkDir(outside, join(state, 'runs'))
     writeFileSync(join(state, 'events.jsonl'), '')
     assert.throws(() => createApi({ agentId: 'claude', cwd: repo, configDir }), (e) => e.code === CODES.NOT_INITIALIZED && /runs/.test(e.message))
     assert.deepEqual(readdirSync(outside), [])
@@ -311,7 +320,7 @@ test('E: a runner cwd that is a symlink out of the working tree is refused', asy
     const outside = join(sbx.base, 'outside')
     mkdirSync(outside)
     rmSync(join(sbx.root, 'backend'), { recursive: true, force: true })
-    symlinkSync(outside, join(sbx.root, 'backend'))
+    linkDir(outside, join(sbx.root, 'backend'))
     const runner = { ...markerRunner('ran-here'), cwd: 'backend' }
     const configDir = writeFixtureConfig(join(sbx.base, 'cfg-cwd'), { runners: { runners: { 'in-backend': runner } } })
     const { claude } = apis(sbx, { configDir })
@@ -329,8 +338,13 @@ test('E: a path argument that resolves out of the tree, or only prefix-matches i
     mkdirSync(outside)
     writeFileSync(join(outside, 'evil.test.js'), '')
     const tests = join(sbx.root, 'backend', 'test')
-    symlinkSync(join(outside, 'evil.test.js'), join(tests, 'evil.test.js'))
-    symlinkSync(outside, join(tests, 'linked'))
+    // A FILE symlink, unlike every other link in this suite — junctions only
+    // cover directories, and a real Windows file symlink needs admin/Developer
+    // Mode that a CI runner does not grant. Created on POSIX only; the escape
+    // this guards against is still exercised on Windows via the directory
+    // junction right below (`backend/test/linked/evil.test.js`).
+    if (!IS_WINDOWS) symlinkSync(join(outside, 'evil.test.js'), join(tests, 'evil.test.js'))
+    linkDir(outside, join(tests, 'linked'))
     mkdirSync(join(sbx.root, 'backend', 'testing'))
     writeFileSync(join(sbx.root, 'backend', 'testing', 'x.test.js'), '')
     writeFileSync(join(tests, 'ok.test.js'), '')
@@ -346,7 +360,13 @@ test('E: a path argument that resolves out of the tree, or only prefix-matches i
     const configDir = writeFixtureConfig(join(sbx.base, 'cfg-args'), { runners: { runners: { paths: runner } } })
     const { claude } = apis(sbx, { configDir })
 
-    for (const arg of ['backend/test/evil.test.js', 'backend/test/linked/evil.test.js', 'backend/testing/x.test.js']) {
+    // On Windows 'backend/test/evil.test.js' was never created (see above) —
+    // asserting it separately would just be "a nonexistent path is refused",
+    // not a proof of symlink-escape refusal.
+    const escapeArgs = IS_WINDOWS
+      ? ['backend/test/linked/evil.test.js', 'backend/testing/x.test.js']
+      : ['backend/test/evil.test.js', 'backend/test/linked/evil.test.js', 'backend/testing/x.test.js']
+    for (const arg of escapeArgs) {
       await assert.rejects(claude.startRun({ runner: 'paths', args: [arg], wait_seconds: 10 }), (e) => e.code === CODES.RUNNER_REFUSED, arg)
     }
     const ok = await claude.startRun({ runner: 'paths', args: ['backend/test/ok.test.js'], wait_seconds: 30 })

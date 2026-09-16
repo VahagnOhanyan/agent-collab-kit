@@ -7,13 +7,16 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, parse as parsePath } from 'node:path'
 
-import { git, gitRepo, runCli, tempDir } from './helpers.mjs'
+import { git, gitRepo, homeEnv, runCli, tempDir } from './helpers.mjs'
 
 const countLines = (text, line) => text.split('\n').filter((l) => l.trim() === line).length
 const exclude = (repo) => join(repo, '.git', 'info', 'exclude')
 const read = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : '')
+// '/' on POSIX, 'C:\' on Windows — always exists, always a directory outside
+// any project, so it stands in for "the filesystem root" on either platform.
+const FILESYSTEM_ROOT = parsePath(process.cwd()).root
 
 test('H: init in a git subdirectory creates the journal at the root and ignores it via info/exclude, idempotently', () => {
   const base = tempDir('collab-init-')
@@ -109,18 +112,18 @@ test('init refuses the home directory and /, and creates nothing', () => {
   try {
     const home = join(base, 'home')
     mkdirSync(home)
-    const inHome = runCli(['init'], { cwd: home, env: { HOME: home } })
+    const inHome = runCli(['init'], { cwd: home, env: homeEnv(home) })
     assert.equal(inHome.status, 1)
     assert.match(inHome.stderr, /ROOT_REFUSED/)
     assert.match(inHome.stderr, /home directory/)
     assert.equal(existsSync(join(home, '.collab')), false)
 
-    const atRoot = runCli(['init'], { cwd: '/', env: { HOME: home } })
+    const atRoot = runCli(['init'], { cwd: FILESYSTEM_ROOT, env: homeEnv(home) })
     assert.equal(atRoot.status, 1)
     assert.match(atRoot.stderr, /ROOT_REFUSED/)
     assert.match(atRoot.stderr, /filesystem root/)
 
-    const viaOption = runCli(['init'], { cwd: base, env: { HOME: home }, options: { projectRoot: '/' } })
+    const viaOption = runCli(['init'], { cwd: base, env: homeEnv(home), options: { projectRoot: FILESYSTEM_ROOT } })
     assert.equal(viaOption.status, 1)
     assert.match(viaOption.stderr, /ROOT_REFUSED/)
   } finally {

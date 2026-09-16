@@ -57,6 +57,13 @@ export function readOwner(lockPath) {
   }
 }
 
+// process.kill(pid, 0) is a real existence probe on Windows too (libuv routes
+// it through OpenProcess), but the EPERM branch below encodes POSIX cross-user
+// permission semantics that do not map cleanly onto Windows access-denied
+// errors — kept as the conservative default (treat as alive, never steal a
+// lock you're unsure about) on every platform. Whether Windows ever actually
+// reaches this branch is for CI (windows-latest, lock.test.mjs's "killed
+// holder"/"another host" cases) to settle, not something asserted here.
 function processAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
@@ -80,6 +87,8 @@ export function isStale(owner, mtimeMs, now, staleMs) {
 export function acquireSync(lockPath, { agentId = 'unknown', staleMs = DEFAULTS.staleMs } = {}) {
   const token = randomBytes(6).toString('hex')
   try {
+    // 0o644 is a no-op on Windows (no POSIX permission bits); the lock's
+    // atomicity comes from 'wx' (O_CREAT|O_EXCL), which NTFS honours too.
     const fd = openSync(lockPath, 'wx', 0o644)
     writeSync(
       fd,

@@ -29,12 +29,26 @@ const { pathToFileURL } = require('node:url')
 
 const KEEP_RELEASES = 3
 const MIN_NODE_MAJOR = 18
+const IS_WINDOWS = process.platform === 'win32'
+// Windows has no chmod-style executable bit; the shell (and libuv's own PATH
+// search) instead tries each of these extensions in order. Read once at
+// startup, not per lookup, so a `--bindir`/env change mid-run can't matter.
+const PATHEXT = Object.freeze(
+  (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim().toLowerCase()).filter(Boolean)
+)
 // No single default is right everywhere: Apple Silicon Homebrew, Intel
 // Homebrew and a typical Linux box each expect launchers in a different
-// place. The first of these that already exists as a directory wins; none
-// existing is a clear, actionable error (--bindir) instead of a silent
-// macOS-only assumption.
-const BINDIR_CANDIDATES = Object.freeze(['/opt/homebrew/bin', '/usr/local/bin'])
+// place; Windows has no package-manager bin dir at all, so the one directory
+// that is (a) writable without admin and (b) already on a fresh user's PATH
+// is %LOCALAPPDATA%\Microsoft\WindowsApps (Windows adds it for per-user app
+// execution aliases since the 2017 Fall Creators Update). The first of these
+// that already exists as a directory wins; none existing is a clear,
+// actionable error (--bindir) instead of a silent single-OS assumption.
+const BINDIR_CANDIDATES = Object.freeze(
+  IS_WINDOWS
+    ? [process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps') : null].filter(Boolean)
+    : ['/opt/homebrew/bin', '/usr/local/bin']
+)
 const SERVER_REL = 'collab/src/mcp/server.mjs'
 const REQUIRED_PATHS = Object.freeze([
   'agents/implementer.md',
@@ -49,10 +63,23 @@ const REQUIRED_PATHS = Object.freeze([
   'collab/test'
 ])
 // The node written into both registrations. A stable symlink survives a Node
-// upgrade; process.execPath (a Homebrew Cellar path) does not.
-const NODE_CANDIDATES = Object.freeze(['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'])
-const GIT_CANDIDATES = Object.freeze(['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'])
-const TAR = '/usr/bin/tar'
+// upgrade; process.execPath (a Homebrew Cellar path) does not. On Windows the
+// official installer always lands at Program Files and rewrites in place on
+// upgrade, so there is no Cellar-style moving target to guard against.
+const NODE_CANDIDATES = Object.freeze(
+  IS_WINDOWS
+    ? ['C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files (x86)\\nodejs\\node.exe']
+    : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
+)
+const GIT_CANDIDATES = Object.freeze(
+  IS_WINDOWS
+    ? ['C:\\Program Files\\Git\\bin\\git.exe', 'C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\bin\\git.exe']
+    : ['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git']
+)
+// %WINDIR%\System32\tar.exe (shipped since Windows 10 1803) is a bsdtar
+// build — the same dialect as macOS's own /usr/bin/tar, so the `-xf ... -C`
+// flags used below need no platform branch.
+const TAR = IS_WINDOWS ? path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar'
 const RELEASE_NAME = /^[0-9a-f]{7,40}$/
 const RESTART = 'перезапустите открытые сессии Claude, Codex и Gemini'
 
@@ -77,8 +104,17 @@ const realpathOr = (p) => {
 }
 const rand = () => crypto.randomBytes(4).toString('hex')
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex')
-const isInside = (child, parent) => child === parent || child.startsWith(parent + path.sep)
-const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
+// NTFS is case-preserving but case-insensitive, and git-for-windows can hand
+// back a differently-cased drive letter than fs.realpathSync does — so an
+// exact string compare of two "identical" paths can spuriously fail there.
+const samePath = (a, b) => (IS_WINDOWS ? path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase() : a === b)
+const isInside = (child, parent) => samePath(child, parent) || (IS_WINDOWS ? path.normalize(child).toLowerCase() : child).startsWith((IS_WINDOWS ? path.normalize(parent).toLowerCase() : parent) + path.sep)
+// This string is only ever printed as a paste-and-run hint (rollbackCommand),
+// never executed by this process — POSIX single-quote escaping is simply
+// invalid syntax in cmd.exe/PowerShell, so Windows gets its own quoting.
+const shellQuote = IS_WINDOWS
+  ? (s) => (/^[\w@%+=:,./\\-]+$/.test(s) ? s : `"${String(s).replace(/"/g, '""')}"`)
+  : (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
 const out = (line = '') => process.stdout.write(`${line}\n`)
 const tail = (text, n = 40) => String(text || '').split('\n').slice(-n).join('\n')
 
@@ -86,6 +122,22 @@ function describeEntry(st) {
   if (st.isDirectory()) return 'directory'
   if (st.isFile()) return 'regular file'
   return 'special file'
+}
+
+// process.env is case-insensitive on Windows (the real variable is usually
+// spelled "Path", not "PATH") but a plain object copied from it is not: two
+// differently-cased keys would both survive and whichever a child's libc
+// reads first wins. Finding and overwriting the existing key (instead of
+// always adding "PATH") keeps there being exactly one.
+function pathKeyOf(env) {
+  if (!IS_WINDOWS) return 'PATH'
+  return Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH'
+}
+function setPath(env, dirs) {
+  const key = pathKeyOf(env)
+  for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH' && k !== key) delete env[k]
+  env[key] = dirs.join(path.delimiter)
+  return env
 }
 
 // The environment for child processes that run kit code (tests, smoke): no
@@ -99,7 +151,7 @@ function childEnv(extra = {}) {
     if (['NODE_OPTIONS', 'NODE_TEST_CONTEXT', 'LD_PRELOAD', 'LD_LIBRARY_PATH'].includes(key)) continue
     env[key] = value
   }
-  env.PATH = [path.dirname(process.execPath), process.env.PATH || '/usr/bin:/bin'].join(':')
+  setPath(env, [path.dirname(process.execPath), process.env[pathKeyOf(process.env)] || (IS_WINDOWS ? '' : '/usr/bin:/bin')])
   return { ...env, ...extra }
 }
 
@@ -107,14 +159,19 @@ function childEnv(extra = {}) {
 const GIT = GIT_CANDIDATES.find((p) => {
   try {
     const st = fs.statSync(p)
-    return st.isFile() && (st.mode & 0o111) !== 0
+    return st.isFile() && (IS_WINDOWS || (st.mode & 0o111) !== 0)
   } catch {
     return false
   }
 })
 function gitEnv() {
   const env = childEnv()
-  env.PATH = [path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin'].join(':')
+  setPath(
+    env,
+    IS_WINDOWS
+      ? [path.dirname(process.execPath), path.dirname(GIT || ''), process.env.WINDIR ? path.join(process.env.WINDIR, 'System32') : 'C:\\Windows\\System32']
+      : [path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin']
+  )
   return env
 }
 function git(cwd, args) {
@@ -124,35 +181,45 @@ function git(cwd, args) {
   return r
 }
 
+// NTFS has no chmod-style executable bit. Node approximates one for a small
+// set of recognised extensions (.exe/.cmd/.bat/.com), which is enough for the
+// absolute candidates above (already spelled with .exe) — so on Windows this
+// only needs to answer "does a file exist here", and PATHEXT-extension
+// guessing for bare names is commandExists()'s job, not this function's.
 function isExecutableFile(p) {
   try {
     const st = fs.statSync(p)
-    return st.isFile() && (st.mode & 0o111) !== 0
+    if (!st.isFile()) return false
+    return IS_WINDOWS || (st.mode & 0o111) !== 0
   } catch {
     return false
   }
 }
 
 // First existing NODE_CANDIDATE, kept as that (symlink) path. Otherwise the
-// realpath of what `command -v node` finds on PATH, with a warning.
-function resolveNode({ candidates = NODE_CANDIDATES, pathEnv = process.env.PATH || '' } = {}) {
+// realpath of what a PATH scan finds, with a warning.
+function resolveNode({ candidates = NODE_CANDIDATES, pathEnv = process.env[pathKeyOf(process.env)] || '' } = {}) {
   for (const candidate of candidates) if (isExecutableFile(candidate)) return { path: candidate, warning: null }
-  for (const dir of pathEnv.split(':')) {
+  const names = IS_WINDOWS ? ['node.exe', 'node.cmd'] : ['node']
+  for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir || !path.isAbsolute(dir)) continue
-    const found = path.join(dir, 'node')
-    if (!isExecutableFile(found)) continue
-    const real = fs.realpathSync(found)
-    return {
-      path: real,
-      warning: `none of ${candidates.join(', ') || '(no candidates)'} exists; registering ${real} (realpath of \`command -v node\`), which may break when Node is upgraded`
+    for (const name of names) {
+      const found = path.join(dir, name)
+      if (!isExecutableFile(found)) continue
+      const real = fs.realpathSync(found)
+      return {
+        path: real,
+        warning: `none of ${candidates.join(', ') || '(no candidates)'} exists; registering ${real} (resolved from PATH), which may break when Node is upgraded`
+      }
     }
   }
   throw new InstallError(`no node found: none of ${candidates.join(', ') || '(no candidates)'} exists and there is no node on PATH`)
 }
 
 // First existing BINDIR_CANDIDATE. Unlike resolveNode there is no PATH-scan
-// fallback — a launcher symlink needs a specific directory chosen on purpose,
-// not the first directory some command happens to resolve into.
+// fallback — a launcher (symlink on POSIX, .cmd shim on Windows) needs a
+// specific directory chosen on purpose, not the first directory some command
+// happens to resolve into.
 function resolveBindir(explicit, { candidates = BINDIR_CANDIDATES } = {}) {
   if (explicit) {
     const resolved = path.resolve(explicit)
@@ -167,14 +234,24 @@ function resolveBindir(explicit, { candidates = BINDIR_CANDIDATES } = {}) {
 
 // Whether a command is runnable without spawning it: an absolute/relative
 // path is checked directly, a bare name is scanned across PATH exactly like a
-// shell would. Used to decide whether a vendor's CLI is even present before
-// planning to touch its config — a vendor with no CLI installed yet should
-// not be told apart from one that errored.
+// shell would — on Windows that includes trying each PATHEXT extension in
+// turn (npm-installed CLIs like claude/codex/agy ship as .cmd shims there,
+// never as an extension-less file). Used to decide whether a vendor's CLI is
+// even present before planning to touch its config — a vendor with no CLI
+// installed yet should not be told apart from one that errored.
 function commandExists(cmd) {
   if (!cmd) return false
-  if (cmd.includes(path.sep)) return isExecutableFile(cmd)
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    if (dir && isExecutableFile(path.join(dir, cmd))) return true
+  const hasSep = cmd.includes(path.sep) || (IS_WINDOWS && cmd.includes('/'))
+  const candidatesFor = (base) => {
+    if (!IS_WINDOWS) return [base]
+    const lower = base.toLowerCase()
+    if (PATHEXT.some((ext) => lower.endsWith(ext))) return [base]
+    return [base, ...PATHEXT.map((ext) => base + ext)]
+  }
+  if (hasSep) return candidatesFor(cmd).some(isExecutableFile)
+  for (const dir of (process.env[pathKeyOf(process.env)] || '').split(path.delimiter)) {
+    if (!dir) continue
+    if (candidatesFor(path.join(dir, cmd)).some(isExecutableFile)) return true
   }
   return false
 }
@@ -224,9 +301,14 @@ function ensureDir(dir, journal) {
   return missing
 }
 
-function atomicSymlink(target, dest) {
+// `type` matters only on Windows ('file' | 'dir' | 'junction'); POSIX ignores
+// it. Left undefined, Node auto-detects by statting `target` — which, for a
+// *relative* target, resolves against process.cwd(), not dest's own
+// directory, and guesses wrong. Every Windows call site below passes an
+// explicit type and an absolute target for exactly that reason.
+function atomicSymlink(target, dest, type) {
   const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.agent-kit-tmp-${process.pid}-${rand()}`)
-  fs.symlinkSync(target, tmp)
+  fs.symlinkSync(target, tmp, type)
   try {
     fs.renameSync(tmp, dest)
   } catch (error) {
@@ -235,6 +317,13 @@ function atomicSymlink(target, dest) {
   }
 }
 
+// `mode` (0o600 for Codex/Gemini configs, the lock file) is a no-op on
+// Windows: NTFS has no POSIX permission bits, and Node only approximates one
+// by toggling the read-only attribute — it does not restrict the file to the
+// current user the way 0o600 does on POSIX. Real confidentiality there would
+// need an explicit ACL (icacls-equivalent), which this installer does not
+// set; on a personal single-user Windows machine that gap is accepted, not
+// fixed, and is called out here rather than left silent.
 function writeFileAtomic(file, buffer, mode) {
   const tmp = `${file}.agent-kit-tmp-${process.pid}-${rand()}`
   const fd = fs.openSync(tmp, 'wx', mode)
@@ -372,6 +461,9 @@ function makeContext(opts) {
 function acquireLock(ctx) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
+      // 0o600 is a no-op on Windows (see writeFileAtomic's comment) — the
+      // lock's correctness rests on 'wx' (O_CREAT|O_EXCL), which NTFS honours
+      // via CreateFile(CREATE_NEW), not on the mode bits.
       const fd = fs.openSync(ctx.lockPath, 'wx', 0o600)
       fs.writeSync(fd, String(process.pid))
       fs.closeSync(fd)
@@ -381,6 +473,13 @@ function acquireLock(ctx) {
       const pid = Number(fs.readFileSync(ctx.lockPath, 'utf8').trim())
       let alive = false
       try {
+        // process.kill(pid, 0) is a real existence probe on Windows too (via
+        // OpenProcess), but the EPERM-means-"alive, just not mine to signal"
+        // fallback below encodes POSIX cross-user semantics that do not map
+        // cleanly onto Windows access-denied errors. Kept as the conservative
+        // default (treat as alive, never steal a lock you're unsure about) on
+        // both platforms; whether Windows actually reaches this branch is for
+        // CI (windows-latest) to confirm, not something asserted here.
         if (pid > 0) process.kill(pid, 0)
         alive = pid > 0
       } catch (e) {
@@ -401,7 +500,11 @@ function inspectSource(ctx) {
   const real = fs.realpathSync(dir)
   const top = git(real, ['rev-parse', '--show-toplevel'])
   if (top.status !== 0) throw new InstallError(`source ${dir} is not a git repository`)
-  if (realpathOr(top.stdout.trim()) !== real) {
+  // Git for Windows can print --show-toplevel with forward slashes and/or a
+  // differently-cased drive letter than fs.realpathSync returns for the same
+  // directory — samePath() normalises both before comparing so that is not
+  // mistaken for "not the top level".
+  if (!samePath(realpathOr(top.stdout.trim()), real)) {
     throw new InstallError(`source ${dir} is inside the repository ${top.stdout.trim()} but is not its top level`)
   }
   const head = git(real, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])
@@ -438,7 +541,15 @@ function manifest(root) {
       else if (st.isDirectory()) {
         entries.set(r, 'dir')
         walk(r)
-      } else if (st.isFile()) entries.set(r, `file:${st.mode & 0o111 ? 'x' : '-'}:${sha256(fs.readFileSync(p))}`)
+      } else if (st.isFile()) {
+        // The executable-bit flag is meaningless on Windows (no real chmod,
+        // and tar's translation of it into NTFS's read-only attribute is not
+        // deterministic across separate extractions of the same commit) —
+        // recording it there would risk a false "content differs" between two
+        // honestly-identical copies. The content hash still catches every
+        // real change; only the display flag is dropped.
+        entries.set(r, `file:${!IS_WINDOWS && st.mode & 0o111 ? 'x' : '-'}:${sha256(fs.readFileSync(p))}`)
+      }
       else entries.set(r, 'special')
     }
   }
@@ -647,7 +758,11 @@ async function smoke(dir, node) {
     const journal = walkUpFor(empty, '.collab')
     if (journal) throw new InstallError(`smoke folder ${empty} has a .collab above it (${journal}); set TMPDIR elsewhere`)
 
-    const check = spawnSync(path.join(dir, 'bin', 'collab'), ['check-config'], { cwd: empty, env: childEnv(), encoding: 'utf8', timeout: 120_000 })
+    // Always through `node`, never by executing bin/collab directly: that file
+    // has no extension and relies on its shebang to be runnable at all, which
+    // Windows cannot do. Invoking it as an argument to node is strictly more
+    // portable than exec-by-shebang and changes nothing on POSIX.
+    const check = spawnSync(node, [path.join(dir, 'bin', 'collab'), 'check-config'], { cwd: empty, env: childEnv(), encoding: 'utf8', timeout: 120_000 })
     if (check.error || check.status !== 0) {
       throw new InstallError(`bin/collab check-config failed (${check.error ? check.error.message : `exit ${check.status}`}):\n${tail(`${check.stdout}\n${check.stderr}`, 30)}`)
     }
@@ -712,23 +827,42 @@ async function build(ctx, source, journal) {
 
 // ── releases, current, history ─────────────────────────────────────────────
 
+// A Windows junction can read back with an extended-length "\\?\" prefix
+// and/or a trailing separator that a plain relative POSIX target never has;
+// normalise both away before any comparison or reuse as a fresh target.
+function normaliseLinkTarget(raw) {
+  if (!IS_WINDOWS) return raw
+  let s = raw
+  if (s.startsWith('\\\\?\\')) s = s.slice(4)
+  if (s.length > 3 && (s.endsWith('\\') || s.endsWith('/'))) s = s.slice(0, -1)
+  return s
+}
+
 function readCurrent(ctx) {
   const st = lstatOrNull(ctx.currentPath)
   if (!st) return null
   if (!st.isSymbolicLink()) throw new InstallError(`${ctx.currentPath} exists and is not a symlink; refusing to touch it`)
-  const raw = fs.readlinkSync(ctx.currentPath)
-  const resolved = path.resolve(path.dirname(ctx.currentPath), raw)
-  if (path.dirname(resolved) !== ctx.releasesDir || !RELEASE_NAME.test(path.basename(resolved))) {
+  const raw = normaliseLinkTarget(fs.readlinkSync(ctx.currentPath))
+  const resolved = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(path.dirname(ctx.currentPath), raw)
+  if (!samePath(path.dirname(resolved), ctx.releasesDir) || !RELEASE_NAME.test(path.basename(resolved))) {
     throw new InstallError(`${ctx.currentPath} points at ${raw}, not at a release in ${ctx.releasesDir}; refusing to touch it`)
   }
   return { sha: path.basename(resolved), raw }
 }
 
+// POSIX: a relative symlink, exactly as before. Windows: a junction, which
+// needs an absolute target (relative ones are resolved against process.cwd()
+// by Node's own auto-detection, not against ctx.currentPath's directory) and
+// an explicit 'junction' type, since a plain directory symlink would need
+// admin/Developer Mode that a fresh install should never require.
 function switchCurrent(ctx, sha, journal, previousRaw) {
-  atomicSymlink(`releases/${sha}`, ctx.currentPath)
+  const target = IS_WINDOWS ? path.join(ctx.releasesDir, sha) : `releases/${sha}`
+  atomicSymlink(target, ctx.currentPath, IS_WINDOWS ? 'junction' : 'dir')
   journal.add(`switched ${ctx.currentPath} to releases/${sha}`, () => {
-    if (previousRaw) atomicSymlink(previousRaw, ctx.currentPath)
-    else fs.rmSync(ctx.currentPath, { force: true })
+    if (previousRaw) {
+      const prevTarget = IS_WINDOWS && !path.isAbsolute(previousRaw) ? path.resolve(path.dirname(ctx.currentPath), previousRaw) : previousRaw
+      atomicSymlink(prevTarget, ctx.currentPath, IS_WINDOWS ? 'junction' : 'dir')
+    } else fs.rmSync(ctx.currentPath, { force: true })
   })
 }
 
@@ -788,17 +922,24 @@ function pruneReleases(ctx, history, current, previous) {
 
 // ── user-level links ───────────────────────────────────────────────────────
 
+// `kind` only changes behaviour on Windows (see planLinksWindows/
+// applyLinksWindows below); POSIX links everything as a plain symlink exactly
+// as before, so passing a type to atomicSymlink there is accepted but inert.
+// The bindir entry is the one spec whose *name*, not just its handling,
+// differs: `collab` (a shebang script, symlinked and exec'd directly) on
+// POSIX, `collab.cmd` (a generated shim, see cmdShimContent) on Windows,
+// since Windows cannot execute an extension-less file at all.
 function linkSpecs(ctx) {
   return [
-    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review' },
-    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review' },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md' },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md' },
-    { dest: path.join(ctx.bindir, 'collab'), rel: 'bin/collab' }
+    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir' },
+    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir' },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file' },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file' },
+    { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file' }
   ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
 }
 
-function planLinks(ctx) {
+function planLinksPosix(ctx) {
   const plan = []
   const refused = []
   for (const spec of linkSpecs(ctx)) {
@@ -831,7 +972,7 @@ function planLinks(ctx) {
   return plan
 }
 
-function applyLinks(plan, journal, changes) {
+function applyLinksPosix(plan, journal, changes) {
   for (const item of plan) {
     if (item.action === 'create') {
       ensureDir(path.dirname(item.dest), journal)
@@ -851,6 +992,164 @@ function applyLinks(plan, journal, changes) {
       changes.push(`link ${item.dest} -> ${item.target} (was ${item.old})`)
     }
   }
+}
+
+// ── Windows link strategy ───────────────────────────────────────────────────
+// Three different mechanisms behind one plan/apply pair, because Windows has
+// no single equivalent of "a symlink, POSIX ignores the type":
+//   dir       skill folders: a junction (fs.symlinkSync(..., 'junction')) —
+//             the one link-like primitive Windows grants without admin/
+//             Developer Mode, but only for directories and only with an
+//             absolute target (see switchCurrent's comment above).
+//   file      agents/*.md: junctions do not exist for files, and a real file
+//             symlink needs elevation we should not require silently — so
+//             these are plain copies, tracked by content hash in a small
+//             local manifest so a later run can tell "ours, safe to refresh"
+//             from "someone else's file, refuse" without readlinkSync.
+//   cmd-shim  bin/collab at bindir: not just content but a *command* — a
+//             generated .cmd that shells out to `node`, tracked in the same
+//             manifest as the file kind. Its content only ever names
+//             ctx.currentPath, never a specific release, so — unlike every
+//             other kind — it never needs to change across an install or
+//             rollback once created.
+function windowsManifestPath(ctx) {
+  return path.join(ctx.kitDir, 'windows-links.json')
+}
+
+function readWindowsManifest(ctx) {
+  const p = windowsManifestPath(ctx)
+  if (!lstatOrNull(p)) return {}
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeWindowsManifest(ctx, manifest, journal) {
+  const p = windowsManifestPath(ctx)
+  const before = lstatOrNull(p) ? fs.readFileSync(p) : null
+  ensureDir(path.dirname(p), journal)
+  writeFileAtomic(p, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'), 0o600)
+  journal.add(`updated ${p}`, () => {
+    if (before === null) fs.rmSync(p, { force: true })
+    else writeFileAtomic(p, before, 0o600)
+  })
+}
+
+function cmdShimContent(ctx) {
+  const cli = path.join(ctx.currentPath, 'bin', 'collab')
+  // Bare `node`, not an absolute path: the official Windows installer puts
+  // node on PATH, and a bare name means this file never goes stale if Node is
+  // reinstalled elsewhere — unlike the MCP registrations, which do pin an
+  // absolute node path, this is a launcher a human runs interactively.
+  return Buffer.from(`@echo off\r\nnode "${cli}" %*\r\n`, 'utf8')
+}
+
+function desiredWindowsContent(ctx, spec) {
+  return spec.kind === 'cmd-shim' ? cmdShimContent(ctx) : fs.readFileSync(spec.target)
+}
+
+function planLinksWindows(ctx) {
+  const manifest = readWindowsManifest(ctx)
+  const plan = []
+  const refused = []
+  for (const spec of linkSpecs(ctx)) {
+    const parentDir = path.dirname(spec.dest)
+    const parent = lstatOrNull(parentDir)
+    if (parent && !fs.statSync(parentDir).isDirectory()) {
+      refused.push(`${parentDir} exists and is not a directory`)
+      continue
+    }
+    if (spec.kind === 'dir') {
+      const st = lstatOrNull(spec.dest)
+      if (!st) {
+        plan.push({ ...spec, action: 'create' })
+        continue
+      }
+      if (!st.isSymbolicLink()) {
+        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-kit link`)
+        continue
+      }
+      const raw = normaliseLinkTarget(fs.readlinkSync(spec.dest))
+      const resolved = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(path.dirname(spec.dest), raw)
+      if (samePath(resolved, spec.target)) plan.push({ ...spec, action: 'ok', old: raw })
+      else if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) plan.push({ ...spec, action: 'repoint', old: raw })
+      else refused.push(`${spec.dest} is a link to ${raw}, which is not inside ${ctx.kitDir}`)
+      continue
+    }
+    // file / cmd-shim: identity is tracked by content hash in the manifest,
+    // not by readlinkSync — there is no link to read.
+    const want = desiredWindowsContent(ctx, spec)
+    const wantHash = sha256(want)
+    const st = lstatOrNull(spec.dest)
+    if (!st) {
+      plan.push({ ...spec, action: 'create', content: want, hash: wantHash })
+      continue
+    }
+    if (!st.isFile()) {
+      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a file agent-kit manages`)
+      continue
+    }
+    const onDiskHash = sha256(fs.readFileSync(spec.dest))
+    if (manifest[spec.dest] !== onDiskHash) {
+      refused.push(`${spec.dest} exists and was not created by this installer (no matching record in ${windowsManifestPath(ctx)})`)
+      continue
+    }
+    plan.push({ ...spec, action: onDiskHash === wantHash ? 'ok' : 'update', content: want, hash: wantHash })
+  }
+  if (refused.length) {
+    throw new InstallError(
+      `refusing to overwrite files that agent-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
+        'Move them away (or delete them) yourself and run the installer again.'
+    )
+  }
+  return plan
+}
+
+function applyLinksWindows(ctx, plan, journal, changes) {
+  const manifest = readWindowsManifest(ctx)
+  let manifestChanged = false
+  for (const item of plan) {
+    if (item.kind === 'dir') {
+      if (item.action === 'create') {
+        ensureDir(path.dirname(item.dest), journal)
+        atomicSymlink(item.target, item.dest, 'junction')
+        journal.add(`created link ${item.dest}`, () => fs.rmSync(item.dest, { force: true }))
+        changes.push(`link ${item.dest} -> ${item.target} (created)`)
+      } else if (item.action === 'repoint') {
+        const st = lstatOrNull(item.dest)
+        if (!st || !st.isSymbolicLink()) throw new InstallError(`${item.dest} changed while the installer was running`)
+        atomicSymlink(item.target, item.dest, 'junction')
+        journal.add(`repointed link ${item.dest}`, () => atomicSymlink(item.old, item.dest, 'junction'))
+        changes.push(`link ${item.dest} -> ${item.target} (was ${item.old})`)
+      }
+      continue
+    }
+    if (item.action === 'create' || item.action === 'update') {
+      ensureDir(path.dirname(item.dest), journal)
+      const before = lstatOrNull(item.dest) ? fs.readFileSync(item.dest) : null
+      writeFileAtomic(item.dest, item.content, 0o644)
+      journal.add(`wrote ${item.dest}`, () => {
+        if (before === null) fs.rmSync(item.dest, { force: true })
+        else writeFileAtomic(item.dest, before, 0o644)
+      })
+      manifest[item.dest] = item.hash
+      manifestChanged = true
+      changes.push(`${item.kind === 'cmd-shim' ? 'shim' : 'copy'} ${item.dest} (${before === null ? 'created' : 'updated'})`)
+    }
+  }
+  if (manifestChanged) writeWindowsManifest(ctx, manifest, journal)
+}
+
+function planLinks(ctx) {
+  return IS_WINDOWS ? planLinksWindows(ctx) : planLinksPosix(ctx)
+}
+
+function applyLinks(ctx, plan, journal, changes) {
+  if (IS_WINDOWS) applyLinksWindows(ctx, plan, journal, changes)
+  else applyLinksPosix(plan, journal, changes)
 }
 
 function brokenLinks(ctx) {
@@ -1136,7 +1435,13 @@ function runClaude(ctx, args) {
   // and a project's .mcp.json must not be mistaken for the user registration.
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-claude-'))
   try {
-    const r = spawnSync(ctx.claudeBin, args, { cwd, env: childEnv(), encoding: 'utf8', timeout: 120_000 })
+    // On Windows an npm-installed `claude` is a .cmd shim, which CreateProcess
+    // refuses to launch directly (only true .exe/.com binaries qualify) —
+    // shell:true routes it through cmd.exe. Node still receives `args` as an
+    // array here and quotes each element itself before handing the command
+    // line to cmd.exe, so this does not reopen the shell-string-injection
+    // hole that keeping `args` as a plain argv array everywhere else avoids.
+    const r = spawnSync(ctx.claudeBin, args, { cwd, env: childEnv(), encoding: 'utf8', timeout: 120_000, shell: IS_WINDOWS })
     if (r.error) throw new InstallError(`could not run ${ctx.claudeBin} ${args.join(' ')}: ${r.error.message}`)
     return r
   } finally {
@@ -1469,7 +1774,7 @@ async function install(ctx) {
       appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
       changes.push(`current -> releases/${source.sha} (was ${previous || 'none'})`)
     }
-    applyLinks(plan.links, journal, changes)
+    applyLinks(ctx, plan.links, journal, changes)
     const broken = brokenLinks(ctx)
     if (broken.length) throw new InstallError(`links do not resolve after install: ${broken.join(', ')}`)
     for (const c of MCP_CLIENTS) {
@@ -1527,7 +1832,7 @@ function rollback(ctx) {
     switchCurrent(ctx, target, journal, current.raw)
     appendHistory(ctx, { at: new Date().toISOString(), sha: target, previous: current.sha, action: 'rollback' }, journal)
     changes.push(`current -> releases/${target} (was ${current.sha})`)
-    applyLinks(links, journal, changes)
+    applyLinks(ctx, links, journal, changes)
   } catch (error) {
     const undone = journal.rollback()
     if (undone.length) error.message += `\nthis run was rolled back:\n${undone.map((u) => `  ${u}`).join('\n')}`
@@ -1571,7 +1876,8 @@ module.exports = {
   normalizeKey,
   resolveNode,
   compareToolNames,
-  missingPaths
+  missingPaths,
+  cmdShimContent
 }
 
 if (require.main === module) {

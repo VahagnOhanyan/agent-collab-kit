@@ -235,7 +235,10 @@ test('a command in a folder with no journal says NOT_INITIALIZED, names collab i
 test('the collab launcher is executable and drives the same CLI', () => {
   const w = scratch()
   try {
-    assert.ok(statSync(LAUNCHER).mode & 0o111, 'bin/collab must be executable')
+    // NTFS has no chmod-executable-bit concept, and runCli always invokes the
+    // launcher as `node bin/collab` (see helpers.mjs) rather than executing it
+    // directly — so there is nothing meaningful to assert here on Windows.
+    if (process.platform !== 'win32') assert.ok(statSync(LAUNCHER).mode & 0o111, 'bin/collab must be executable')
     // The real bin/collab, with no parameters: it finds the sandbox journal from cwd.
     const help = runCli(['help'], { cwd: w.sbx.root, launcher: true })
     assert.equal(help.status, 0, help.stderr)

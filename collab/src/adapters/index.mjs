@@ -20,10 +20,44 @@
 //            rather than what is configured.
 
 import { execFileSync } from 'node:child_process'
+import { statSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import { manualAdapter } from './manual.mjs'
 import { cliAdapter } from './cli.mjs'
 
+const IS_WINDOWS = process.platform === 'win32'
+const PATHEXT = Object.freeze(
+  (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim().toLowerCase()).filter(Boolean)
+)
+
+function isExecutableFile(p) {
+  try {
+    const st = statSync(p)
+    return st.isFile() && (IS_WINDOWS || (st.mode & 0o111) !== 0)
+  } catch {
+    return false
+  }
+}
+
+// Windows has no `/bin/sh` and no chmod-executable-bit convention — an
+// npm-installed agent CLI (codex, agy, …) there ships as a bare-name .cmd
+// shim, found the same way cmd.exe itself would: each PATHEXT extension in
+// turn, over each PATH directory.
+function whichWindows(binary) {
+  const lower = binary.toLowerCase()
+  const names = PATHEXT.some((ext) => lower.endsWith(ext)) ? [binary] : [binary, ...PATHEXT.map((ext) => binary + ext)]
+  for (const dir of (process.env.PATH || process.env.Path || '').split(delimiter)) {
+    if (!dir) continue
+    for (const name of names) {
+      const candidate = join(dir, name)
+      if (isExecutableFile(candidate)) return candidate
+    }
+  }
+  return null
+}
+
 export function which(binary) {
+  if (IS_WINDOWS) return whichWindows(binary)
   try {
     // /bin/sh by absolute path: the shell itself is never looked up on PATH. The
     // lookup of `binary` does use the caller's PATH on purpose — the question is
