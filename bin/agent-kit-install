@@ -789,6 +789,32 @@ function checkLayout(dir) {
   if (missing.length) throw missingError(`the build copy ${dir}`, missing)
 }
 
+// projects/<id>/ is intentionally .gitignore'd (README.md: "вне самих
+// репозиториев" — trusted per-project config that must not enter this kit's
+// own git history). `git archive` above therefore only carried the tracked
+// projects/README.md into the build copy; every project's actual registry
+// lives only in the source working tree and has to be copied in from disk,
+// exactly as this repo's own README documents ("установщик читает их прямо
+// с диска"). Missing this step (regression, 2026-09-15: the directory was
+// gitignored without adding this copy) silently produced releases whose
+// registryDir held nothing but the README — every registered project fell
+// back to built-in defaults with no error, only a later `collab check-config`
+// failure. Entries already present from the archive (README.md) are left
+// alone rather than overwritten, though on a clean source tree they would be
+// byte-identical either way.
+function copyLiveProjectRegistries(sourceDir, buildDir) {
+  const from = path.join(sourceDir, 'projects')
+  if (!lstatOrNull(from)) return
+  const to = path.join(buildDir, 'projects')
+  fs.mkdirSync(to, { recursive: true })
+  for (const entry of fs.readdirSync(from)) {
+    const entryFrom = path.join(from, entry)
+    const entryTo = path.join(to, entry)
+    if (lstatOrNull(entryTo)) continue
+    fs.cpSync(entryFrom, entryTo, { recursive: true })
+  }
+}
+
 async function build(ctx, source, journal) {
   let parent
   if (ctx.opts.dryRun) parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-dry-')))
@@ -808,6 +834,7 @@ async function build(ctx, source, journal) {
     if (x.error || x.status !== 0) throw new InstallError(`tar -x failed: ${x.error ? x.error.message : x.stderr}`)
     out(`build: git archive ${source.sha} -> ${dir}`)
     checkLayout(dir)
+    copyLiveProjectRegistries(source.dir, dir)
     const before = manifest(dir)
 
     let counts = null

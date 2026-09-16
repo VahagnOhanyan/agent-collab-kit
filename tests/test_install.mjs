@@ -261,7 +261,14 @@ const expectedBlock = (home) =>
 before(() => {
   BASE = realpathSync(mkdtempSync(join(tmpdir(), 'agent-kit-install-test-')))
   TEMPLATE = join(BASE, 'template')
-  const skip = new Set(['.git', 'node_modules', '.collab', '.DS_Store', '__pycache__'])
+  // 'projects': this machine's own registries (e.g. projects/tripix) are
+  // exactly the kind of local, un-reproducible runtime state '.collab' is
+  // excluded for — a real one leaking into TEMPLATE would ride along into
+  // every built release once copyLiveProjectRegistries (agent-kit-install)
+  // starts reading projects/ from disk, and its real policy config can trip
+  // kit-test assertions that have nothing to do with the test being run
+  // (found 2026-09-16 writing the project-registry copy test below).
+  const skip = new Set(['.git', 'node_modules', '.collab', 'projects', '.DS_Store', '__pycache__'])
   cpSync(KIT, TEMPLATE, { recursive: true, verbatimSymlinks: true, filter: (src) => !skip.has(src.split('/').pop()) })
   // ~/agent-kit/agents may still be empty while Ф4 is in progress.
   mkdirSync(join(TEMPLATE, 'agents'), { recursive: true })
@@ -509,6 +516,48 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.equal(readFileSync(join(A.home, '.codex', backups[0]), 'utf8'), CODEX_FIXTURE)
   assert.equal(A.codexCalls(), '', 'codex itself is never run')
   assert.ok(!existsSync(join(A.home, '.agent-kit.lock')))
+})
+
+test('a gitignored project registry on disk is copied into the release, not just projects/README.md from the archive', () => {
+  // Regression, 2026-09-15: projects/<id>/ became .gitignore'd (README.md:
+  // "вне самих репозиториев") without adding a step to carry it into a new
+  // release — `git archive` only ever sees tracked files, so every release
+  // built after that change silently shipped an empty registry (just the
+  // tracked projects/README.md), and every registered project's config
+  // fell back to built-in defaults with no error at install time.
+  const W = makeWorld('project-registry')
+  const source = makeSource('project-registry', (dir) => {
+    // TEMPLATE excludes 'projects' entirely (see before()) so this fixture
+    // stands alone: a tracked README.md (mirrors the real repo's own
+    // projects/README.md, committed by makeSource like everything else
+    // mutate writes) plus a gitignored registry entry (mirrors a real
+    // projects/<id>/, never committed).
+    mkdirSync(join(dir, 'projects', 'test-registry-fixture'), { recursive: true })
+    writeFileSync(join(dir, 'projects', 'README.md'), 'test fixture\n')
+    // `roots` is required (a non-empty array of absolute paths, per the
+    // schema in README.md's "Подключить проект") — the installer's own
+    // `bin/collab check-config` smoke test validates every registered
+    // project, this fixture included, so it has to be schema-valid, not
+    // just present.
+    writeFileSync(
+      join(dir, 'projects', 'test-registry-fixture', 'project.json'),
+      `${JSON.stringify({ id: 'test-registry-fixture', roots: ['/tmp/test-registry-fixture'] }, null, 2)}\n`
+    )
+  })
+  // Confirms the fixture is actually gitignored (as a real project.json
+  // under projects/<id>/ always is) — otherwise this test would not be
+  // exercising the disk-copy path this fix adds, just `git archive`.
+  assert.equal(git(source, ['check-ignore', 'projects/test-registry-fixture']), 'projects/test-registry-fixture')
+
+  const sha = shaOf(source)
+  const r = W.run(['--source', source])
+  assert.equal(r.status, 0, r.all)
+
+  const copied = W.kit('releases', sha, 'projects', 'test-registry-fixture', 'project.json')
+  assert.ok(existsSync(copied), 'gitignored project registry entry copied from disk into the release')
+  assert.deepEqual(JSON.parse(readFileSync(copied, 'utf8')), { id: 'test-registry-fixture', roots: ['/tmp/test-registry-fixture'] })
+  // The tracked README.md still comes through too, via the archive as before.
+  assert.ok(existsSync(W.kit('releases', sha, 'projects', 'README.md')))
 })
 
 test('reinstalling the same commit changes nothing', () => {
