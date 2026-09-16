@@ -469,26 +469,31 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.ok(!Number.isNaN(Date.parse(entry.at)))
 
   const cur = A.kit('current')
-  // Skill directories: on POSIX a symlink, on Windows a junction — either way
-  // the target string is the same (join(currentPath, rel)), so only the raw
-  // readlink noise needs normalising, not the expected value.
-  assert.equal(readLink(join(A.home, '.claude', 'skills', 'codex-review')), join(cur, 'skills', 'codex-review'))
-  assert.equal(readLink(join(A.home, '.claude', 'skills', 'ui-review')), join(cur, 'skills', 'ui-review'))
-  // agents/*.md and the bindir launcher genuinely change mechanism on Windows
-  // (a tracked copy and a generated .cmd shim, not a symlink — see
-  // windowsHybridStrategy in agent-kit-install) — a Windows readlinkSync on
-  // either would simply throw, so what's checked there is behavioural
-  // equivalence (same content as the current release) instead.
+  // Skills and agents: a symlinked directory/file under ~/.claude/skills or
+  // ~/.claude/agents is invisible to Claude Code's own discovery (confirmed
+  // 2026-09-16), so on POSIX these four are real copies refreshed from
+  // `current` on every install/rollback (posixCopy in agent-kit-install's
+  // linkSpecs) — not symlinks, unlike everything else user-level here.
+  // Windows was always a copy for the agents (no admin-free file symlink);
+  // this only changes POSIX and adds the same treatment for directories.
+  for (const skill of ['codex-review', 'ui-review']) {
+    const dest = join(A.home, '.claude', 'skills', skill)
+    assert.equal(lstatSync(dest).isSymbolicLink(), false, `${skill} is a real directory, not a symlink`)
+    assert.ok(readFileSync(join(dest, 'SKILL.md')).equals(readFileSync(join(cur, 'skills', skill, 'SKILL.md'))))
+  }
+  for (const agent of ['implementer', 'verifier']) {
+    const dest = join(A.home, '.claude', 'agents', `${agent}.md`)
+    assert.equal(lstatSync(dest).isSymbolicLink(), false, `${agent}.md is a real file, not a symlink`)
+    assert.ok(readFileSync(dest).equals(readFileSync(join(cur, 'agents', `${agent}.md`))))
+  }
+  // The bindir launcher is unaffected: it is exec'd directly, not scanned by
+  // any skill/agent discovery, so it stays a plain symlink on POSIX.
   if (!IS_WINDOWS) {
-    assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'implementer.md')), join(cur, 'agents', 'implementer.md'))
-    assert.equal(readlinkSync(join(A.home, '.claude', 'agents', 'verifier.md')), join(cur, 'agents', 'verifier.md'))
     assert.equal(readlinkSync(join(A.bindir, 'collab')), join(cur, 'bin', 'collab'))
   } else {
-    assert.ok(readFileSync(join(A.home, '.claude', 'agents', 'implementer.md')).equals(readFileSync(join(cur, 'agents', 'implementer.md'))))
-    assert.ok(readFileSync(join(A.home, '.claude', 'agents', 'verifier.md')).equals(readFileSync(join(cur, 'agents', 'verifier.md'))))
     assert.match(readFileSync(join(A.bindir, 'collab.cmd'), 'utf8'), /node "/)
   }
-  assert.ok(existsSync(join(A.home, '.claude', 'skills', 'codex-review', 'SKILL.md')), 'links resolve')
+  assert.ok(existsSync(join(A.home, '.claude', 'skills', 'codex-review', 'SKILL.md')), 'copy resolves')
   assert.ok(existsSync(join(A.home, '.claude', 'skills', 'my-own-skill', 'SKILL.md')), 'unrelated skill kept')
   const launcher = spawnSync(join(A.bindir, LAUNCHER_NAME), ['check-config'], { encoding: 'utf8', env: cleanEnv(), shell: IS_WINDOWS })
   assert.equal(launcher.status, 0, launcher.stderr)
@@ -621,7 +626,10 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   const r = W.run(['--source', SOURCE, '--skip-kit-tests'])
   assert.notEqual(r.status, 0)
   if (!IS_WINDOWS) {
-    assert.match(r.stderr, /verifier\.md exists and is a regular file/)
+    // verifier.md is now a posixCopy entry (see linkSpecs): ownership is
+    // tracked by content hash, same wording as the Windows branch below,
+    // not "not an agent-kit symlink" — there is no link here to complain about.
+    assert.match(r.stderr, /verifier\.md exists and was not created by this installer/)
     assert.match(r.stderr, /collab is a symlink to \/somewhere\/else\/collab/)
   } else {
     assert.match(r.stderr, /verifier\.md exists and was not created by this installer/)
@@ -629,6 +637,82 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   }
   assert.deepEqual(W.snapshot(), before)
   assert.deepEqual(mutating(W.claudeCalls()), [])
+})
+
+test('posixCopy: a foreign directory is refused; a legitimate copy is a real dir/file (not a symlink), refreshes on content change, and reinstalling the same commit leaves it and its manifest untouched', () => {
+  if (IS_WINDOWS) return // posixCopy only changes behaviour off Windows; Windows already copied these
+
+  const W = makeWorld('posix-copy')
+  mkdirSync(join(W.home, '.claude', 'skills', 'codex-review'), { recursive: true })
+  writeFileSync(join(W.home, '.claude', 'skills', 'codex-review', 'SKILL.md'), "not agent-kit's\n")
+  const beforeForeign = W.snapshot()
+  let r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /codex-review exists and was not created by this installer/)
+  assert.deepEqual(W.snapshot(), beforeForeign, 'refused before anything else ran')
+
+  rmSync(join(W.home, '.claude', 'skills', 'codex-review'), { recursive: true, force: true })
+  r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  const cur = W.kit('current')
+  const skillDest = join(W.home, '.claude', 'skills', 'codex-review')
+  const agentDest = join(W.home, '.claude', 'agents', 'verifier.md')
+  assert.equal(lstatSync(skillDest).isSymbolicLink(), false)
+  assert.equal(lstatSync(agentDest).isSymbolicLink(), false)
+  assert.ok(readFileSync(join(skillDest, 'SKILL.md')).equals(readFileSync(join(cur, 'skills', 'codex-review', 'SKILL.md'))))
+
+  // Content propagates on a normal reinstall of a changed commit — proven
+  // for the directory kind by the rollback test below; proven here for the
+  // file kind (agents/*.md), which shares the same apply-time-fresh-read
+  // path but is a different branch in applyLinksPosix.
+  const originalAgent = readFileSync(join(SOURCE, 'agents', 'verifier.md'), 'utf8')
+  const sha2 = commitChange(SOURCE, 'agents/verifier.md', `${originalAgent}\nposix-copy marker\n`)
+  r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, new RegExp(`installed: ${sha2}`))
+  assert.match(readFileSync(agentDest, 'utf8'), /posix-copy marker/)
+
+  // Reinstalling the identical commit is a true no-op: neither the copies
+  // nor posix-copies.json (the ownership manifest) are rewritten.
+  const manifestPath = join(W.home, '.agent-kit', 'posix-copies.json')
+  const manifestBefore = readFileSync(manifestPath, 'utf8')
+  const snapshotBefore = W.snapshot()
+  r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /changed: nothing \(already installed and registered\)/)
+  assert.equal(readFileSync(manifestPath, 'utf8'), manifestBefore)
+  assert.deepEqual(W.snapshot(), snapshotBefore)
+})
+
+test('posixCopy: migrating from an older install that left plain symlinks-through-current replaces them with real copies, not a refusal', () => {
+  if (IS_WINDOWS) return // the symlink layout this migrates away from never existed on Windows
+
+  const W = makeWorld('posix-migrate')
+  let r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  const cur = W.kit('current')
+  const skillDest = join(W.home, '.claude', 'skills', 'codex-review')
+  const agentDest = join(W.home, '.claude', 'agents', 'verifier.md')
+
+  // Simulate the layout this exact fix replaces: a plain symlink through
+  // `current`, the same shape every OTHER user-level entry still uses.
+  rmSync(skillDest, { recursive: true, force: true })
+  symlinkSync(join(cur, 'skills', 'codex-review'), skillDest)
+  rmSync(agentDest, { force: true })
+  symlinkSync(join(cur, 'agents', 'verifier.md'), agentDest)
+
+  r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /migrated from a symlink/)
+  assert.equal(lstatSync(skillDest).isSymbolicLink(), false, 'no longer a symlink')
+  assert.equal(lstatSync(agentDest).isSymbolicLink(), false, 'no longer a symlink')
+  assert.ok(readFileSync(join(skillDest, 'SKILL.md')).equals(readFileSync(join(cur, 'skills', 'codex-review', 'SKILL.md'))))
+  assert.ok(readFileSync(agentDest).equals(readFileSync(join(cur, 'agents', 'verifier.md'))))
+
+  // Already migrated — running again is a true no-op.
+  r = W.run(['--source', SOURCE, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /changed: nothing \(already installed and registered\)/)
 })
 
 test('a failure after changes began rolls back everything this run changed', () => {
@@ -816,7 +900,11 @@ test('dry-run runs the checks and the smoke test but changes nothing', () => {
   assert.match(r.stdout, /DRY RUN — every check passed; nothing was changed\./)
   assert.match(r.stdout, /planned changes:/)
   assert.match(r.stdout, /current -> releases\//)
-  assert.match(r.stdout, /link .*verifier\.md -> .*current[\\/]agents[\\/]verifier\.md \(create\)/)
+  // verifier.md is a posixCopy entry (see linkSpecs): "copy ... <- ..."
+  // wording, not "link ... ->" — there is no symlink to point at.
+  assert.match(r.stdout, /copy .*verifier\.md <- .*current[\\/]agents[\\/]verifier\.md \(create\)/)
+  // bin/collab is unaffected: still a plain symlink, still "link ... ->".
+  assert.match(r.stdout, /link .*collab -> .*current[\\/]bin[\\/]collab \(create\)/)
   assert.match(r.stdout, /codex: append \[mcp_servers\.collab\]/)
   assert.match(r.stdout, /claude: add user-scope collab/)
   assert.match(r.stdout, /gemini: create mcpServers\.collab/)

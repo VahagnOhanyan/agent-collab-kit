@@ -923,29 +923,181 @@ function pruneReleases(ctx, history, current, previous) {
 // ── user-level links ───────────────────────────────────────────────────────
 
 // `kind` only changes behaviour on Windows (see planLinksWindows/
-// applyLinksWindows below); POSIX links everything as a plain symlink exactly
-// as before, so passing a type to atomicSymlink there is accepted but inert.
+// applyLinksWindows below), except for `posixCopy` (see below).
 // The bindir entry is the one spec whose *name*, not just its handling,
 // differs: `collab` (a shebang script, symlinked and exec'd directly) on
 // POSIX, `collab.cmd` (a generated shim, see cmdShimContent) on Windows,
 // since Windows cannot execute an extension-less file at all.
+//
+// `posixCopy: true` marks the skill/agent entries that Claude Code's own
+// discovery does not see when they are a symlink — confirmed 2026-09-16: a
+// plain (non-symlink) directory or file under ~/.claude/skills or
+// ~/.claude/agents is picked up, but codex-review, ui-review and the two
+// agents, all installed as symlinks-through-`current`, were invisible to the
+// `Skill` tool and the agent-type list in a live session, while every
+// project-level (real-directory) skill in the same run was not. POSIX
+// therefore copies these four instead of symlinking them (see
+// planLinksPosix/applyLinksPosix and the "POSIX copy tracking" section
+// below) — the same real-copy strategy Windows already used for agents/*.md
+// because it has no admin-free file symlink, just generalised to directories
+// and applied on POSIX too. `bin/collab` keeps the plain symlink: it is a
+// launcher a human execs directly, not something either scanner reads.
 function linkSpecs(ctx) {
   return [
-    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir' },
-    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir' },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file' },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file' },
-    { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file' }
+    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
+    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
+    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
+    { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false }
   ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
 }
 
+// ── POSIX copy tracking (skill/agent entries a symlink hides, see linkSpecs) ─
+//
+// Ownership here is tracked by content hash in a small local manifest, the
+// same idea windowsManifestPath uses for its file-kind entries — there is no
+// readlinkSync to fall back on once the destination is a real directory or
+// file. Deliberately a separate manifest/functions rather than reusing the
+// Windows ones: this only runs on POSIX, and keeping it apart means touching
+// it can never perturb the (untested on this machine — nobody here runs
+// Windows) Windows code path.
+function copiedFilesManifestPath(ctx) {
+  return path.join(ctx.kitDir, 'posix-copies.json')
+}
+
+function readCopiedFilesManifest(ctx) {
+  const p = copiedFilesManifestPath(ctx)
+  if (!lstatOrNull(p)) return {}
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeCopiedFilesManifest(ctx, manifest_, journal) {
+  const p = copiedFilesManifestPath(ctx)
+  const before = lstatOrNull(p) ? fs.readFileSync(p) : null
+  ensureDir(path.dirname(p), journal)
+  writeFileAtomic(p, Buffer.from(`${JSON.stringify(manifest_, null, 2)}\n`, 'utf8'), 0o600)
+  journal.add(`updated ${p}`, () => {
+    if (before === null) fs.rmSync(p, { force: true })
+    else writeFileAtomic(p, before, 0o600)
+  })
+}
+
+// One hash for a whole directory tree, built from the same per-path manifest
+// walk `manifest()` already uses for release-vs-build comparison — so two
+// honestly-identical trees (by path, kind and content) always hash equal
+// regardless of directory-read order.
+function dirTreeHash(dir) {
+  return sha256(Buffer.from(JSON.stringify([...manifest(dir).entries()])))
+}
+
+function readDirBuffers(dir) {
+  const files = new Map()
+  const walk = (rel) => {
+    const abs = rel ? path.join(dir, rel) : dir
+    for (const name of fs.readdirSync(abs).sort()) {
+      const r = rel ? `${rel}/${name}` : name
+      const st = fs.lstatSync(path.join(dir, r))
+      if (st.isDirectory()) walk(r)
+      else if (st.isFile()) files.set(r, fs.readFileSync(path.join(dir, r)))
+    }
+  }
+  walk('')
+  return files
+}
+
+function writeDirBuffers(dir, files) {
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.mkdirSync(dir, { recursive: true })
+  for (const [rel, buf] of files) {
+    const p = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, buf)
+  }
+}
+
+// Atomically makes `dest` a byte-identical copy of `source` (recursive tree).
+// Builds the new tree in a sibling temp directory, then swaps it into place
+// with a rename-dance: POSIX rename(2) cannot replace a non-empty directory
+// in one step, so the old `dest` (if any) is renamed aside first and only
+// removed once the new tree is safely in its place — the same tmp-then-
+// rename shape atomicSymlink uses for a plain symlink, extended to a tree.
+// Undo restores from an in-memory snapshot taken before the swap: these
+// trees are a couple of small text files, never large enough to make
+// buffering them a real cost, and it avoids leaving an orphan backup
+// directory around for the journal's undo to depend on later.
+function copyDirAtomic(source, dest, journal) {
+  const tmp = `${dest}.agent-kit-tmp-${process.pid}-${rand()}`
+  fs.cpSync(source, tmp, { recursive: true })
+  const existed = lstatOrNull(dest)
+  const before = existed ? readDirBuffers(dest) : null
+  const backup = existed ? `${dest}.agent-kit-backup-${process.pid}-${rand()}` : null
+  try {
+    if (backup) fs.renameSync(dest, backup)
+    fs.renameSync(tmp, dest)
+  } catch (error) {
+    fs.rmSync(tmp, { recursive: true, force: true })
+    if (backup && lstatOrNull(backup) && !lstatOrNull(dest)) fs.renameSync(backup, dest)
+    throw error
+  }
+  if (backup) fs.rmSync(backup, { recursive: true, force: true })
+  journal.add(`copied ${source} -> ${dest}`, () => {
+    if (before === null) fs.rmSync(dest, { recursive: true, force: true })
+    else writeDirBuffers(dest, before)
+  })
+}
+
 function planLinksPosix(ctx) {
+  const manifest_ = readCopiedFilesManifest(ctx)
   const plan = []
   const refused = []
   for (const spec of linkSpecs(ctx)) {
     const parent = lstatOrNull(path.dirname(spec.dest))
     if (parent && !fs.statSync(path.dirname(spec.dest)).isDirectory()) {
       refused.push(`${path.dirname(spec.dest)} exists and is not a directory`)
+      continue
+    }
+    if (spec.posixCopy) {
+      const st = lstatOrNull(spec.dest)
+      if (!st) {
+        plan.push({ ...spec, action: 'create' })
+        continue
+      }
+      if (st.isSymbolicLink()) {
+        // A machine that already ran an older agent-kit-install has exactly
+        // this as a real symlink-through-`current` (the mechanism this spec
+        // replaces, see linkSpecs' posixCopy comment) — recognised the same
+        // way the plain-symlink branch below recognises "ours": it resolves
+        // inside this kit's own directory. That is safe to replace with a
+        // real copy, not a foreign conflict to refuse.
+        const raw = fs.readlinkSync(spec.dest)
+        const resolved = path.resolve(path.dirname(spec.dest), raw)
+        if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) {
+          plan.push({ ...spec, action: 'migrate' })
+          continue
+        }
+        refused.push(`${spec.dest} is a symlink to ${raw}, which is not inside ${ctx.kitDir}`)
+        continue
+      }
+      const wantsDir = spec.kind === 'dir'
+      if (wantsDir ? !st.isDirectory() : !st.isFile()) {
+        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a ${wantsDir ? 'directory' : 'file'} agent-kit manages`)
+        continue
+      }
+      const onDiskHash = wantsDir ? dirTreeHash(spec.dest) : sha256(fs.readFileSync(spec.dest))
+      if (manifest_[spec.dest] !== onDiskHash) {
+        refused.push(`${spec.dest} exists and was not created by this installer (no matching record in ${copiedFilesManifestPath(ctx)})`)
+        continue
+      }
+      // Whether a refresh is actually needed is decided in applyLinksPosix,
+      // reading `target` fresh — at this point (see the "action ordering"
+      // note above applyLinksPosix) `current` may still be the release this
+      // install/rollback is about to LEAVE, not the one it is switching to.
+      plan.push({ ...spec, action: 'manage' })
       continue
     }
     const st = lstatOrNull(spec.dest)
@@ -972,8 +1124,63 @@ function planLinksPosix(ctx) {
   return plan
 }
 
-function applyLinksPosix(plan, journal, changes) {
+// Order matters for the `posixCopy` items: both install() and rollback() run
+// switchCurrent() BEFORE calling this (applyLinks), even though their `plan`
+// was computed before that switch (planAll's second, "authoritative" call
+// happens pre-switch too — see its own comment). A copy spec's `target`
+// resolves through `ctx.currentPath`, so reading it INSIDE this function —
+// never captured onto the plan item during planning — is what makes it see
+// the release being switched TO, not the one being left. Windows' own
+// file-kind copy (applyLinksWindows) does capture content at plan time; this
+// deliberately does not repeat that here.
+function applyLinksPosix(ctx, plan, journal, changes) {
+  const manifest_ = readCopiedFilesManifest(ctx)
+  let manifestChanged = false
   for (const item of plan) {
+    if (item.posixCopy) {
+      ensureDir(path.dirname(item.dest), journal)
+      const st = lstatOrNull(item.dest)
+      // A symlink here (item.action === 'migrate', see planLinksPosix) is an
+      // older install's real link-through-`current` — reading it, via
+      // readFileSync/readdirSync, transparently follows it to the very same
+      // content this copy would write, so the plain content-hash comparison
+      // below would see no difference and skip the write, leaving the
+      // symlink in place forever. `isSymlink` forces the copy regardless of
+      // that match: the point of a migration is eliminating the symlink
+      // itself, not just its content.
+      const isSymlink = st ? st.isSymbolicLink() : false
+      const existed = st && !isSymlink
+      if (item.kind === 'dir') {
+        const sourceHash = dirTreeHash(item.target)
+        const destHash = existed ? dirTreeHash(item.dest) : null
+        if (isSymlink || sourceHash !== destHash) {
+          copyDirAtomic(item.target, item.dest, journal)
+          changes.push(`copy ${item.dest} <- ${item.target} (${isSymlink ? 'migrated from a symlink' : existed ? 'refreshed' : 'created'})`)
+          manifest_[item.dest] = sourceHash
+          manifestChanged = true
+        }
+      } else {
+        const content = fs.readFileSync(item.target)
+        const sourceHash = sha256(content)
+        const destHash = existed ? sha256(fs.readFileSync(item.dest)) : null
+        if (isSymlink || sourceHash !== destHash) {
+          // Followed through the symlink when migrating — an in-memory
+          // snapshot of what it exposed today, not the link itself; undo
+          // restores a content-equivalent real file, not the old symlink
+          // (see copyDirAtomic's own comment for the same tradeoff).
+          const beforeContent = st ? fs.readFileSync(item.dest) : null
+          writeFileAtomic(item.dest, content, 0o644)
+          journal.add(`wrote ${item.dest}`, () => {
+            if (beforeContent === null) fs.rmSync(item.dest, { force: true })
+            else writeFileAtomic(item.dest, beforeContent, 0o644)
+          })
+          changes.push(`copy ${item.dest} <- ${item.target} (${isSymlink ? 'migrated from a symlink' : existed ? 'refreshed' : 'created'})`)
+          manifest_[item.dest] = sourceHash
+          manifestChanged = true
+        }
+      }
+      continue
+    }
     if (item.action === 'create') {
       ensureDir(path.dirname(item.dest), journal)
       fs.symlinkSync(item.target, item.dest)
@@ -992,6 +1199,7 @@ function applyLinksPosix(plan, journal, changes) {
       changes.push(`link ${item.dest} -> ${item.target} (was ${item.old})`)
     }
   }
+  if (manifestChanged) writeCopiedFilesManifest(ctx, manifest_, journal)
 }
 
 // ── Windows link strategy ───────────────────────────────────────────────────
@@ -1149,7 +1357,7 @@ function planLinks(ctx) {
 
 function applyLinks(ctx, plan, journal, changes) {
   if (IS_WINDOWS) applyLinksWindows(ctx, plan, journal, changes)
-  else applyLinksPosix(plan, journal, changes)
+  else applyLinksPosix(ctx, plan, journal, changes)
 }
 
 function brokenLinks(ctx) {
@@ -1737,7 +1945,10 @@ async function install(ctx) {
     const planned = []
     planned.push(existing ? `release ${releaseDir} (exists, identical: reuse)` : `release ${releaseDir} (new)`)
     if (previous !== source.sha) planned.push(`current -> releases/${source.sha} (was ${previous || 'none'}); history.jsonl += 1 line`)
-    for (const l of plan.links) if (l.action !== 'ok') planned.push(`link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
+    for (const l of plan.links) {
+      if (l.action === 'ok') continue
+      planned.push(l.posixCopy ? `copy ${l.dest} <- ${l.target} (${l.action})` : `link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
+    }
     for (const c of MCP_CLIENTS) {
       const p = plan.clients[c.id]
       if (p.skipped) continue
@@ -1821,7 +2032,10 @@ function rollback(ctx) {
   if (ctx.opts.dryRun) {
     out(`DRY RUN — nothing was changed.`)
     out(`would switch current: ${current.sha} -> ${target}`)
-    for (const l of links) if (l.action !== 'ok') out(`would ${l.action} link ${l.dest} -> ${l.target}`)
+    for (const l of links) {
+      if (l.action === 'ok') continue
+      out(l.posixCopy ? `would ${l.action} copy ${l.dest} <- ${l.target}` : `would ${l.action} link ${l.dest} -> ${l.target}`)
+    }
     if (missing.length) out(`warning: release ${target} lacks ${missing.join(', ')}; those links would dangle`)
     return
   }
