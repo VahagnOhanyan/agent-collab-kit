@@ -5,9 +5,16 @@
 //   ~/.agent-kit/current           symlink to the active release, switched atomically
 //   ~/.agent-kit/history.jsonl     {at, sha, previous, commit, action} per switch
 //
-// Everything user-level points at `current`, never at a release, so a rollback
-// is one symlink switch: skills, agents, the `collab` launcher and both MCP
-// registrations follow at once.
+// Everything user-level is tied to `current`, never to a release, so a
+// rollback is one symlink switch: the `collab` launcher and the MCP
+// registrations (Claude, Codex, Gemini) point through it, and a Windows skill
+// directory is a junction
+// through it. What Claude Code does not see through a link is copied instead,
+// and those copies are rewritten from the release switched to, in the same
+// run: on POSIX the skills, the agents and the orchestration rule; on Windows
+// the agents and the rule (its skill junctions need no copy). The one
+// asymmetry: a release older than such an entry has nothing to copy, so the
+// installed copy is kept as it is rather than removed (see applyLinks*).
 //
 // ORDER OF WORK. Checks that can refuse (dirty source, foreign files at link
 // destinations, a foreign Claude registration, an unrewritable Codex config)
@@ -53,6 +60,7 @@ const SERVER_REL = 'collab/src/mcp/server.mjs'
 const REQUIRED_PATHS = Object.freeze([
   'agents/implementer.md',
   'agents/verifier.md',
+  'rules/orchestration.md',
   'skills/codex-review/SKILL.md',
   'skills/ui-review/SKILL.md',
   'hooks/scope-guard.py',
@@ -347,7 +355,7 @@ function writeFileAtomic(file, buffer, mode) {
 const HELP = `usage: agent-kit-install [options]
 
 Installs the committed HEAD of the source repository as ~/.agent-kit/releases/<sha>,
-switches ~/.agent-kit/current to it, links skills/agents/collab and registers the
+switches ~/.agent-kit/current to it, links skills/agents/rules/collab and registers the
 collab MCP server with Claude Code (user scope) and Codex.
 
   --source <dir>       source git repository (default: <home>/agent-kit)
@@ -969,12 +977,20 @@ function pruneReleases(ctx, history, current, previous) {
 // because it has no admin-free file symlink, just generalised to directories
 // and applied on POSIX too. `bin/collab` keeps the plain symlink: it is a
 // launcher a human execs directly, not something either scanner reads.
+//
+// rules/orchestration.md joined the same way on 2026-09-17: the owner moved
+// the user-level orchestration rule out of an unversioned ~/.claude/rules file
+// into this repository. It is a copy for the same reason as the agents — it is
+// something Claude Code scans, and a copy is the variant known to be picked
+// up. A hand-written file already sitting there has no manifest record, so the
+// first install on a machine that had one refuses until it is moved away.
 function linkSpecs(ctx) {
   return [
     { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
     { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
     { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
     { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
+    { dest: path.join(ctx.home, '.claude', 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },
     { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false }
   ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
 }
@@ -1157,14 +1173,24 @@ function planLinksPosix(ctx) {
 // happens pre-switch too — see its own comment). A copy spec's `target`
 // resolves through `ctx.currentPath`, so reading it INSIDE this function —
 // never captured onto the plan item during planning — is what makes it see
-// the release being switched TO, not the one being left. Windows' own
-// file-kind copy (applyLinksWindows) does capture content at plan time; this
-// deliberately does not repeat that here.
+// the release being switched TO, not the one being left. Since 2026-09-17
+// the Windows file-kind copy reads at apply time for the same reason (see
+// planLinksWindows); only its cmd-shim, generated from ctx and naming no
+// release, is still built during planning.
 function applyLinksPosix(ctx, plan, journal, changes) {
   const manifest_ = readCopiedFilesManifest(ctx)
   let manifestChanged = false
   for (const item of plan) {
     if (item.posixCopy) {
+      // --rollback can switch `current` to a release older than one of these
+      // entries (rules/orchestration.md joined on 2026-09-17). There is nothing
+      // to copy from, and reading it would throw and undo the whole rollback —
+      // so the copy already in place is kept as it is, and said so. Removing
+      // it instead would leave every session without the rule at all.
+      if (!lstatOrNull(item.target)) {
+        changes.push(`kept ${item.dest} as it is: ${item.rel} does not exist in this release`)
+        continue
+      }
       ensureDir(path.dirname(item.dest), journal)
       const st = lstatOrNull(item.dest)
       // A symlink here (item.action === 'migrate', see planLinksPosix) is an
@@ -1316,8 +1342,19 @@ function planLinksWindows(ctx) {
     }
     // file / cmd-shim: identity is tracked by content hash in the manifest,
     // not by readlinkSync — there is no link to read.
-    const want = desiredWindowsContent(ctx, spec)
-    const wantHash = sha256(want)
+    //
+    // Planning runs BEFORE switchCurrent (see planAll's callers), so a copied
+    // file's source is the release being LEFT, not the one being installed.
+    // Reading it here was wrong twice over: on a first install (no `current`)
+    // or an upgrade from a release older than the entry (rules/
+    // orchestration.md, 2026-09-17) it threw ENOENT and refused the install
+    // outright, and on an ordinary upgrade it captured the OLD release's
+    // bytes and copied those, leaving the destination one release behind.
+    // `content: null` defers the read to applyLinksWindows, which runs after
+    // the switch — exactly where applyLinksPosix has always read its source.
+    // A cmd-shim is generated from ctx, names no release and stays eager.
+    const want = spec.kind === 'cmd-shim' ? desiredWindowsContent(ctx, spec) : null
+    const wantHash = want ? sha256(want) : null
     const st = lstatOrNull(spec.dest)
     if (!st) {
       plan.push({ ...spec, action: 'create', content: want, hash: wantHash })
@@ -1332,7 +1369,9 @@ function planLinksWindows(ctx) {
       refused.push(`${spec.dest} exists and was not created by this installer (no matching record in ${windowsManifestPath(ctx)})`)
       continue
     }
-    plan.push({ ...spec, action: onDiskHash === wantHash ? 'ok' : 'update', content: want, hash: wantHash })
+    // An unread source (wantHash null) cannot be compared yet: plan the write
+    // and let apply, which has the real content, skip an identical file.
+    plan.push({ ...spec, action: wantHash && onDiskHash === wantHash ? 'ok' : 'update', content: want, hash: wantHash })
   }
   if (refused.length) {
     throw new InstallError(
@@ -1363,19 +1402,52 @@ function applyLinksWindows(ctx, plan, journal, changes) {
       continue
     }
     if (item.action === 'create' || item.action === 'update') {
+      // content === null: every copied file's source is read here rather than
+      // at plan time (see planLinksWindows) — readable or not back then, the
+      // release it belongs to was still the one being left. `current` has been
+      // switched by now, so read it here; a release that does not carry this
+      // entry at all — a rollback
+      // to one older than it — leaves the installed copy alone rather than
+      // failing the run or deleting the file every session reads.
+      let { content, hash } = item
+      if (content === null) {
+        if (!lstatOrNull(item.target)) {
+          changes.push(`kept ${item.dest} as it is: ${item.rel} does not exist in this release`)
+          continue
+        }
+        content = desiredWindowsContent(ctx, item)
+        hash = sha256(content)
+        const onDisk = lstatOrNull(item.dest) ? fs.readFileSync(item.dest) : null
+        if (onDisk && sha256(onDisk) === hash) {
+          if (manifest[item.dest] !== hash) {
+            manifest[item.dest] = hash
+            manifestChanged = true
+          }
+          continue
+        }
+      }
       ensureDir(path.dirname(item.dest), journal)
       const before = lstatOrNull(item.dest) ? fs.readFileSync(item.dest) : null
-      writeFileAtomic(item.dest, item.content, 0o644)
+      writeFileAtomic(item.dest, content, 0o644)
       journal.add(`wrote ${item.dest}`, () => {
         if (before === null) fs.rmSync(item.dest, { force: true })
         else writeFileAtomic(item.dest, before, 0o644)
       })
-      manifest[item.dest] = item.hash
+      manifest[item.dest] = hash
       manifestChanged = true
       changes.push(`${item.kind === 'cmd-shim' ? 'shim' : 'copy'} ${item.dest} (${before === null ? 'created' : 'updated'})`)
     }
   }
   if (manifestChanged) writeWindowsManifest(ctx, manifest, journal)
+}
+
+// What a dry run may honestly promise. A Windows file entry whose source is
+// only read at apply time (content === null, see planLinksWindows) is planned
+// as `update` because nothing can be compared yet — but apply skips a copy
+// that turns out identical, so announcing a flat "update" would report a
+// change that may never happen.
+function plannedAction(item) {
+  return item.action === 'update' && item.content === null ? 'update if it differs' : item.action
 }
 
 function planLinks(ctx) {
@@ -1974,7 +2046,11 @@ async function install(ctx) {
     if (previous !== source.sha) planned.push(`current -> releases/${source.sha} (was ${previous || 'none'}); history.jsonl += 1 line`)
     for (const l of plan.links) {
       if (l.action === 'ok') continue
-      planned.push(l.posixCopy ? `copy ${l.dest} <- ${l.target} (${l.action})` : `link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`)
+      planned.push(
+        l.posixCopy || l.content === null
+          ? `copy ${l.dest} <- ${l.target} (${plannedAction(l)})`
+          : `link ${l.dest} -> ${l.target} (${l.action}${l.old ? `, was ${l.old}` : ''})`
+      )
     }
     for (const c of MCP_CLIENTS) {
       const p = plan.clients[c.id]
@@ -2061,9 +2137,20 @@ function rollback(ctx) {
     out(`would switch current: ${current.sha} -> ${target}`)
     for (const l of links) {
       if (l.action === 'ok') continue
-      out(l.posixCopy ? `would ${l.action} copy ${l.dest} <- ${l.target}` : `would ${l.action} link ${l.dest} -> ${l.target}`)
+      out(l.posixCopy || l.content === null ? `would ${plannedAction(l)} copy ${l.dest} <- ${l.target}` : `would ${l.action} link ${l.dest} -> ${l.target}`)
     }
-    if (missing.length) out(`warning: release ${target} lacks ${missing.join(', ')}; those links would dangle`)
+    // Copies and symlinks end differently when the older release lacks the
+    // source: applyLinks keeps an installed copy (skills, agents, the rule)
+    // exactly as it is, while a symlink to a missing path really does dangle.
+    // These paths come from REQUIRED_PATHS, which is wider than linkSpecs —
+    // one of them (the MCP server, the collab tests) is not a link
+    // destination at all, and what a rollback does to those is outside what
+    // this line can say.
+    if (missing.length) {
+      out(
+        `warning: release ${target} lacks ${missing.join(', ')}; of the ones this installer links, an installed copy is kept as it is now and a symlink would dangle`
+      )
+    }
     return
   }
 
@@ -2118,7 +2205,15 @@ module.exports = {
   resolveNode,
   compareToolNames,
   missingPaths,
-  cmdShimContent
+  cmdShimContent,
+  // Exported for tests only: the Windows link planner/applier cannot be
+  // exercised end-to-end on POSIX, and its plan-time/apply-time split is
+  // exactly where a missing source in `current` used to refuse the install
+  // (2026-09-17). A direct unit test is the only check this machine can run.
+  linkSpecs,
+  planLinksWindows,
+  applyLinksWindows,
+  Journal
 }
 
 if (require.main === module) {

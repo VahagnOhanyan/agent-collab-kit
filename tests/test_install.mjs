@@ -200,6 +200,9 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
   // An unrelated user skill that must survive everything.
   mkdirSync(join(home, '.claude', 'skills', 'my-own-skill'), { recursive: true })
   writeFileSync(join(home, '.claude', 'skills', 'my-own-skill', 'SKILL.md'), 'mine\n')
+  // And an unrelated user rule beside the one agent-kit installs.
+  mkdirSync(join(home, '.claude', 'rules'), { recursive: true })
+  writeFileSync(join(home, '.claude', 'rules', 'my-own-rule.md'), 'mine\n')
 
   const env = {
     ...cleanEnv(),
@@ -405,6 +408,66 @@ test('tool set comparison is exact: same names, same count', () => {
   assert.notDeepEqual(lib.compareToolNames([], []), [])
 })
 
+// The Windows link branch cannot be exercised end to end here, but its
+// plan-time/apply-time split can be: planning runs BEFORE `current` is
+// switched, so a file entry's source may not exist yet — on a first install
+// (no `current`) or on an upgrade from a release older than the entry
+// (rules/orchestration.md, 2026-09-17). It used to readFileSync at plan time
+// and refuse the whole install with ENOENT.
+test('Windows file links: a source missing at plan time defers to apply, and a release without it keeps the installed copy', () => {
+  const home = join(BASE, 'winplan-home')
+  const release = join(home, '.agent-kit', 'current')
+  for (const rel of ['agents/implementer.md', 'agents/verifier.md', 'skills/codex-review/SKILL.md', 'skills/ui-review/SKILL.md', 'bin/collab']) {
+    mkdirSync(join(release, dirname(rel)), { recursive: true })
+    writeFileSync(join(release, rel), `${rel}\n`)
+  }
+  const ctx = {
+    home,
+    bindir: join(home, 'bin'),
+    kitDir: join(home, '.agent-kit'),
+    kitDirReal: join(home, '.agent-kit'),
+    currentPath: release
+  }
+  mkdirSync(ctx.bindir, { recursive: true })
+
+  // No rules/ in this release: planning must not throw, and must not guess.
+  const plan = lib.planLinksWindows(ctx)
+  const rule = plan.find((item) => item.rel === 'rules/orchestration.md')
+  assert.equal(rule.action, 'create')
+  assert.equal(rule.content, null, 'the content read is deferred, not performed at plan time')
+
+  // Apply with the release still missing it: the installed copy (none here) is
+  // left alone and the run survives.
+  let changes = []
+  lib.applyLinksWindows(ctx, plan, new lib.Journal(), changes)
+  const dest = join(home, '.claude', 'rules', 'orchestration.md')
+  assert.equal(existsSync(dest), false)
+  assert.ok(changes.some((c) => /kept .*orchestration\.md as it is/.test(c)), changes.join('\n'))
+  assert.equal(readFileSync(join(home, '.claude', 'agents', 'verifier.md'), 'utf8'), 'agents/verifier.md\n')
+
+  // The same plan, once the switched-to release does carry the rule.
+  mkdirSync(join(release, 'rules'), { recursive: true })
+  writeFileSync(join(release, 'rules', 'orchestration.md'), 'rule v2\n')
+  changes = []
+  lib.applyLinksWindows(ctx, lib.planLinksWindows(ctx), new lib.Journal(), changes)
+  assert.equal(readFileSync(dest, 'utf8'), 'rule v2\n')
+  const manifest = JSON.parse(readFileSync(join(ctx.kitDir, 'windows-links.json'), 'utf8'))
+  assert.ok(manifest[dest], 'ownership is recorded, so the next run does not call it foreign')
+
+  // The ordinary upgrade, in the order the installer really runs it: the plan
+  // is computed while `current` still points at the release being LEFT, the
+  // switch happens, and only then is the copy applied. Reading the source at
+  // plan time would copy the old release's bytes and leave the destination a
+  // release behind.
+  const planned = lib.planLinksWindows(ctx)
+  writeFileSync(join(release, 'rules', 'orchestration.md'), 'rule v3\n')
+  writeFileSync(join(release, 'agents', 'verifier.md'), 'verifier v3\n')
+  changes = []
+  lib.applyLinksWindows(ctx, planned, new lib.Journal(), changes)
+  assert.equal(readFileSync(dest, 'utf8'), 'rule v3\n', 'the copy comes from the release being installed')
+  assert.equal(readFileSync(join(home, '.claude', 'agents', 'verifier.md'), 'utf8'), 'verifier v3\n')
+})
+
 // ── integration ────────────────────────────────────────────────────────────
 
 test('a source missing required agents, skills, hooks or launcher is refused before anything runs', () => {
@@ -493,6 +556,11 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
     assert.equal(lstatSync(dest).isSymbolicLink(), false, `${agent}.md is a real file, not a symlink`)
     assert.ok(readFileSync(dest).equals(readFileSync(join(cur, 'agents', `${agent}.md`))))
   }
+  // The orchestration rule is installed the same way (linkSpecs, 2026-09-17).
+  const rule = join(A.home, '.claude', 'rules', 'orchestration.md')
+  assert.equal(lstatSync(rule).isSymbolicLink(), false, 'orchestration.md is a real file, not a symlink')
+  assert.ok(readFileSync(rule).equals(readFileSync(join(cur, 'rules', 'orchestration.md'))))
+  assert.equal(readFileSync(join(A.home, '.claude', 'rules', 'my-own-rule.md'), 'utf8'), 'mine\n', 'unrelated rule kept')
   // The bindir launcher is unaffected: it is exec'd directly, not scanned by
   // any skill/agent discovery, so it stays a plain symlink on POSIX.
   if (!IS_WINDOWS) {
@@ -620,6 +688,30 @@ test('rollback switches current and the links follow; repeated rollback walks ba
   assert.match(r.stderr, /no earlier release/)
 })
 
+test('rollback to a release that predates rules/orchestration.md keeps the installed rule instead of failing', () => {
+  const W = makeWorld('rule-rollback')
+  const src = makeSource('rule-rollback')
+  const sha1 = shaOf(src)
+  let r = W.run(['--source', src, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  // A release built before the rule joined the kit. The installer refuses to
+  // BUILD one now (REQUIRED_PATHS), but such releases already sit on disk.
+  rmSync(W.kit('releases', sha1, 'rules'), { recursive: true, force: true })
+  const original = readFileSync(join(src, 'rules', 'orchestration.md'), 'utf8')
+  const sha2 = commitChange(src, 'rules/orchestration.md', `${original}\nrelease-two rule\n`)
+  r = W.run(['--source', src, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  const rule = join(W.home, '.claude', 'rules', 'orchestration.md')
+  assert.match(readFileSync(rule, 'utf8'), /release-two rule/)
+
+  r = W.run(['--rollback'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, new RegExp(`rolled back: ${sha2} -> ${sha1}`))
+  assert.equal(readLink(W.kit('current')), currentTarget(W.home, sha1))
+  assert.match(readFileSync(rule, 'utf8'), /release-two rule/, 'the rule survives a rollback to a release without one')
+  if (!IS_WINDOWS) assert.match(r.stdout, /kept .*orchestration\.md as it is: rules\/orchestration\.md does not exist in this release/)
+})
+
 test('a dirty source (or one without commits) is refused and the files are named', () => {
   const W = makeWorld('dirty')
   const dirty = makeSource('dirty')
@@ -664,6 +756,9 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   const W = makeWorld('foreign-link')
   mkdirSync(join(W.home, '.claude', 'agents'), { recursive: true })
   writeFileSync(join(W.home, '.claude', 'agents', 'verifier.md'), 'my own verifier\n')
+  // The migration trap on a machine that kept the rule by hand before
+  // agent-kit owned it: no manifest record, so it is refused, not overwritten.
+  writeFileSync(join(W.home, '.claude', 'rules', 'orchestration.md'), 'my own rule\n')
   if (!IS_WINDOWS) {
     symlinkSync('/somewhere/else/collab', join(W.bindir, 'collab'))
   } else {
@@ -684,6 +779,7 @@ test('an existing foreign file or symlink at a link destination is refused; noth
     assert.match(r.stderr, /verifier\.md exists and was not created by this installer/)
     assert.match(r.stderr, /collab\.cmd exists and was not created by this installer/)
   }
+  assert.match(r.stderr, /orchestration\.md exists and was not created by this installer/)
   assert.deepEqual(W.snapshot(), before)
   assert.deepEqual(mutating(W.claudeCalls()), [])
 })
@@ -952,6 +1048,7 @@ test('dry-run runs the checks and the smoke test but changes nothing', () => {
   // verifier.md is a posixCopy entry (see linkSpecs): "copy ... <- ..."
   // wording, not "link ... ->" — there is no symlink to point at.
   assert.match(r.stdout, /copy .*verifier\.md <- .*current[\\/]agents[\\/]verifier\.md \(create\)/)
+  assert.match(r.stdout, /copy .*rules[\\/]orchestration\.md <- .*current[\\/]rules[\\/]orchestration\.md \(create\)/)
   // bin/collab is unaffected: still a plain symlink, still "link ... ->".
   assert.match(r.stdout, /link .*collab -> .*current[\\/]bin[\\/]collab \(create\)/)
   assert.match(r.stdout, /codex: append \[mcp_servers\.collab\]/)

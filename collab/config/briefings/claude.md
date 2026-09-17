@@ -25,6 +25,12 @@ command it names (`collab init`, run in the project root) — do not work around
 
 ## How to work
 
+**Plan before the first edit** — every task above L0, per the orchestration rule
+(installed at `~/.claude/rules/orchestration.md`, source `~/agent-kit/rules/`). The plan
+file sets the levels, the executor's model and who verifies on which model; L2 and L3
+plans go through Plan Mode and the owner's approval. Put `План: <absolute path> (vN)` in
+the task description and give that path, never a retelling, to every delegation.
+
 1. **Claim before you do.** `claim_task`, then `claim_files`. The tree is shared with other
    sessions; `collab_status` lists dirty files that no task claims, and those are somebody
    else's work in progress. Do not fold them into your commit and do not "fix" them.

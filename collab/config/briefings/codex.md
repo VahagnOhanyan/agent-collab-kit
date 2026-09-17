@@ -31,6 +31,13 @@ yet: report the `collab init` command the error names.
 
 ## How to work
 
+**The plan comes first.** A task above L0 names its plan file in the description —
+`План: <absolute path> (vN)`. Read the whole file before you claim anything: the goal, the
+owner's original request, the acceptance criteria, what is deliberately NOT done, and the
+section addressed to you. If the code disagrees with the plan, say so on the task and stop
+on that step — the lead issues a new version; do not quietly take another route. A task
+above L0 with no plan is worth a question before work, not a guess.
+
 1. **Claim before you do.** `claim_task`, then `claim_files` for anything you will edit.
    If `claim_files` refuses, another live task owns those files: message its owner, do not
    edit anyway.
@@ -45,6 +52,9 @@ yet: report the `collab init` command the error names.
 
 A review request arrives as a message with a `review_id`. Answer with `submit_review`.
 
+- **Review against the owner's request and the plan, not against the author's summary.**
+  The task description names the plan file; its acceptance criteria are what you check.
+  Code that matches the plan but drifts from the owner's request is still a finding.
 - `changes_requested` needs at least one finding, each with a file and a note.
 - `approved` is not a formality. Say **what you checked and how you could have been wrong**.
 - Prefer one demonstrated defect over five suspicions. If you cannot show the failing
