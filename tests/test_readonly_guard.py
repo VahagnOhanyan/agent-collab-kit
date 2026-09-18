@@ -185,6 +185,9 @@ class AllowSetTests(GuardCase):
         # симулятор и реестр
         "xcrun simctl list", "xcrun simctl list devices available -j", "xcrun --find swift", "xcrun --show-sdk-path",
         "xcrun --sdk iphonesimulator --show-sdk-path", "collab project --json", "collab project",
+        "collab reviews --task tsk_mu6xmxc2_d31d6b --json", "collab reviews --json", "collab reviews",
+        "collab reviews --pending --reviewer codex --json",
+        "collab reviews --task tsk_x --json | jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
         # составные и перенаправления
         "ls >/dev/null 2>&1", "ls > /dev/null", "cat a 2>/dev/null", "cat a 2> /dev/null", "ls 2>&1 | head",
         "git status; git diff", "git status\ngit diff --stat\n", "git status && git diff", "ls || pwd",
@@ -270,6 +273,8 @@ class DeniedCommandTests(GuardCase):
         "swift", "node", "python3", "/bin/rm x", "/usr/bin/touch f", "/usr/bin/vim f", "/usr/local/bin/rg x",
         "/opt/homebrew/bin/rg x", "/usr/bin/../bin/rm x", "/usr/bin/env ls", "/nonexistent/.agent-kit/current/bin/collab inbox",
         "collab inbox", "collab init", "collab project --json --x",
+        "collab task tsk_x", "collab claim tsk_x", "collab release-review rev_x", "collab reviews --task",
+        "collab reviews --task 'a;b'", "collab reviews --task x/y", "collab reviews --all", "collab reviews --json --x",
     )
     GIT_DENIED = (
         "git commit -m x", "git push", "git push origin main", "git pull", "git fetch", "git add .", "git rm x",

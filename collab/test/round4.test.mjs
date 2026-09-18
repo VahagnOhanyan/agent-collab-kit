@@ -92,6 +92,27 @@ test('R4-2: collab reviews --reviewer --pending --task --json lists reviews with
     assert.equal(JSON.parse(run(['--json']).stdout).length, 3)
     assert.deepEqual(JSON.parse(run(['--reviewer', 'claude', '--json']).stdout), [])
 
+    // verifier's review-rounds check reads slot and finding strength from this JSON, not the text.
+    const shaped = await claude.createTask({ title: 'Shaped review', action: 'edit a file' })
+    await claude.claimTask({ task_id: shaped.id })
+    const slotted = await claude.requestReview({ task_id: shaped.id, slot: 'implementation' })
+    await codex.submitReview({
+      review_id: slotted.review.id,
+      verdict: 'changes_requested',
+      summary: 'one proven, one guess',
+      findings: [
+        { severity: 'major', note: 'drops the draft', evidence: 'cli.mjs:1 — reproduced with a fixture' },
+        { severity: 'minor', note: 'might be slow' }
+      ]
+    })
+    const [row] = JSON.parse(run(['--task', shaped.id, '--json']).stdout)
+    assert.equal(row.slot, 'implementation')
+    assert.equal(row.blocking, true)
+    assert.deepEqual(row.findings.map((f) => f.severity), ['major', 'minor'])
+    assert.equal(row.findings[0].confidence === 'hypothesis', false, 'a finding with evidence is not a hypothesis')
+    assert.equal(row.findings[1].confidence, 'hypothesis')
+    assert.equal(JSON.stringify(row.findings).includes('drops the draft'), false, 'finding text stays out of the summary')
+
     const human = run(['--pending'])
     assert.equal(human.status, 0, human.stderr)
     assert.match(human.stdout, /Open review/)

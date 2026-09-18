@@ -716,9 +716,27 @@ def policy_shell_script(cmd, args, cwd):
     resolve_inside_cwd(cwd, t[0], need_exec=False)
 
 
+COLLAB_REF = re.compile(r"[A-Za-z0-9_-]+")
+
+
 def policy_collab(cmd, args, cwd):
-    if texts(args) not in (["project"], ["project", "--json"]):
-        raise Blocked("`collab` разрешён только как `collab project [--json]`")
+    t = texts(args)
+    if t in (["project"], ["project", "--json"]):
+        return
+    # `collab reviews` — только чтение: вердикты, слоты и сила находок ревью для проверки
+    # «эскалация после двух раундов» (agents/review-rounds.jq). Флаги — ровно эти, id — без спецсимволов.
+    if t and t[0] == "reviews":
+        rest = t[1:]
+        i = 0
+        while i < len(rest):
+            if rest[i] in ("--json", "--pending"):
+                i += 1
+            elif rest[i] in ("--task", "--reviewer") and i + 1 < len(rest) and COLLAB_REF.fullmatch(rest[i + 1]):
+                i += 2
+            else:
+                raise Blocked(f"`collab reviews`: аргумент `{rest[i]}` не разрешён")
+        return
+    raise Blocked("`collab` разрешён только как `collab project [--json]` и `collab reviews [--task <id>] [--reviewer <агент>] [--pending] [--json]`")
 
 
 ALLOWLIST = {

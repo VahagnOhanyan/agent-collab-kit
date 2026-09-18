@@ -408,7 +408,12 @@ const COMMANDS = {
         submitted_at: r.submitted_at || null,
         summary: r.summary || r.release_reason || null,
         task_title: task ? task.title : null,
-        task_status: task ? task.status : null
+        task_status: task ? task.status : null,
+        // For verifier's review-rounds check (agents/review-rounds.jq): which question the review
+        // answered and how strong each finding was — severity and proven/hypothesis, not the text.
+        slot: r.slot || null,
+        blocking: r.blocking === undefined ? null : r.blocking,
+        findings: (r.findings || []).map((f) => ({ severity: f.severity || null, confidence: f.confidence || null }))
       }
     })
     if (flags.json) return out(JSON.stringify(rows, null, 2))
