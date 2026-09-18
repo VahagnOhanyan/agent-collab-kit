@@ -125,6 +125,8 @@ const shellQuote = IS_WINDOWS
   : (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
 const out = (line = '') => process.stdout.write(`${line}\n`)
 const tail = (text, n = 40) => String(text || '').split('\n').slice(-n).join('\n')
+// One line is enough to say why a vendor call failed; the rest belongs in its own output.
+const firstLine = (text) => String(text || '').split('\n').find((l) => l.trim()) || ''
 
 function describeEntry(st) {
   if (st.isDirectory()) return 'directory'
@@ -362,6 +364,9 @@ collab MCP server with Claude Code (user scope) and Codex.
   --home <dir>         home directory to install into (default: $HOME)
   --bindir <dir>       where the collab launcher is linked (default: first of ${BINDIR_CANDIDATES.join(', ')} that exists)
   --claude-bin <path>  Claude Code executable (default: claude)
+  --claude-config-dir <dir>  another Claude Code config directory to install into
+                       (repeatable; must be inside the home; CLAUDE_CONFIG_DIR is
+                       picked up automatically when it points inside the home)
   --replace-claude     replace a different user-scope "collab" MCP registration
   --skip-claude        do not register with Claude Code even if it is on PATH
   --skip-codex         do not touch ~/.codex/config.toml
@@ -369,6 +374,16 @@ collab MCP server with Claude Code (user scope) and Codex.
   --dry-run            run every check, tests and smoke included; change nothing
   --rollback           switch current back to the previous release
   -h, --help           this text
+
+Claude Code reads skills, agents and rules only from the config directory the
+session runs under (verified 2026-09-18: a session with CLAUDE_CONFIG_DIR set
+sees that directory and no other), so an account with its own directory needs
+its own copies. Every config directory gets them, and each is registered with
+the collab MCP server separately. A registration that fails in an extra
+directory (a disabled account, for instance) is reported and the install
+stands; in the default directory it is still fatal, as it always was. A
+directory is accepted only if its real path — symlinks resolved — is inside
+the home being installed into.
 
 A vendor whose CLI is not on PATH and whose config directory does not exist yet
 is skipped automatically (Claude: not found -> skipped rather than failing the
@@ -389,7 +404,9 @@ function parseArgs(argv) {
     skipGemini: false,
     help: false
   }
+  opts.claudeConfigDirs = []
   const valued = { '--source': 'source', '--home': 'home', '--bindir': 'bindir', '--claude-bin': 'claudeBin' }
+  const repeated = { '--claude-config-dir': 'claudeConfigDirs' }
   const flags = {
     '--replace-claude': 'replaceClaude',
     '--dry-run': 'dryRun',
@@ -405,10 +422,11 @@ function parseArgs(argv) {
     const arg = argv[i]
     const eq = arg.indexOf('=')
     const name = arg.startsWith('--') && eq !== -1 ? arg.slice(0, eq) : arg
-    if (valued[name]) {
+    if (valued[name] || repeated[name]) {
       const value = eq !== -1 && arg.startsWith('--') ? arg.slice(eq + 1) : argv[++i]
       if (value === undefined || value === '') throw new InstallError(`${name} needs a value`)
-      opts[valued[name]] = value
+      if (repeated[name]) opts[repeated[name]].push(value)
+      else opts[valued[name]] = value
     } else if (flags[arg]) {
       opts[flags[arg]] = true
     } else {
@@ -416,6 +434,82 @@ function parseArgs(argv) {
     }
   }
   return opts
+}
+
+// Claude Code reads skills, agents and rules only from the config directory of
+// the account the session runs under — measured 2026-09-18 with a marker file in
+// each directory: a session with CLAUDE_CONFIG_DIR=<dir> saw that marker and not
+// the other one. One machine can therefore have several accounts, each with its
+// own directory (~/.claude, ~/.claude-account-2, …), and each needs its own copy
+// of the kit. Order is stable: the default directory first, then the ones asked
+// for, then the environment's.
+//
+// Every directory must be inside the home being installed into. An explicit
+// --claude-config-dir outside it is an error (the caller means a different home);
+// CLAUDE_CONFIG_DIR outside it is ignored rather than fatal, because the
+// installer's own tests run with a temporary --home while the real environment
+// variable still points at the developer's account.
+function resolveClaudeConfigDirs(opts, home) {
+  // Real paths, not string prefixes: a symlink anywhere along the way would let
+  // "inside the home" name a directory that is physically somewhere else, and
+  // every copy below follows symlinks. The directory itself may not exist yet,
+  // so resolve the nearest existing ancestor and re-attach the rest.
+  const realOf = (target) => {
+    let head = path.resolve(target)
+    const rest = []
+    for (;;) {
+      if (lstatOrNull(head)) return path.join(realpathOr(head), ...rest.reverse())
+      const parent = path.dirname(head)
+      if (parent === head) return path.resolve(target)
+      rest.push(path.basename(head))
+      head = parent
+    }
+  }
+  const realHomeDir = realOf(home)
+  const inside = (dir) => {
+    const real = realOf(dir)
+    return real === realHomeDir || real.startsWith(realHomeDir + path.sep)
+  }
+  // Deduplicated by real path: two spellings of one directory (an alias symlink
+  // beside it) would otherwise be installed into twice and leave the copy
+  // manifest with one key holding the content and another holding nothing.
+  const dirs = []
+  const seen = new Set()
+  const add = (dir) => {
+    const real = realOf(dir)
+    if (seen.has(real)) return
+    seen.add(real)
+    dirs.push(dir)
+  }
+  // The default directory is checked like any other: ~/.claude itself can be a
+  // symlink pointing out of the home, and every copy below follows it.
+  const preset = path.join(home, '.claude')
+  if (!inside(preset)) {
+    throw new InstallError(`${preset} resolves outside ${home} (${realOf(preset)}); the installer only writes inside the home it installs into`)
+  }
+  add(preset)
+  for (const raw of opts.claudeConfigDirs || []) {
+    const dir = path.resolve(raw)
+    if (!inside(dir)) {
+      throw new InstallError(`--claude-config-dir ${dir} is outside ${home}; the installer only writes inside the home it installs into`)
+    }
+    add(dir)
+  }
+  const fromEnv = process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR) : null
+  if (fromEnv && inside(fromEnv)) add(fromEnv)
+  return dirs
+}
+
+// The boundary above is checked when the context is built; between that and the
+// writes there is a build and two planning passes, so it is checked again right
+// before anything is written. This narrows the window rather than closing it:
+// a home an attacker can write to is already a home this installer trusts.
+function assertConfigDirsInside(ctx) {
+  const fresh = resolveClaudeConfigDirs({ claudeConfigDirs: ctx.claudeDirs.slice(1) }, ctx.home)
+  const before = ctx.claudeDirs.join('\n')
+  if (fresh.join('\n') !== before) {
+    throw new InstallError(`the Claude config directories moved while installing:\n  before: ${before}\n  now:    ${fresh.join('\n          ')}`)
+  }
 }
 
 function makeContext(opts) {
@@ -460,6 +554,7 @@ function makeContext(opts) {
     codexConfig: path.join(home, '.codex', 'config.toml'),
     geminiConfig: path.join(home, '.gemini', 'config', 'mcp_config.json'),
     claudeBin: opts.claudeBin || 'claude',
+    claudeDirs: resolveClaudeConfigDirs(opts, home),
     source: path.resolve(opts.source || path.join(home, 'agent-kit'))
   }
 }
@@ -984,13 +1079,25 @@ function pruneReleases(ctx, history, current, previous) {
 // something Claude Code scans, and a copy is the variant known to be picked
 // up. A hand-written file already sitting there has no manifest record, so the
 // first install on a machine that had one refuses until it is moved away.
+//
+// The same five entries are made in every Claude Code config directory
+// (ctx.claudeDirs, see resolveClaudeConfigDirs): a session only reads its own.
+// Everything downstream — planning, applying, the copy manifest, the "not
+// created by this installer" refusal, --dry-run and rollback — keys off the
+// destination path, so more directories just mean more entries in this list.
 function linkSpecs(ctx) {
+  const perConfigDir = (dir) => [
+    { dest: path.join(dir, 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
+    { dest: path.join(dir, 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
+    { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true }
+  ]
+  // ctx.claudeDirs is what makeContext computed; a bare ctx (the unit tests build
+  // one by hand) falls back to the single default directory.
+  const dirs = ctx.claudeDirs || [path.join(ctx.home, '.claude')]
   return [
-    { dest: path.join(ctx.home, '.claude', 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
-    { dest: path.join(ctx.home, '.claude', 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
-    { dest: path.join(ctx.home, '.claude', 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
-    { dest: path.join(ctx.home, '.claude', 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },
+    ...dirs.flatMap(perConfigDir),
     { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false }
   ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
 }
@@ -1737,7 +1844,7 @@ function detailAppliedCodex(ctx, plan) {
 
 // ── Claude Code: user-scope MCP registration ───────────────────────────────
 
-function runClaude(ctx, args) {
+function runClaude(ctx, args, configDir = null) {
   // A neutral cwd: `claude mcp get` resolves local and project scopes from it,
   // and a project's .mcp.json must not be mistaken for the user registration.
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-claude-'))
@@ -1748,7 +1855,10 @@ function runClaude(ctx, args) {
     // array here and quotes each element itself before handing the command
     // line to cmd.exe, so this does not reopen the shell-string-injection
     // hole that keeping `args` as a plain argv array everywhere else avoids.
-    const r = spawnSync(ctx.claudeBin, args, { cwd, env: childEnv(), encoding: 'utf8', timeout: 120_000, shell: IS_WINDOWS })
+    // configDir: which account's settings this call reads and writes. Claude Code
+    // takes it from CLAUDE_CONFIG_DIR, so one registration per directory.
+    const env = childEnv(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {})
+    const r = spawnSync(ctx.claudeBin, args, { cwd, env, encoding: 'utf8', timeout: 120_000, shell: IS_WINDOWS })
     if (r.error) throw new InstallError(`could not run ${ctx.claudeBin} ${args.join(' ')}: ${r.error.message}`)
     return r
   } finally {
@@ -1810,6 +1920,42 @@ const describeRegistration = (reg) =>
       .join(' ') || '(none)'
   }`
 
+// One plan per config directory (ctx.claudeDirs). A directory whose CLI call
+// fails — a disabled account answers `claude mcp get` with an error, not a
+// registration — is carried as { unreachable } and reported; the copies, which
+// are what the sessions actually read, are installed either way. A wrong-scope
+// or conflicting registration is still fatal: that is somebody's deliberate
+// configuration, and silently working around it is how state gets clobbered.
+function planClaudeDir(ctx, dir) {
+  let raw = null
+  let reg
+  try {
+    raw = runClaude(ctx, ['mcp', 'get', 'collab'], dir)
+    reg = parseClaudeGet(raw)
+  } catch (error) {
+    if (!(error instanceof InstallError)) throw error
+    // What the CLI itself said is the useful part ("...subscription access disabled"),
+    // not the installer's wrapper around it.
+    const said = raw ? firstLine(`${raw.stderr || ''}\n${raw.stdout || ''}`.trim()) : ''
+    return { dir, unreachable: said || firstLine(error.message) }
+  }
+  if (!reg.found) return { dir, action: 'add', existing: null }
+  if (reg.scope !== 'user') {
+    throw new InstallError(
+      `\`claude mcp get collab\` (run from a neutral directory, CLAUDE_CONFIG_DIR=${dir}) shows "collab" with Scope: ${reg.scopeLabel || '(no Scope line)'}\n` +
+        'That is not user scope, so the installer will not touch it, not even with --replace-claude. Remove it yourself first.'
+    )
+  }
+  if (claudeMatches(ctx, reg)) return { dir, action: 'ok', existing: reg }
+  if (!ctx.opts.replaceClaude) {
+    throw new InstallError(
+      `a different user-scope "collab" MCP server is registered with Claude Code in ${dir} (${describeRegistration(reg)}).\n` +
+        `Expected: ${ctx.node.path} ${ctx.serverPath}; env COLLAB_AGENT_ID=claude. Re-run with --replace-claude to replace it.`
+    )
+  }
+  return { dir, action: 'replace', existing: reg }
+}
+
 function planClaude(ctx) {
   if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
   // Unlike Codex/Gemini, there is no plain file to fall back to checking:
@@ -1817,55 +1963,81 @@ function planClaude(ctx) {
   // reason to skip, not to fail the whole install over a vendor the caller
   // may not even use.
   if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
-  const reg = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab']))
-  if (!reg.found) return { action: 'add', existing: null }
-  if (reg.scope !== 'user') {
-    throw new InstallError(
-      `\`claude mcp get collab\` (run from a neutral directory) shows "collab" with Scope: ${reg.scopeLabel || '(no Scope line)'}\n` +
-        'That is not user scope, so the installer will not touch it, not even with --replace-claude. Remove it yourself first.'
-    )
-  }
-  if (claudeMatches(ctx, reg)) return { action: 'ok', existing: reg }
-  if (!ctx.opts.replaceClaude) {
-    throw new InstallError(
-      `a different user-scope "collab" MCP server is registered with Claude Code (${describeRegistration(reg)}).\n` +
-        `Expected: ${ctx.node.path} ${ctx.serverPath}; env COLLAB_AGENT_ID=claude. Re-run with --replace-claude to replace it.`
-    )
-  }
-  return { action: 'replace', existing: reg }
+  return { dirs: ctx.claudeDirs.map((dir) => planClaudeDir(ctx, dir)) }
 }
 
 function claudeAddArgs(ctx) {
   return ['mcp', 'add', '-s', 'user', 'collab', '-e', 'COLLAB_AGENT_ID=claude', '--', ctx.node.path, ctx.serverPath]
 }
 
-function applyClaude(ctx, plan, journal, changes) {
-  if (plan.action === 'ok') return
-  if (plan.action === 'replace') {
-    const old = plan.existing
-    const removed = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'])
-    if (removed.status !== 0) throw new InstallError(`claude mcp remove -s user collab failed:\n${tail(removed.stdout + removed.stderr, 10)}`)
-    journal.add('removed the previous user-scope collab registration (re-added best effort; args are split on spaces)', () => {
+// With one config directory the wording stays exactly as it was; the directory
+// is named only when there is more than one and the reader needs to know which.
+const claudeLabel = (ctx, dir) => ((ctx.claudeDirs || []).length > 1 ? `claude (${dir})` : 'claude')
+
+function applyClaudeDir(ctx, item, journal, changes) {
+  const { dir } = item
+  if (item.unreachable) {
+    changes.push(`${claudeLabel(ctx, dir)}: NOT registered — ${item.unreachable}; the copies are installed, register by hand when the account works again`)
+    return
+  }
+  if (item.action === 'ok') return
+  if (item.action === 'replace') {
+    const old = item.existing
+    const removed = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'], dir)
+    if (removed.status !== 0) throw new InstallError(`claude mcp remove -s user collab (CLAUDE_CONFIG_DIR=${dir}) failed:\n${tail(removed.stdout + removed.stderr, 10)}`)
+    journal.add(`removed the previous user-scope collab registration in ${dir} (re-added best effort; args are split on spaces)`, () => {
       const envArgs = Object.entries(old.env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
-      const r = runClaude(ctx, ['mcp', 'add', '-s', 'user', 'collab', ...envArgs, '--', old.command, ...(old.args ? old.args.split(' ') : [])])
+      const r = runClaude(ctx, ['mcp', 'add', '-s', 'user', 'collab', ...envArgs, '--', old.command, ...(old.args ? old.args.split(' ') : [])], dir)
       if (r.status !== 0) throw new Error(`re-adding failed: ${tail(r.stdout + r.stderr, 5)}`)
     })
   }
-  const added = runClaude(ctx, claudeAddArgs(ctx))
-  if (added.status !== 0) throw new InstallError(`claude ${claudeAddArgs(ctx).join(' ')} failed:\n${tail(added.stdout + added.stderr, 10)}`)
-  journal.add('registered collab with Claude Code (user scope)', () => {
-    const r = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'])
+  const added = runClaude(ctx, claudeAddArgs(ctx), dir)
+  if (added.status !== 0) throw new InstallError(`claude ${claudeAddArgs(ctx).join(' ')} (CLAUDE_CONFIG_DIR=${dir}) failed:\n${tail(added.stdout + added.stderr, 10)}`)
+  journal.add(`registered collab with Claude Code (user scope) in ${dir}`, () => {
+    const r = runClaude(ctx, ['mcp', 'remove', '-s', 'user', 'collab'], dir)
     if (r.status !== 0) throw new Error(tail(r.stdout + r.stderr, 5))
   })
-  const check = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab']))
+  const check = parseClaudeGet(runClaude(ctx, ['mcp', 'get', 'collab'], dir))
   if (!claudeMatches(ctx, check)) {
-    throw new InstallError(`after claude mcp add, \`claude mcp get collab\` does not show the expected registration: ${check.found ? describeRegistration(check) : 'not found'}`)
+    throw new InstallError(`after claude mcp add (CLAUDE_CONFIG_DIR=${dir}), \`claude mcp get collab\` does not show the expected registration: ${check.found ? describeRegistration(check) : 'not found'}`)
   }
-  changes.push(`claude: ${plan.action === 'replace' ? `replaced (${describeRegistration(plan.existing)}) with` : 'registered'} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`)
+  changes.push(
+    `${claudeLabel(ctx, dir)}: ${item.action === 'replace' ? `replaced (${describeRegistration(item.existing)}) with` : 'registered'} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`
+  )
+}
+
+// The first directory is the one a plain `claude` uses; a failure there is the
+// old fatal error (and the installer rolls back). For the extra accounts a
+// failure is reported and the install stands: their copies — which is what a
+// session reads — are already in place, and one broken account must not undo
+// an install for all the others.
+function applyClaude(ctx, plan, journal, changes) {
+  const [primary] = ctx.claudeDirs
+  for (const item of plan.dirs) {
+    if (item.dir === primary) {
+      applyClaudeDir(ctx, item, journal, changes)
+      continue
+    }
+    try {
+      applyClaudeDir(ctx, item, journal, changes)
+    } catch (error) {
+      // A failed 'replace' has already removed the old registration; swallowing
+      // that would leave the account with nothing. Only a plain 'add', which
+      // has changed nothing yet, degrades to a warning.
+      if (!(error instanceof InstallError) || item.action === 'replace') throw error
+      changes.push(`${claudeLabel(ctx, item.dir)}: NOT registered — ${firstLine(error.message)}; the copies are installed, register by hand`)
+    }
+  }
 }
 
 function summarizeClaude(ctx, plan) {
-  return plan.action !== 'ok' ? `claude: ${plan.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}` : null
+  return plan.dirs
+    .filter((item) => item.unreachable || item.action !== 'ok')
+    .map((item) =>
+      item.unreachable
+        ? `${claudeLabel(ctx, item.dir)}: cannot register — ${item.unreachable}`
+        : `${claudeLabel(ctx, item.dir)}: ${item.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`
+    )
 }
 
 // ── Gemini (Google's Antigravity CLI, `agy`): ~/.gemini/config/mcp_config.json
@@ -1993,6 +2165,10 @@ function rollbackCommand(ctx) {
   const parts = [realpathOr(process.argv[1]), '--rollback']
   if (ctx.home !== ctx.realHome) parts.push('--home', ctx.home, '--bindir', ctx.bindir, '--claude-bin', ctx.claudeBin)
   else if (!BINDIR_CANDIDATES.includes(ctx.bindir)) parts.push('--bindir', ctx.bindir)
+  // A rollback has to reach every config directory this install wrote to, and the
+  // extra ones are only known from the command line (or the environment, which the
+  // next run may not have).
+  for (const dir of ctx.claudeDirs.slice(1)) parts.push('--claude-config-dir', dir)
   return parts.map(shellQuote).join(' ')
 }
 
@@ -2056,7 +2232,8 @@ async function install(ctx) {
       const p = plan.clients[c.id]
       if (p.skipped) continue
       const line = c.summary(ctx, p)
-      if (line) planned.push(line)
+      // A client may plan more than one thing (Claude: one registration per config directory).
+      if (line) planned.push(...[].concat(line))
     }
 
     if (ctx.opts.dryRun) {
@@ -2088,6 +2265,7 @@ async function install(ctx) {
       appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
       changes.push(`current -> releases/${source.sha} (was ${previous || 'none'})`)
     }
+    assertConfigDirsInside(ctx)
     applyLinks(ctx, plan.links, journal, changes)
     const broken = brokenLinks(ctx)
     if (broken.length) throw new InstallError(`links do not resolve after install: ${broken.join(', ')}`)
@@ -2160,6 +2338,7 @@ function rollback(ctx) {
     switchCurrent(ctx, target, journal, current.raw)
     appendHistory(ctx, { at: new Date().toISOString(), sha: target, previous: current.sha, action: 'rollback' }, journal)
     changes.push(`current -> releases/${target} (was ${current.sha})`)
+    assertConfigDirsInside(ctx)
     applyLinks(ctx, links, journal, changes)
   } catch (error) {
     const undone = journal.rollback()
@@ -2196,6 +2375,8 @@ async function main(argv) {
 
 module.exports = {
   parseArgs,
+  resolveClaudeConfigDirs,
+  assertConfigDirsInside,
   tapVerdict,
   rewriteCodexToml,
   codexBlock,
