@@ -33,7 +33,7 @@ jobs:
       # symlink/junction switch, the link strategy, Codex/Gemini config
       # rewriting) rather than just unit-testing pieces of it.
       - name: installer test suite
-        run: node --test tests/test_install.mjs
+        run: node --test tests/test_install_*.mjs
         env:
           AGENT_KIT_TEST_SOURCE: ${{ github.workspace }}
 

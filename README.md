@@ -83,7 +83,7 @@ collab init --adopt          # привязать перенесённый ил�
 node --test collab/test/                                    # журнал
 /usr/bin/python3 -m unittest tests/test_scope_guard.py tests/test_readonly_guard.py
 bash tests/test_ui_review_scripts.sh
-node --test tests/test_install.mjs                          # установщик, ~3 мин
+node --test tests/test_install_*.mjs                        # установщик, ~3 мин (4 файла параллельно)
 ```
 
 Коммит → `bin/agent-kit-install`. Изменения в реестре тоже вступают в силу только после установки.
