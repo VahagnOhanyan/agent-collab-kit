@@ -61,6 +61,7 @@ const REQUIRED_PATHS = Object.freeze([
   'agents/implementer.md',
   'agents/verifier.md',
   'rules/orchestration.md',
+  'rules/modules.md',
   'skills/codex-review/SKILL.md',
   'skills/ui-review/SKILL.md',
   'hooks/scope-guard.py',
@@ -1091,7 +1092,13 @@ function linkSpecs(ctx) {
     { dest: path.join(dir, 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
-    { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true }
+    { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },
+    // rules/modules.md joined on 20.09.2026, the same way and for the same
+    // reason: module boundaries and integration are engineering rules that
+    // hold in any project with modules, so they belong to the machine, not
+    // to one repository's ADR — an ADR travels with its project and nowhere
+    // else.
+    { dest: path.join(dir, 'rules', 'modules.md'), rel: 'rules/modules.md', kind: 'file', posixCopy: true }
   ]
   // ctx.claudeDirs is what makeContext computed; a bare ctx (the unit tests build
   // one by hand) falls back to the single default directory.
