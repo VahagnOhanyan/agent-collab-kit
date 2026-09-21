@@ -62,6 +62,7 @@ const REQUIRED_PATHS = Object.freeze([
   'agents/verifier.md',
   'rules/orchestration.md',
   'rules/modules.md',
+  'rules/terminology.md',
   'skills/codex-review/SKILL.md',
   'skills/ui-review/SKILL.md',
   'hooks/scope-guard.py',
@@ -1098,7 +1099,13 @@ function linkSpecs(ctx) {
     // hold in any project with modules, so they belong to the machine, not
     // to one repository's ADR — an ADR travels with its project and nowhere
     // else.
-    { dest: path.join(dir, 'rules', 'modules.md'), rel: 'rules/modules.md', kind: 'file', posixCopy: true }
+    { dest: path.join(dir, 'rules', 'modules.md'), rel: 'rules/modules.md', kind: 'file', posixCopy: true },
+    // rules/terminology.md joined on 21.09.2026 by the owner's decision: every
+    // task opens with a shared glossary (term -> name in code -> what is seen),
+    // confirmed before any work. A day was lost on 20.09 to defects that were
+    // disagreements about words, not code. Machine-level for the same reason
+    // as the two above: it holds in every project.
+    { dest: path.join(dir, 'rules', 'terminology.md'), rel: 'rules/terminology.md', kind: 'file', posixCopy: true }
   ]
   // ctx.claudeDirs is what makeContext computed; a bare ctx (the unit tests build
   // one by hand) falls back to the single default directory.
