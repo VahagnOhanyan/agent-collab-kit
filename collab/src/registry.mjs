@@ -23,7 +23,7 @@
 // exits. Sharing one function is what stops the gate and the runtime from
 // disagreeing about what "valid" means.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
@@ -584,6 +584,71 @@ export function loadConfig({ journalRoot = null, configDir = undefined, registry
 // Kept for callers that want one directory (or the defaults) and nothing else.
 export function loadRegistryConfig(dir = null) {
   return dir ? loadConfigFrom(dir, { kind: 'config-dir', dir: resolve(dir) }) : loadConfigFrom()
+}
+
+// `collab setup` support below. Three pure pieces plus one write — kept
+// separate so the interesting part (what to offer, what a "yes" produces) is
+// testable without touching PATH or a real project registry.
+
+export function loadBuiltinAgents() {
+  return readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json')
+}
+
+// What `collab setup` would ask about: for every agent the BUILT-IN catalog
+// knows (a vendor `collab setup` has never heard of is out of scope — adding
+// one is still an edit to config/agents.json, not something to infer), compare
+// whether it is reachable on this machine against whether this project's own
+// agents.json already lists it. Only the two cases worth a question come back;
+// already-consistent and already-absent-and-unreachable agents produce nothing
+// to ask. `reachableIds` is a Set the caller builds (`which()` per adapter) —
+// passed in, not probed here, so this stays a pure function over its inputs.
+export function planAgentSetup(builtinAgents, projectAgents, reachableIds) {
+  const projectIds = new Set((projectAgents?.agents || []).map((a) => a.id))
+  const offers = []
+  for (const agent of builtinAgents.agents || []) {
+    const reachable = reachableIds.has(agent.id)
+    const inProject = projectIds.has(agent.id)
+    if (reachable && !inProject) offers.push({ id: agent.id, name: agent.name, action: 'add' })
+    else if (!reachable && inProject) offers.push({ id: agent.id, name: agent.name, action: 'remove' })
+  }
+  return offers
+}
+
+// Applies the offers the owner said yes to and returns the NEW file content —
+// never mutates `projectAgents`. `accepted` is a subset of what planAgentSetup
+// returned. A fresh project (projectAgents null) gets the same "//" comment
+// keys the hand-written examples already carry, so a generated file reads the
+// same way a hand-written one does.
+export function applyAgentSetup(builtinAgents, projectAgents, accepted) {
+  const builtinById = new Map((builtinAgents.agents || []).map((a) => [a.id, a]))
+  const base = projectAgents || {
+    '//': 'The agent registry for this project. This file is the ONLY place a provider name appears in the collaboration layer: the protocol routes by role and capability, never by agent id.',
+    '//briefing': "`briefing` is the agent's own instructions, returned by its whoami call. `briefing_file` is relative to THIS directory.",
+    '//adapter': 'No `adapter` here on purpose: adapters decide whether the layer may start a process, so they come only from the built-in config (collab/config/agents.json). One declared here would be ignored.',
+    defaults: builtinAgents.defaults || { lease_seconds: 3600, heartbeat_stale_seconds: 900 },
+    agents: []
+  }
+  let agents = [...(base.agents || [])]
+  for (const offer of accepted) {
+    if (offer.action === 'add') {
+      const source = builtinById.get(offer.id)
+      if (!source) continue
+      // adapter is never written here: it comes from the built-in config only
+      // (see the header comment), and applyBuiltinAdapters would warn and
+      // ignore it anyway — writing it would just suggest a control that
+      // doesn't exist.
+      const { adapter, ...rest } = source
+      agents = [...agents.filter((a) => a.id !== offer.id), rest]
+    } else if (offer.action === 'remove') {
+      agents = agents.filter((a) => a.id !== offer.id)
+    }
+  }
+  return { ...base, agents }
+}
+
+export function writeProjectAgentsFile(path, content) {
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, `${JSON.stringify(content, null, 2)}\n`)
 }
 
 // A briefing_file is relative to the config directory whose agents.json

@@ -173,6 +173,30 @@ test('approve REFUSES without an interactive terminal', async () => {
   }
 })
 
+test('setup REFUSES from an agent shell', () => {
+  const w = scratch()
+  try {
+    const result = run(w, ['setup'], { COLLAB_AGENT_ID: 'codex' })
+    assert.equal(result.status, 3)
+    assert.match(result.stderr, /COLLAB_AGENT_ID is set/)
+    assert.match(result.stderr, /owner's decision/)
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('setup REFUSES without an interactive terminal', () => {
+  const w = scratch()
+  try {
+    // spawnSync gives pipes, not a tty — which is what any script has.
+    const result = run(w, ['setup'])
+    assert.equal(result.status, 3)
+    assert.match(result.stderr, /needs an interactive terminal/)
+  } finally {
+    w.cleanup()
+  }
+})
+
 test('doctor names the roots, the config source, what is unavailable and how to fix it', () => {
   const w = scratch()
   try {

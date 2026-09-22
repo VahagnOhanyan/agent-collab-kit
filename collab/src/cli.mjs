@@ -13,7 +13,8 @@
 // action belongs in the harness: see the header of domain/approvals.mjs.
 
 import { createInterface } from 'node:readline/promises'
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
@@ -21,6 +22,8 @@ import { initJournal, resolveRoots } from './paths.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
+import { which } from './adapters/index.mjs'
+import { loadBuiltinAgents, planAgentSetup, applyAgentSetup, writeProjectAgentsFile } from './registry.mjs'
 
 const C = process.stdout.isTTY
   ? { dim: '\x1b[2m', off: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m' }
@@ -173,6 +176,85 @@ const STANDALONE = {
     for (const problem of result.surface) out(`  ✘ ${problem}`)
     if (!result.surface.length) out(`MCP surface ok — ${result.tools} tools, no path for an agent to authorise itself`)
     if (!result.ok) process.exit(1)
+  },
+
+  // Which agent VENDORS take part in this project's orchestration — not which
+  // model handles which subtask (that stays per-task, in orchestration.md).
+  // Same barriers as approve/init --adopt: an owner decision, at their own
+  // terminal, never from an agent's shell.
+  async setup({ flags }, options) {
+    if (process.env.COLLAB_AGENT_ID) {
+      process.stderr.write(
+        `refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n` +
+          "Choosing which vendors take part in orchestration is the owner's decision, at their own terminal.\n"
+      )
+      process.exit(3)
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("refusing: collab setup needs an interactive terminal — it is the owner's decision, not a script's.\n")
+      process.exit(3)
+    }
+
+    const project = describeProject(options)
+    if (!project.projectId) {
+      process.stderr.write(
+        `refusing: ${project.cwd} is not a registered project (no projects/<id>/project.json in ${project.registryDir}) — ` +
+          'register it first (see README "Подключить проект"), then run collab setup again.\n'
+      )
+      process.exit(1)
+    }
+
+    const builtinAgents = loadBuiltinAgents()
+    const projectAgentsPath = join(project.registryDir, project.projectId, 'collab', 'agents.json')
+    const projectAgents = existsSync(projectAgentsPath) ? JSON.parse(readFileSync(projectAgentsPath, 'utf8')) : null
+
+    const reachableIds = new Set()
+    for (const agent of builtinAgents.agents || []) {
+      const adapter = agent.adapter || { kind: 'manual' }
+      const reachable = adapter.kind === 'cli' ? Boolean(which(adapter.binary)) : true
+      if (reachable) reachableIds.add(agent.id)
+    }
+
+    const offers = planAgentSetup(builtinAgents, projectAgents, reachableIds)
+    if (!offers.length) {
+      out(dim('нечего предложить — состав вендоров в проекте уже соответствует тому, что обнаружено на машине'))
+      return
+    }
+
+    out(`${C.bold}collab setup${C.off} — проект ${project.projectId}`, dim(projectAgentsPath), '')
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const accepted = []
+    try {
+      for (const offer of offers) {
+        const question =
+          offer.action === 'add'
+            ? `${offer.name} (${offer.id}) обнаружен на машине, в проекте не участвует — добавить? [y/N] `
+            : `${offer.name} (${offer.id}) участвует в проекте, но не обнаружен на машине — убрать? [y/N] `
+        const answer = await rl.question(question)
+        if (/^y(es)?$/i.test(answer.trim())) accepted.push(offer)
+      }
+    } finally {
+      rl.close()
+    }
+
+    if (!accepted.length) {
+      out('', dim('ничего не изменено'))
+      return
+    }
+
+    const updated = applyAgentSetup(builtinAgents, projectAgents, accepted)
+    writeProjectAgentsFile(projectAgentsPath, updated)
+    out('', `${C.green}записано${C.off} ${projectAgentsPath}`)
+    for (const offer of accepted) out(dim(`  ${offer.action === 'add' ? '+ добавлен' : '- убран'} ${offer.id}`))
+    if (accepted.some((o) => o.action === 'add')) {
+      out(
+        '',
+        dim(
+          'роли и briefing для добавленных агентов скопированы из встроенного шаблона как есть — ' +
+            'поправь их под проект (agents.json), это не сделано за тебя.'
+        )
+      )
+    }
   }
 }
 
@@ -613,6 +695,7 @@ const COMMANDS = {
       '',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
+      '  setup                  interactively choose which agent vendors take part in this project\'s orchestration',
       '  project [--json]       journal root, worktree, registry project and config source for this directory',
       '  status                 who is doing what, what is waiting, what the tree looks like',
       '  tasks [--all]          list tasks',
