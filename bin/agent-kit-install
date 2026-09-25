@@ -63,11 +63,13 @@ const REQUIRED_PATHS = Object.freeze([
   'rules/orchestration.md',
   'rules/modules.md',
   'rules/terminology.md',
+  'rules/apple-toolchain.md',
   'skills/codex-review/SKILL.md',
   'skills/ui-review/SKILL.md',
   'hooks/scope-guard.py',
   'hooks/readonly-guard.py',
   'bin/collab',
+  'bin/apple-lock',
   'collab/src/mcp/server.mjs',
   'collab/src/mcp/tools.mjs',
   'collab/test'
@@ -1105,14 +1107,22 @@ function linkSpecs(ctx) {
     // confirmed before any work. A day was lost on 20.09 to defects that were
     // disagreements about words, not code. Machine-level for the same reason
     // as the two above: it holds in every project.
-    { dest: path.join(dir, 'rules', 'terminology.md'), rel: 'rules/terminology.md', kind: 'file', posixCopy: true }
+    { dest: path.join(dir, 'rules', 'terminology.md'), rel: 'rules/terminology.md', kind: 'file', posixCopy: true },
+    // rules/apple-toolchain.md joined on 25.09.2026 by the owner's decision:
+    // Xcode, the simulators and the phone are one resource per machine, and
+    // sessions of different projects broke each other's test runs by using
+    // them at once. One regulation and one lock (bin/apple-lock) for all.
+    { dest: path.join(dir, 'rules', 'apple-toolchain.md'), rel: 'rules/apple-toolchain.md', kind: 'file', posixCopy: true }
   ]
   // ctx.claudeDirs is what makeContext computed; a bare ctx (the unit tests build
   // one by hand) falls back to the single default directory.
   const dirs = ctx.claudeDirs || [path.join(ctx.home, '.claude')]
   return [
     ...dirs.flatMap(perConfigDir),
-    { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false }
+    { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false },
+    // The machine lock for Xcode / simulators / devices — macOS only, like the
+    // tools it serialises.
+    ...(IS_WINDOWS ? [] : [{ dest: path.join(ctx.bindir, 'apple-lock'), rel: 'bin/apple-lock', kind: 'file', posixCopy: false }])
   ].map((spec) => ({ ...spec, target: path.join(ctx.currentPath, spec.rel) }))
 }
 

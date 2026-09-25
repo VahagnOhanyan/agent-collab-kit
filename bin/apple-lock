@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# apple-lock — run one command under THE machine lock for Apple developer tools.
+#
+#   apple-lock <command> [args…]
+#
+# Xcode, the simulators and the connected phone are one resource per machine:
+# every session of every project (Tripix, brockerApp, …) and every agent
+# (Claude, its subagents, Codex) shares them. Two of them at once is how test
+# runs died on 25.09.2026: one session's `simctl launch` / device build ran
+# while another session's `xcodebuild test` was cloning its simulator, and the
+# clone vanished mid-run ("(ipc/mig) server died", "No matching device … in
+# set …/XCTestDevices", "Channel disconnected"). A lock that only the test
+# script took did not help — everything else ran past it.
+#
+# What goes through here (regulation: ~/agent-kit/rules/apple-toolchain.md):
+# `xcodebuild` build/test, `simctl boot|shutdown|erase|install|launch|clone`,
+# `devicectl … install|launch`, and any script that runs them.
+#
+# Behaviour:
+#   - One holder at a time: `lockf` on /tmp/apple-dev.lock, commands run in the
+#     order they asked. The holder is written to /tmp/apple-dev.lock.owner
+#     (project, pid, command, start) and removed when it ends.
+#   - A waiter prints who holds the lock once a minute, and gives up after
+#     APPLE_LOCK_WAIT seconds (default 3600) with exit 75 — it never kills or
+#     pre-empts the holder.
+#   - Nested: a command already running under the lock (APPLE_LOCK_HELD=1 in its
+#     environment) runs its inner calls directly — taking the lock again from
+#     inside would wait for itself forever.
+#   - Exit status is the command's own.
+set -uo pipefail
+
+LOCK_FILE="${APPLE_LOCK_FILE:-/tmp/apple-dev.lock}"
+OWNER_FILE="${LOCK_FILE}.owner"
+WAIT_TOTAL="${APPLE_LOCK_WAIT:-3600}"
+STEP="${APPLE_LOCK_STEP:-60}"
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: apple-lock <command> [args…]" >&2
+  exit 64
+fi
+
+# Inner mode: we are the holder. Record it, run, clear.
+if [[ "${APPLE_LOCK_INNER:-}" == "1" ]]; then
+  unset APPLE_LOCK_INNER
+  export APPLE_LOCK_HELD=1
+  # Tells the outer loop the command RAN (so its status is the command's, even
+  # when that status is 75 — the code lockf uses for "not acquired in time").
+  [[ -n "${APPLE_LOCK_RAN:-}" ]] && : > "$APPLE_LOCK_RAN"
+  unset APPLE_LOCK_RAN
+  printf 'project=%s pid=%s since=%s cmd=%s\n' \
+    "$(basename "${PWD}")" "$PPID" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" > "$OWNER_FILE"
+  cleanup() { rm -f "$OWNER_FILE"; }
+  trap cleanup EXIT
+  "$@"
+  exit $?
+fi
+
+# Already under the lock: run directly.
+if [[ "${APPLE_LOCK_HELD:-}" == "1" ]]; then
+  exec "$@"
+fi
+
+ran_marker="$(mktemp -t apple-lock-ran)"
+rm -f "$ran_marker"
+trap 'rm -f "$ran_marker"' EXIT
+waited=0
+while :; do
+  APPLE_LOCK_INNER=1 APPLE_LOCK_RAN="$ran_marker" lockf -s -k -t "$STEP" "$LOCK_FILE" "$0" "$@"
+  status=$?
+  # The command ran: its status is final, whatever it is.
+  if [[ -f "$ran_marker" ]]; then exit $status; fi
+  # Not acquired within STEP (lockf's 75): report the holder and wait again.
+  if [[ $status -ne 75 ]]; then exit $status; fi
+  waited=$((waited + STEP))
+  holder="$(cat "$OWNER_FILE" 2>/dev/null || echo 'unknown')"
+  if (( waited >= WAIT_TOTAL )); then
+    echo "apple-lock: gave up after ${waited}s — held by: ${holder}" >&2
+    exit 75
+  fi
+  echo "apple-lock: waiting ${waited}s — held by: ${holder}" >&2
+done
