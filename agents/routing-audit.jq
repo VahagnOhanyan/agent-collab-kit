@@ -192,10 +192,22 @@ def bash_edit_paths($cwd0; $home):
 | ([ $edits_all[] | select(.win) | select(.path | excluded_edit($plan) | not) ] | sort_by(.ord) | first) as $first_edit
 
 # Записи файла плана: откуда берутся маршрут, смета и объявление разведки.
-| [ $uses_all[] | select(edit_tool and $plan != "" and ((.input.file_path // .input.notebook_path // "") | str) == $plan)
+| ( [ $uses_all[] | select(edit_tool and $plan != "" and ((.input.file_path // .input.notebook_path // "") | str) == $plan)
     # только то, что запись оставляет в файле: удалённая строка (old_string) — не маршрут
     | {ord, ts, win, strings: [ .input.content, .input.new_string, (.input.edits // [] | .[]? | .new_string), .input.new_source
-                           | select(type == "string") ]} ] as $plan_writes
+                           | select(type == "string") ]} ]
+  # Запись плана из Bash (heredoc `cat > план`, `tee план`, `cp X план`): план — ЦЕЛЬ записи, а не
+  # только упомянут. Путь сравнивается по имени файла: после `cd` его пишут относительным. Чтение
+  # (`cat план 2>/dev/null`, `cp план /tmp/x`) записью не считается. Текст записи — сама команда
+  # (heredoc лежит в ней); у копии `cp`/`mv` содержимого не видно — маркер в ней не найдётся,
+  # и это честное «не видно».
+  + ( ($plan | split("/") | last | gsub("(?<c>[.\\[\\]()*+?^$|{}\\\\])"; "\\\(.c)")) as $base
+    | ("[^\\s'\"]*" + $base + "['\"]?") as $target
+    | [ $uses_all[] | select(.name == "Bash" and $plan != "")
+      | ((.input.command // "") | str) as $c
+      | select($c | test("(>>?\\s*['\"]?" + $target + "|\\btee\\s+(-a\\s+)?['\"]?" + $target
+                         + "|\\b(cp|mv)\\b[^;&|\\n]*\\s['\"]?" + $target + "\\s*($|[;&|\\n]))"))
+      | {ord, ts, win, strings: [ $c ]} ] ) ) as $plan_writes
 # Записи плана этого захода: если задано начало (since) и план в нём переписывался — только они;
 # иначе все (план могли записать до since).
 | ([ $plan_writes[] | select(.win) ] | if length > 0 then . else $plan_writes end) as $pw_scope
@@ -300,7 +312,9 @@ def bash_edit_paths($cwd0; $home):
 # Мутации и итерации. Цели прогона — имена тест-классов (`FooTests`, `FooTests/testBar`).
 # Соглашение правила: мутационный прогон — `--label mut-<id>` или скрипт `*controls*.sh` /
 # `*mutation*.sh` с id мутаций аргументами; скрипт без id — полный набор.
-| def test_targets: [ splits("\\s+") | select(test("^[A-Z][A-Za-z0-9_]*Tests?(/[A-Za-z0-9_]+)?$")) ];
+# Аргументы флагов (`--tests AppCoreTests`, `--scheme X`, `--label mut-a`, `--logs DIR`) — не цели прогона.
+| def test_targets: [ gsub("--(tests|scheme|label|logs)[\\s=]+[^\\s]+"; "") | splits("\\s+")
+                      | select(test("^[A-Z][A-Za-z0-9_]*Tests?(/[A-Za-z0-9_]+)?$")) ];
   def one_test: (length == 1) and (.[0] | test("/"));
   [ $uses[] | select(.name == "Bash") | . as $u | ($u.input.command | str_cmd | run_segments[])
     | select(runner_start and test("--(iterations|repeat)[\\s=]+[0-9]+"))
