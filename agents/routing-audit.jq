@@ -201,7 +201,7 @@ def bash_edit_paths($cwd0; $home):
   # (`cat план 2>/dev/null`, `cp план /tmp/x`) записью не считается. Текст записи — сама команда
   # (heredoc лежит в ней); у копии `cp`/`mv` содержимого не видно — маркер в ней не найдётся,
   # и это честное «не видно».
-  + ( ($plan | split("/") | last | gsub("(?<c>[.\\[\\]()*+?^$|{}\\\\])"; "\\\(.c)")) as $base
+  + ( ($plan | split("/") | (last // "") | gsub("(?<c>[.\\[\\]()*+?^$|{}\\\\])"; "\\\(.c)")) as $base
     | ("[^\\s'\"]*" + $base + "['\"]?") as $target
     | [ $uses_all[] | select(.name == "Bash" and $plan != "")
       | ((.input.command // "") | str) as $c
