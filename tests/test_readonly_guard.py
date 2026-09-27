@@ -187,7 +187,6 @@ class AllowSetTests(GuardCase):
         "xcrun --sdk iphonesimulator --show-sdk-path", "collab project --json", "collab project",
         "collab reviews --task tsk_mu6xmxc2_d31d6b --json", "collab reviews --json", "collab reviews",
         "collab reviews --pending --reviewer codex --json",
-        "collab reviews --task tsk_x --json | jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
         # составные и перенаправления
         "ls >/dev/null 2>&1", "ls > /dev/null", "cat a 2>/dev/null", "cat a 2> /dev/null", "ls 2>&1 | head",
         "git status; git diff", "git status\ngit diff --stat\n", "git status && git diff", "ls || pwd",
@@ -322,6 +321,14 @@ class DeniedCommandTests(GuardCase):
         "printf -v PATH /tmp; cat", "printf -v PATH /tmp", "printf -vPATH x", "printf -v x y",
         "rg -z needle f", "rg -nz x", "rg -zn x", "rg --search-zip x", "rg --search-zip=true x",
     )
+    JQ_AUDIT_DENIED = (
+        # Решение владельца 27.09.2026: пункт 4b (аудит маршрутизации ведущей сессии) — домен
+        # Codex, не Claude; verifier не аудирует ведущую сессию сам.
+        "jq -s -f /Users/x/.agent-kit/current/agents/routing-audit.jq --arg plan '' /tmp/t.jsonl",
+        "jq -s -f /Users/x/.agent-kit/current/agents/routing-audit.jq --arg plan /p.md /tmp/t.jsonl",
+        "collab reviews --task tsk_x --json | jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
+        "jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
+    )
     RUNNER_DENIED = (
         # node
         "node x.js", "node scripts/check.js", "node -e 1", "node --eval 1", "node -p 1", "node -r x --test",
@@ -384,6 +391,9 @@ class DeniedCommandTests(GuardCase):
 
     def test_reader_flags_denied(self):
         self.check_all(self.READER_FLAGS_DENIED, 2)
+
+    def test_jq_audit_denied(self):
+        self.check_all(self.JQ_AUDIT_DENIED, 2)
 
     def test_runner_denied(self):
         self.check_all(self.RUNNER_DENIED, 2)

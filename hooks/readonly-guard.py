@@ -359,6 +359,20 @@ def policy_find(cmd, args, cwd):
                 prefixes=("-fprint",))
 
 
+def policy_jq(cmd, args, cwd):
+    # Решение владельца 27.09.2026: пункт 4b (аудит того, соблюла ли маршрутизацию сама
+    # ведущая сессия) — домен Codex, не Claude, потому что Claude-verifier, аудирующий
+    # Claude-сессию, менее независим, чем кросс-вендорный аудит. jq остаётся читателем для
+    # всего остального; запрещён только сам этот аудит — его гоняет Codex через
+    # ~/agent-kit/projects/tripix/collab/briefings/codex-verifier.md.
+    for a in texts(args):
+        if "routing-audit.jq" in a or "review-rounds.jq" in a:
+            raise Blocked(
+                "`jq ... %s` не разрешён verifier'у: пункт 4b — домен Codex, не Claude "
+                "(см. ~/agent-kit/projects/tripix/collab/briefings/codex-verifier.md)" % a
+            )
+
+
 _SORT_LONG = ("--reverse", "--numeric-sort", "--unique", "--ignore-case", "--stable", "--version-sort",
               "--human-numeric-sort", "--month-sort", "--general-numeric-sort", "--zero-terminated",
               "--check", "--dictionary-order", "--ignore-leading-blanks", "--ignore-nonprinting",
@@ -744,7 +758,7 @@ ALLOWLIST = {
     "ls": any_args, "cat": any_args, "head": any_args, "tail": any_args, "wc": any_args, "stat": any_args,
     "du": any_args, "df": any_args, "pwd": any_args, "which": any_args, "echo": any_args, "printf": policy_printf,
     "uname": any_args, "whoami": any_args, "id": any_args, "grep": any_args, "egrep": any_args,
-    "fgrep": any_args, "cut": any_args, "tr": any_args, "jq": any_args, "diff": any_args, "cmp": any_args,
+    "fgrep": any_args, "cut": any_args, "tr": any_args, "jq": policy_jq, "diff": any_args, "cmp": any_args,
     "comm": any_args, "basename": any_args, "dirname": any_args, "realpath": any_args, "readlink": any_args,
     "shasum": any_args, "md5": any_args, "sw_vers": any_args,
     "env": no_args, "command": policy_command, "date": policy_date, "file": policy_file, "rg": policy_rg,
