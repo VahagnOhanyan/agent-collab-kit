@@ -10,7 +10,7 @@
 // supply either: a cloned repo would otherwise ship the commands the layer runs.
 // The registry lives outside every repository and belongs to the owner.
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, parse as parsePath } from 'node:path'
 import { CollabConfigError } from './errors.mjs'
@@ -59,9 +59,14 @@ export function readProjectEntry(dir, name, { home = homedir() } = {}) {
   return entry
 }
 
+// A symlinked registry, or a symlinked project entry in it, could point into a
+// repository — which would then supply its own write scopes and commands. Both
+// are ignored (lstat, not stat): the project falls back to the restrictive
+// built-in defaults, and `collab check-config` shows it as missing.
 export function listProjects(registry, options = {}) {
   let names
   try {
+    if (lstatSync(registry).isSymbolicLink()) return []
     names = readdirSync(registry)
   } catch {
     return []
@@ -70,7 +75,7 @@ export function listProjects(registry, options = {}) {
     .filter((name) => !name.startsWith('.'))
     .filter((name) => {
       try {
-        return statSync(join(registry, name)).isDirectory()
+        return lstatSync(join(registry, name)).isDirectory()
       } catch {
         return false
       }

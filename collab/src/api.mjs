@@ -18,7 +18,7 @@ import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { CODES, CollabError } from './errors.mjs'
 import { systemClock } from './ids.mjs'
-import { DEFAULT_REGISTRY_DIR, INSTALL_ROOT, ignoredEnv, journalState, resolveRoots, runGit, safeRealpath } from './paths.mjs'
+import { defaultRegistryDir, INSTALL_ROOT, ignoredEnv, journalState, resolveRoots, runGit, safeRealpath } from './paths.mjs'
 import { findProject } from './projects.mjs'
 import { classifyAction } from './policy.mjs'
 import { catalogDrift, listModels } from './models.mjs'
@@ -60,7 +60,7 @@ function notInitialised(roots, state) {
 // Whether the trusted registry vouches for a markerless legacy journal at a root.
 // Any lookup failure answers no: the journal is then refused, not trusted.
 export const legacyJournalLookup =
-  ({ registryDir = DEFAULT_REGISTRY_DIR, home = undefined } = {}) =>
+  ({ registryDir = defaultRegistryDir(), home = undefined } = {}) =>
   (root) => {
     if (!root) return false
     try {
@@ -77,7 +77,7 @@ export const legacyJournalLookup =
 //   cwd/home     inputs to resolveRoots when roots are not given
 //   projectRoot  explicit journal root (tests)
 //   configDir    explicit config directory (tests); otherwise registry/defaults
-//   registryDir  the trusted registry (default DEFAULT_REGISTRY_DIR)
+//   registryDir  the trusted registry (default defaultRegistryDir())
 export function createApi({
   agentId,
   root = null,
@@ -86,7 +86,7 @@ export function createApi({
   home = undefined,
   clock = systemClock,
   configDir = undefined,
-  registryDir = DEFAULT_REGISTRY_DIR,
+  registryDir = defaultRegistryDir(),
   projectRoot = null
 } = {}) {
   if (!agentId) {
@@ -367,7 +367,7 @@ export function createApi({
 export function describeProject({
   cwd = process.cwd(),
   home = undefined,
-  registryDir = DEFAULT_REGISTRY_DIR,
+  registryDir = defaultRegistryDir(),
   projectRoot = null,
   configDir = null,
   env = process.env

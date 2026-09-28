@@ -30,7 +30,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, userInfo } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from './errors.mjs'
@@ -42,9 +42,31 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 export const INSTALL_ROOT = resolve(HERE, '..')
 export const DEFAULT_CONFIG_DIR = join(INSTALL_ROOT, 'config')
 
-// The trusted project registry. The single place its location is decided; the
-// install step may later change this constant, tests pass a registryDir.
-export const DEFAULT_REGISTRY_DIR = resolve(INSTALL_ROOT, '..', 'projects')
+// The trusted project registry. The single place its location is decided;
+// tests pass a registryDir.
+//
+// It lives in a PERSISTENT directory of the owner's own (~/.agent-kit/projects),
+// read directly, so `collab connect` takes effect at once — not in the copy an
+// install bakes into each release, which needed a reinstall per project. The
+// home directory comes from the account database, not $HOME: an MCP server's
+// environment can be written by a repository's .mcp.json. Until the persistent
+// directory exists (a machine that has not connected anything since this
+// change), the registry baked into the running release is used as before.
+function ownHome() {
+  try {
+    return userInfo().homedir
+  } catch {
+    return homedir()
+  }
+}
+export const PERSISTENT_REGISTRY_DIR = join(ownHome(), '.agent-kit', 'projects')
+export const RELEASE_REGISTRY_DIR = resolve(INSTALL_ROOT, '..', 'projects')
+// Decided at every call, not once at import: a long-running MCP server must
+// follow the move to the persistent registry the moment `connect` makes it,
+// or it and a freshly started hook would read two different registries.
+export function defaultRegistryDir({ persistent = PERSISTENT_REGISTRY_DIR, release = RELEASE_REGISTRY_DIR } = {}) {
+  return lstatOrNull(persistent) ? persistent : release
+}
 
 export const IGNORED_ENV = Object.freeze(['COLLAB_CONFIG_DIR', 'COLLAB_PROJECT_ROOT', 'COLLAB_REGISTRY_DIR', 'COLLAB_STATE_DIR'])
 export const ignoredEnv = (env = process.env) => IGNORED_ENV.filter((name) => typeof env[name] === 'string' && env[name] !== '')

@@ -18,7 +18,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
-import { initJournal, resolveRoots } from './paths.mjs'
+import { initJournal, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
+import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
+import { findProject } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
@@ -72,7 +74,128 @@ function printError(error) {
 const trustedOptions = ({ configDir, registryDir, projectRoot } = {}) =>
   Object.fromEntries(Object.entries({ configDir, registryDir, projectRoot }).filter(([, value]) => value))
 
+// A registry entry grants agents rights (where to write, what to run), so it is
+// written only by a person: not from an agent's shell, and only at an
+// interactive terminal. Same barriers as an approval.
+function refuseUnlessHuman(options, what) {
+  if (options.assumeHuman) return
+  if (process.env.COLLAB_AGENT_ID) {
+    process.stderr.write(
+      `refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n` +
+        `${what} changes what agents may do — the owner runs it at their own terminal. --dry-run shows the proposal.\n`
+    )
+    process.exit(3)
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write(`refusing: ${what} needs an interactive terminal — it is the owner's decision, not a script's. --dry-run shows the proposal.\n`)
+    process.exit(3)
+  }
+}
+
+async function confirmTyped(options, prompt, expected) {
+  if (options.assumeHuman) return true
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const typed = await rl.question(prompt)
+  rl.close()
+  return typed.trim() === expected
+}
+
+function rootHere(options) {
+  const roots = resolveRoots({ projectRoot: options.projectRoot })
+  return roots.journalRoot || roots.cwd
+}
+
 const STANDALONE = {
+  async connect({ flags }, options) {
+    const registryDir = options.registryDir || PERSISTENT_REGISTRY_DIR
+    let proposal
+    try {
+      proposal = proposeConnection({ journalRoot: rootHere(options), registryDir, id: typeof flags.id === 'string' ? flags.id : null })
+    } catch (error) {
+      if (error instanceof CollabError) {
+        printError(error)
+        process.exit(1)
+      }
+      throw error
+    }
+    if (!proposal.ok) {
+      out(`${proposal.existing ? 'nothing to do' : 'refusing'}: ${proposal.root} — ${proposal.reason}`)
+      process.exit(proposal.existing ? 0 : 1)
+    }
+    out(
+      '',
+      `${C.bold}connect${C.off} ${proposal.root} as project "${proposal.id}"`,
+      `  registry     ${join(registryDir, proposal.id)}`,
+      `  implementer  may write to: ${
+        proposal.allow.join(' ') ||
+        (proposal.git ? '— nothing (no tracked top-level entries)' : '— nothing: not a git repository, name the folders in scopes.json yourself')
+      }`,
+      `               (.git, .claude, .collab and .mcp.json are refused whatever this says)`,
+      `  verifier     platform commands: ${proposal.apple ? 'apple (xcodebuild, xcrun simctl list, swift, …)' : 'none'}`,
+      `  gate         ${proposal.gate || '— none found (scripts/preflight.sh); add "gate" to project.json later'}`,
+      `  journal      ${proposal.root}/.collab (created if missing)`,
+      ''
+    )
+    if (flags['dry-run']) {
+      out('dry run — nothing written')
+      return
+    }
+    refuseUnlessHuman(options, 'collab connect')
+    if (!(await confirmTyped(options, `Type the project id "${proposal.id}" to connect it, anything else to abort: `, proposal.id))) {
+      out('aborted — nothing changed')
+      process.exit(0)
+    }
+    let dir
+    try {
+      if (!options.registryDir) {
+        const moved = ensurePersistentRegistry({ persistent: registryDir, release: RELEASE_REGISTRY_DIR })
+        if (moved.created) out(`registry     created ${registryDir}${moved.copied.length ? ` (brought over: ${moved.copied.join(', ')})` : ''}`)
+        if (moved.skipped.length) out(`${C.yellow}registry     not brought over (invalid): ${moved.skipped.join(', ')} — collab check-config shows why${C.off}`)
+      }
+      dir = writeConnection(proposal, { registryDir })
+    } catch (error) {
+      if (error instanceof CollabError) {
+        printError(error)
+        process.exit(1)
+      }
+      throw error
+    }
+    out(`${C.green}connected${C.off}  ${proposal.root} -> ${dir}`)
+    const journal = initJournal({ projectRoot: proposal.root })
+    out(journal.created ? `${C.green}initialized${C.off}  ${journal.stateDir}` : `journal      already initialized  ${journal.stateDir}`)
+    out('Restart open Claude/Codex sessions of this project so they pick up the new configuration.')
+  },
+
+  async disconnect({ flags }, options) {
+    const registryDir = options.registryDir || PERSISTENT_REGISTRY_DIR
+    const root = rootHere(options)
+    const entry = findProject(root, { registry: registryDir })
+    if (!entry) {
+      out(`nothing to do: ${root} is not connected`)
+      return
+    }
+    if (flags['dry-run']) {
+      out(`dry run — would disconnect ${root} from project "${entry.id}"; the journal ${root}/.collab is left as it is`)
+      return
+    }
+    refuseUnlessHuman(options, 'collab disconnect')
+    if (!(await confirmTyped(options, `Type the path "${root}" to disconnect it, anything else to abort: `, root))) {
+      out('aborted — nothing changed')
+      process.exit(0)
+    }
+    const result = disconnectRoot({ journalRoot: root, registryDir })
+    if (!result.ok) {
+      out(`nothing to do: ${root} — ${result.reason}`)
+      return
+    }
+    out(
+      result.removed === 'project'
+        ? `${C.green}disconnected${C.off}  project "${result.id}" removed from the registry`
+        : `${C.green}disconnected${C.off}  ${root} removed from project "${result.id}" (its other roots stay)`,
+      `journal      ${root}/.collab left as it is`
+    )
+  },
+
   async init({ flags }, options) {
     const legacyJournalFor = legacyJournalLookup({ registryDir: options.registryDir })
     // Re-binding a journal to this root is the owner's call, with the same
@@ -693,6 +816,8 @@ const COMMANDS = {
     out(
       `${C.bold}collab${C.off} — shared state for the agents working on this project`,
       '',
+      '  connect [--id <id>] [--dry-run]  put this project under the kit: registry entry (write scope, gate, platform) + journal; owner only',
+      '  disconnect [--dry-run]  take this project off the registry; its journal stays; owner only',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
       '  setup                  interactively choose which agent vendors take part in this project\'s orchestration',
@@ -794,7 +919,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const [command = 'help', ...rest] = argv
   const parsed = parseArgs(rest)
   if (command === 'help' || command === '--help') return COMMANDS.help()
-  if (STANDALONE[command]) return STANDALONE[command](parsed, trusted)
+  // assumeHuman lets the tests stand in for the person at the terminal. It is a
+  // parameter of main(), which bin/collab calls with none — never an env var.
+  if (STANDALONE[command]) return STANDALONE[command](parsed, { ...trusted, ...(options.assumeHuman === true ? { assumeHuman: true } : {}) })
 
   const handler = COMMANDS[command]
   if (!handler) {

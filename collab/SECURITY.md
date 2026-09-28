@@ -58,3 +58,14 @@ PreToolUse hooks), outside the agents' reach.
   including one copied there. `collab init --adopt` binds it and removes the need.
 - **Approving a project's `.mcp.json` means trusting that repository to run code**
   on this machine. Nothing here can make that safe.
+- **`collab connect` / `disconnect` are "owner only" against habit, not against
+  intent.** A registry entry grants agents rights (write scopes, the gate, platform
+  commands), so the CLI refuses an agent's shell (`COLLAB_AGENT_ID`) and a
+  non-terminal, and asks for the id to be typed — the same barriers as approvals.
+  A same-user process that wants to can still forge them: allocate a pty, unset the
+  variable, import `main()` with the tests' `assumeHuman`, or simply write
+  `~/.agent-kit/projects/<id>/` itself. Only separate OS users would close that.
+  What the layer does hold: git failures refuse instead of widening scopes, a
+  directory without git gets no write scope, an entry is published with one rename
+  (never half-written, never mixed into an id that appeared meanwhile), and a
+  symlinked registry or entry is not trusted.

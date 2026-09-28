@@ -9,7 +9,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_REGISTRY_DIR } from './paths.mjs'
+import { defaultRegistryDir } from './paths.mjs'
 import { listProjects } from './projects.mjs'
 import { checkBriefings, loadConfigFrom, loweringRules, validateRegistry } from './registry.mjs'
 import { TOOLS } from './mcp/tools.mjs'
@@ -52,7 +52,7 @@ function check(label, load, { problems = [], warnings = [] } = {}) {
   return report
 }
 
-export function checkConfig({ projectId = null, registryDir = DEFAULT_REGISTRY_DIR, home = homedir() } = {}) {
+export function checkConfig({ projectId = null, registryDir = defaultRegistryDir(), home = homedir() } = {}) {
   const registry = registryDir
   const reports = [check('built-in defaults', () => loadConfigFrom())]
 

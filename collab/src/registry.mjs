@@ -27,7 +27,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
-import { DEFAULT_CONFIG_DIR, DEFAULT_REGISTRY_DIR, safeRealpath } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, defaultRegistryDir, safeRealpath } from './paths.mjs'
 import { findProject } from './projects.mjs'
 
 export const AGENT_STATUSES = Object.freeze(['available', 'busy', 'waiting', 'offline', 'failed'])
@@ -570,7 +570,7 @@ export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }
 
 // Parameters only. COLLAB_CONFIG_DIR / COLLAB_REGISTRY_DIR are deliberately not
 // read: a server's environment can come from a repository's .mcp.json.
-export function loadConfig({ journalRoot = null, configDir = undefined, registryDir = DEFAULT_REGISTRY_DIR, home = undefined } = {}) {
+export function loadConfig({ journalRoot = null, configDir = undefined, registryDir = defaultRegistryDir(), home = undefined } = {}) {
   if (configDir) return loadConfigFrom(configDir, { kind: 'config-dir', dir: resolve(configDir) })
   if (journalRoot) {
     const project = findProject(journalRoot, { registry: registryDir, home })
