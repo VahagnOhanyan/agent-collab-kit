@@ -23,9 +23,15 @@ test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text ar
   assert.match(text, /<!-- agent-kit: begin[\s\S]*# Оркестрация агентов[\s\S]*# Адаптер вендора: Claude Code[\s\S]*<!-- agent-kit: end -->/)
   assert.equal(text.split('agent-kit: begin').length, 2, 'one block')
 
+  const hooksFile = join(W.home, '.codex', 'hooks.json')
+  const hooks = JSON.parse(readFileSync(hooksFile, 'utf8'))
+  assert.ok(hooks.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command.includes('.agent-kit/current/hooks/codex-guard.py'))))
+  assert.match(r.stdout, /trust it once in Codex with \/hooks/)
+
   const again = W.run(['--source', world.source, '--skip-kit-tests'])
   assert.equal(again.status, 0, again.all)
   assert.equal(readFileSync(file, 'utf8'), text, 'a second install changes nothing')
+  assert.deepEqual(JSON.parse(readFileSync(hooksFile, 'utf8')), hooks, 'nor the hooks')
 })
 
 test('a dirty source (or one without commits) is refused and the files are named', () => {

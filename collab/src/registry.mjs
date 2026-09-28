@@ -32,6 +32,8 @@ import { findProject } from './projects.mjs'
 
 export const AGENT_STATUSES = Object.freeze(['available', 'busy', 'waiting', 'offline', 'failed'])
 
+export const REVIEW_MODES = Object.freeze(['cross_vendor', 'single_vendor'])
+
 export const CONFIG_FILES = Object.freeze({
   capabilities: 'capabilities.json',
   roles: 'roles.json',
@@ -132,10 +134,15 @@ export function validateRegistry(config) {
   if (agents?.lead !== undefined && !seen.has(agents.lead)) {
     problems.push(`agents.json: lead "${agents.lead}" is not one of the declared agents`)
   }
+  // single_vendor: the person has one vendor, so a review may go to the same
+  // agent in a separate session — recorded as lower independence, not hidden.
+  if (agents?.review_mode !== undefined && !REVIEW_MODES.includes(agents.review_mode)) {
+    problems.push(`agents.json: review_mode "${agents.review_mode}" must be one of ${REVIEW_MODES.join(', ')}`)
+  }
 
   // An independent review needs somebody other than the author to exist.
   const reviewers = roleHolders.get('code_reviewer') || 0
-  if (reviewers < 2 && list.length > 1) {
+  if (reviewers < 2 && list.length > 1 && agents?.review_mode !== 'single_vendor') {
     warnings.push(
       `only ${reviewers} agent holds "code_reviewer"; a request_review from that same agent can never be routed elsewhere`
     )

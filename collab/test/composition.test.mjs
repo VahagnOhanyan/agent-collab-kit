@@ -145,6 +145,52 @@ test('setup writes the composition for the owner, copies briefings, keeps other 
   }
 })
 
+test('single_vendor: the same agent reviews in a separate session, recorded as such, and gated tasks can close', async () => {
+  const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
+  const sbx = sandbox()
+  try {
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const task = await codex.createTask({ title: 'Solo work', action: 'edit a file', spec: { ux_impact: 'HIGH' } })
+    await codex.claimTask({ task_id: task.id })
+    const review = await codex.requestReview({ task_id: task.id })
+    assert.equal(review.routed_to, 'codex')
+    assert.equal(review.review.independence, 'same_agent_separate_session')
+    await codex.submitReview({ review_id: review.review.id, verdict: 'approved', summary: 'Separate session: re-read the diff and ran the tests.' })
+    await assert.rejects(codex.completeTask({ task_id: task.id }), /ux_reviewer/, 'the UX gate still applies')
+    const ux = await codex.requestReview({ task_id: task.id, reviewer_role: 'ux_reviewer', slot: 'ui', blocking: false })
+    assert.equal(ux.routed_to, 'codex')
+    await codex.submitReview({ review_id: ux.review.id, verdict: 'approved', summary: 'Separate session: flows checked.' })
+    assert.equal((await codex.completeTask({ task_id: task.id })).status, 'completed')
+  } finally {
+    m.cleanup()
+    sbx.cleanup()
+  }
+})
+
+test('cross_vendor stays strict: with one agent a review has nobody to go to', async () => {
+  const m = machine({ ...ONLY_CODEX, review_mode: 'cross_vendor' })
+  const sbx = sandbox()
+  try {
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const task = await codex.createTask({ title: 'Strict work', action: 'edit a file' })
+    await codex.claimTask({ task_id: task.id })
+    await assert.rejects(codex.requestReview({ task_id: task.id }), (e) => e.code === 'NO_AGENT_AVAILABLE')
+    await assert.rejects(codex.requestReview({ task_id: task.id, reviewer_agent: 'codex' }), (e) => e.code === 'SELF_REVIEW')
+  } finally {
+    m.cleanup()
+    sbx.cleanup()
+  }
+})
+
+test('setup sets single_vendor for one vendor, cross_vendor for several, and --single-vendor forces it', () => {
+  const builtin = loadConfigFrom(DEFAULT_CONFIG_DIR, { kind: 'builtin' })
+  const ids = builtin.agents.agents.map((a) => a.id)
+  const plan = (include, singleVendor) => planComposition({ catalog: builtin.agents, roleDefs: builtin.roles.roles, include, lead: include[0], singleVendor })
+  assert.equal(plan([ids[1]]).content.review_mode, 'single_vendor')
+  assert.equal(plan(ids).content.review_mode, 'cross_vendor')
+  assert.equal(plan(ids, true).content.review_mode, 'single_vendor')
+})
+
 test('check-config checks the machine composition', () => {
   const m = machine({ ...ONLY_CODEX, lead: 'nobody' })
   try {

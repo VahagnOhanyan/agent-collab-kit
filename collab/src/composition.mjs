@@ -26,7 +26,7 @@ function rolesItCanHold(agent, roleDefs) {
 // The proposal. With one agent it holds every role it can — there is nobody
 // else. With several, each keeps the catalog's default roles, and any role the
 // catalog gave only to an agent left out goes to whoever can hold it.
-export function planComposition({ catalog, roleDefs, include, lead }) {
+export function planComposition({ catalog, roleDefs, include, lead, singleVendor = false }) {
   const byId = new Map((catalog.agents || []).map((a) => [a.id, a]))
   const unknown = include.filter((id) => !byId.has(id))
   if (unknown.length) return { ok: false, reason: `not in the catalog: ${unknown.join(', ')}` }
@@ -47,11 +47,15 @@ export function planComposition({ catalog, roleDefs, include, lead }) {
     const { adapter, detect, ...rest } = a
     return { ...rest, roles: roles.get(a.id) }
   })
+  // One vendor (by provider) means no reviewer of another model family exists:
+  // reviews then go to the same agent in a separate session, and say so.
+  const oneVendor = singleVendor || new Set(chosen.map((a) => a.provider)).size === 1
   return {
     ok: true,
     content: {
       '//': "This person's composition: which agents they have, who leads, who holds which role. Written by `collab setup`, editable by hand; a project's own agents.json narrows it.",
       lead,
+      review_mode: oneVendor ? 'single_vendor' : 'cross_vendor',
       defaults: catalog.defaults || { lease_seconds: 3600, heartbeat_stale_seconds: 900 },
       agents
     }

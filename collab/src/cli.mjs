@@ -154,12 +154,19 @@ async function machineSetup(flags, options) {
   let lead = typeof flags.lead === 'string' ? flags.lead : include.length === 1 ? include[0] : null
   if (!lead && interactive && include.length) lead = await ask(`who leads — the agent you work in? (${include.join('/')}) `)
 
-  const plan = planComposition({ catalog, roleDefs, include, lead })
+  const plan = planComposition({ catalog, roleDefs, include, lead, singleVendor: Boolean(flags['single-vendor']) })
   if (!plan.ok) {
     out(`refusing: ${plan.reason}${include.length > 1 && !lead ? ' — pass --lead <id>' : ''}`)
     process.exit(1)
   }
   out(`  lead         ${plan.content.lead}`)
+  out(
+    `  review       ${
+      plan.content.review_mode === 'single_vendor'
+        ? 'single vendor — reviews go to the same agent in a separate session (lower independence, recorded on each review)'
+        : 'cross vendor — a review never goes to its author'
+    }`
+  )
   for (const agent of plan.content.agents) out(`  ${agent.id.padEnd(12)} ${agent.roles.join(', ')}`)
   out('')
   if (flags['dry-run']) {
@@ -903,7 +910,7 @@ const COMMANDS = {
       '  disconnect [--dry-run]  take this project off the registry; its journal stays; owner only',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
-      '  setup [--agents a,b] [--lead a] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role; owner only',
+      '  setup [--agents a,b] [--lead a] [--single-vendor] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role, review mode; owner only',
       '  setup --project        narrow the composition for this project (which agents take part here)',
       '  project [--json]       journal root, worktree, registry project and config source for this directory',
       '  status                 who is doing what, what is waiting, what the tree looks like',

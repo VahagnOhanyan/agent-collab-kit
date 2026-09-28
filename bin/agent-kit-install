@@ -70,6 +70,7 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/ux-critic-review/SKILL.md',
   'rules/vendor-codex.md',
   'rules/vendor-claude.md',
+  'hooks/codex-guard.py',
   'hooks/scope-guard.py',
   'hooks/readonly-guard.py',
   'bin/collab',
@@ -1960,6 +1961,71 @@ function summarizeCodexRules(ctx, plan) {
   return `codex: sync the agent-kit block in ${plan.file}`
 }
 
+// ── Codex as the lead: its hooks (~/.codex/hooks.json) ──────────────────────
+// codex-guard does for a Codex lead what model-guard and a project's plan-gate
+// do for Claude Code. Our entry is recognised by the command's path; anything
+// else in the file is the person's and stays. Codex runs a new or changed hook
+// only after the person trusts it once with /hooks — the installer says so.
+const CODEX_HOOK_MARK = '.agent-kit/current/hooks/codex-guard.py'
+const CODEX_HOOK_GROUP = Object.freeze({
+  matcher: '^(Bash|apply_patch)$',
+  hooks: [
+    {
+      type: 'command',
+      command: '/usr/bin/python3 "$HOME/.agent-kit/current/hooks/codex-guard.py"',
+      timeout: 30,
+      statusMessage: 'agent-kit: explicit model, plan before code'
+    }
+  ]
+})
+
+function mergeCodexHooks(existing) {
+  const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
+  const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
+  const ours = (h) => typeof h?.command === 'string' && h.command.includes(CODEX_HOOK_MARK)
+  const groups = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
+    .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
+    .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
+  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, JSON.parse(JSON.stringify(CODEX_HOOK_GROUP))] } }
+}
+
+function planCodexHooks(ctx) {
+  if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
+  if (!codexAdapterWanted(ctx)) return { skipped: true, reason: 'codex is not installed' }
+  const file = path.join(path.dirname(ctx.codexConfig), 'hooks.json')
+  const st = lstatOrNull(file)
+  if (st && !st.isFile()) throw new InstallError(`${file} exists and is not a regular file — move it away and install again`)
+  let parsed = null
+  const original = st ? fs.readFileSync(file) : null
+  if (original) {
+    try {
+      parsed = JSON.parse(original.toString('utf8'))
+    } catch (error) {
+      throw new InstallError(`cannot safely merge ${file}: it is not valid JSON (${error.message}). Fix it by hand.`)
+    }
+  }
+  const next = Buffer.from(`${JSON.stringify(mergeCodexHooks(parsed), null, 2)}\n`, 'utf8')
+  return { file, exists: Boolean(st), original, next, changed: !original || !next.equals(original), mode: st ? st.mode & 0o777 : 0o644 }
+}
+
+function applyCodexHooks(ctx, plan, journal, changes) {
+  if (!plan.changed) return
+  if (plan.exists) {
+    if (!fs.readFileSync(plan.file).equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
+    writeFileAtomic(plan.file, plan.next, plan.mode)
+    journal.add(`rewrote ${plan.file}`, () => writeFileAtomic(plan.file, plan.original, plan.mode))
+  } else {
+    ensureDir(path.dirname(plan.file), journal)
+    writeFileAtomic(plan.file, plan.next, 0o644)
+    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
+  }
+  changes.push(`codex: codex-guard hook in ${plan.file} — trust it once in Codex with /hooks, it does not run until then`)
+}
+
+function summarizeCodexHooks(ctx, plan) {
+  return plan.changed ? `codex: add the codex-guard hook to ${plan.file}` : null
+}
+
 function summarizeCodex(ctx, plan) {
   return plan.changed ? `codex: ${plan.exists ? (plan.replaced ? 'replace' : 'append') : 'create'} [${CODEX_TABLE}] in ${plan.file}` : null
 }
@@ -2311,6 +2377,7 @@ function rollbackCommand(ctx) {
 const MCP_CLIENTS = [
   { id: 'codex', plan: planCodex, apply: applyCodex, summary: summarizeCodex, detailPlanned: detailPlannedCodex, detailApplied: detailAppliedCodex },
   { id: 'codex-rules', plan: planCodexRules, apply: applyCodexRules, summary: summarizeCodexRules },
+  { id: 'codex-hooks', plan: planCodexHooks, apply: applyCodexHooks, summary: summarizeCodexHooks },
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini }
 ]
@@ -2505,6 +2572,7 @@ async function main(argv) {
 }
 
 module.exports = {
+  mergeCodexHooks,
   replaceManagedBlock,
   CODEX_RULES_BEGIN,
   CODEX_RULES_END,

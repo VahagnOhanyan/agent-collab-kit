@@ -94,7 +94,11 @@ const GUARDS = {
   [S.BLOCKED]: (task, ctx) => (ctx?.reason ? null : 'blocking a task requires a reason'),
   [S.APPROVED]: (task, ctx) => {
     if (!ctx?.review) return 'a task becomes approved by a submitted review, not by assertion'
-    if (ctx.review.reviewer === task.owner) return 'a review by the task owner is not an independent review'
+    // single_vendor mode records a same-agent review as such; any other review
+    // by the owner is still refused.
+    if (ctx.review.reviewer === task.owner && ctx.review.independence !== 'same_agent_separate_session') {
+      return 'a review by the task owner is not an independent review'
+    }
     return null
   },
   [S.CHANGES_REQUESTED]: (task, ctx) =>

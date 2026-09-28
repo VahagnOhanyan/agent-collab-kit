@@ -205,18 +205,21 @@ export function requestReview(ctx, {
     }
 
     const author = task.owner || ctx.agentId
+    // One vendor on this machine (the person's composition says so): nobody of
+    // another model family exists, so the same agent reviews in a SEPARATE
+    // session rather than every review-gated task being stuck forever. The
+    // review records it; the owner sees the lower independence.
+    const singleVendor = ctx.config?.agents?.review_mode === 'single_vendor'
     let reviewer = reviewer_agent
     if (reviewer) {
       ctx.registry.agent(reviewer)
-      if (reviewer === author) {
+      if (reviewer === author && !singleVendor) {
         throw new CollabError(CODES.SELF_REVIEW, `${author} cannot review their own work`, { task_id, author })
       }
     } else {
-      const candidates = ctx.registry.find({
-        role: reviewer_capability ? null : reviewer_role,
-        capability: reviewer_capability,
-        exclude: [author]
-      })
+      const query = { role: reviewer_capability ? null : reviewer_role, capability: reviewer_capability }
+      let candidates = ctx.registry.find({ ...query, exclude: [author] })
+      if (!candidates.length && singleVendor) candidates = ctx.registry.find(query)
       if (!candidates.length) {
         throw new CollabError(
           CODES.NO_AGENT_AVAILABLE,
@@ -256,6 +259,7 @@ export function requestReview(ctx, {
       scope: scope.length ? scope : task.files || [],
       slot: checking,
       blocking: gates,
+      independence: reviewer === author ? 'same_agent_separate_session' : 'independent',
       verdict: 'pending',
       summary: null,
       findings: [],
@@ -333,7 +337,7 @@ export function submitReview(ctx, { review_id, verdict, summary = '', findings =
 
     const nextStatus = verdict === 'approved' ? TASK_STATUS.APPROVED : TASK_STATUS.CHANGES_REQUESTED
     if (gates) {
-      assertTransition(task, nextStatus, { review: { reviewer: ctx.agentId, findings: normalised } })
+      assertTransition(task, nextStatus, { review: { reviewer: ctx.agentId, findings: normalised, independence: review.independence } })
     } else if (verdict === 'changes_requested' && normalised.length === 0) {
       // The transition guard carries this rule for a gating review, and a slot
       // that skips the transition must not skip the rule with it: a verdict with

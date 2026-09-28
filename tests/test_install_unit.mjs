@@ -193,6 +193,21 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
   assert.equal(readFileSync(join(home, '.claude', 'agents', 'verifier.md'), 'utf8'), 'verifier v3\n')
 })
 
+test('Codex hooks: ours is added once and replaced in place; the person\'s hooks stay', () => {
+  const theirs = { type: 'command', command: 'my-own-check.sh' }
+  const existing = { other: 1, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }], Stop: [{ hooks: [theirs] }] } }
+  const once = lib.mergeCodexHooks(existing)
+  const twice = lib.mergeCodexHooks(once)
+  assert.deepEqual(twice, once, 'idempotent')
+  assert.equal(once.other, 1)
+  assert.deepEqual(once.hooks.Stop, existing.hooks.Stop)
+  assert.deepEqual(once.hooks.PreToolUse[0], { matcher: 'Bash', hooks: [theirs] })
+  const ours = once.hooks.PreToolUse.filter((g) => g.hooks.some((h) => h.command.includes('codex-guard.py')))
+  assert.equal(ours.length, 1)
+  assert.equal(ours[0].matcher, '^(Bash|apply_patch)$')
+  assert.deepEqual(lib.mergeCodexHooks(null).hooks.PreToolUse.length, 1, 'no file yet')
+})
+
 test('the Codex rules block: appended once, replaced in place, never touching the text around it', () => {
   const { replaceManagedBlock, CODEX_RULES_BEGIN: B, CODEX_RULES_END: E } = lib
   const block = (s) => `${B}\n${s}\n${E}\n`
