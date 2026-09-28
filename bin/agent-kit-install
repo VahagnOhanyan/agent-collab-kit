@@ -1903,24 +1903,52 @@ function applyCodex(ctx, plan, journal, changes) {
 }
 
 // ── Codex as the lead: its instructions (~/.codex/AGENTS.md) ─────────────────
-// Codex reads ~/.codex/AGENTS.md, not Claude Code's rules/. So where Codex is
-// present, the same team layer, the adapters of the OTHER vendors present and
-// the person's personal layer are kept there too — inside a managed block,
-// assembled from the release being installed. The person's own text outside
-// the block is never touched.
+// Codex reads ~/.codex/AGENTS.md, not Claude Code's rules/ or skills/. And it
+// reads at most project_doc_max_bytes (32 KiB by default) of ALL instruction
+// files combined, the global one included, dropping the rest silently — the
+// rules alone are several times that. So the managed block is an INDEX, not a
+// copy: which rule files to read whole before working, and which procedure
+// (a Claude Code skill, here plain text) to read for which job, by absolute
+// path into the installed release. The person's text outside the block is
+// never touched.
 const CODEX_RULES_BEGIN = '<!-- agent-kit: begin — managed by agent-kit-install; edit ~/agent-kit, not this block -->'
 const CODEX_RULES_END = '<!-- agent-kit: end -->'
 const CODEX_RULES_SOURCES = ['rules/orchestration.md', 'rules/modules.md', 'rules/terminology.md', 'rules/apple-toolchain.md']
+const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review']
+
+function skillDescription(file) {
+  const text = fs.readFileSync(file, 'utf8')
+  const match = /^---\n[\s\S]*?^description:\s*(.+)$/m.exec(text)
+  return match ? match[1].trim().replace(/\s+/g, ' ') : ''
+}
 
 function codexRulesBlock(ctx) {
-  const rels = [...CODEX_RULES_SOURCES]
-  if (ctx.claudeBin && commandExists(ctx.claudeBin)) rels.push('rules/vendor-claude.md')
-  rels.push('personal/rules/personal.md')
-  const bodies = rels
-    .map((rel) => path.join(ctx.currentPath, rel))
-    .filter((file) => lstatOrNull(file))
-    .map((file) => fs.readFileSync(file, 'utf8').trimEnd())
-  return `${CODEX_RULES_BEGIN}\n\n${bodies.join('\n\n---\n\n')}\n\n${CODEX_RULES_END}\n`
+  const at = (rel) => path.join(ctx.currentPath, rel)
+  const present = (rel) => Boolean(lstatOrNull(at(rel)))
+  const rules = CODEX_RULES_SOURCES.filter(present)
+  const adapters = [
+    ...(ctx.claudeBin && commandExists(ctx.claudeBin) ? ['rules/vendor-claude.md'] : []),
+    ...(codexAdapterWanted(ctx) ? ['rules/vendor-codex.md'] : [])
+  ].filter(present)
+  const personal = present('personal/rules/personal.md') ? ['personal/rules/personal.md'] : []
+  const skills = CODEX_TEAM_SKILLS.map((name) => `skills/${name}/SKILL.md`).filter(present)
+  const lines = [
+    CODEX_RULES_BEGIN,
+    '',
+    '# agent-kit — orchestration rules and procedures',
+    '',
+    'These files are the rules you work by on this machine, the same ones a Claude Code lead gets. They are not inlined here: Codex reads at most 32 KiB of all AGENTS.md files combined and they are larger. Before any task above L0 in a session, read these whole (once per session; again if they change):',
+    '',
+    ...[...rules, ...personal].map((rel) => `- ${at(rel)}`),
+    '',
+    ...(adapters.length ? ['How to call the other agents in your composition (`collab whoami` → `lead_agent`, roles):', '', ...adapters.map((rel) => `- ${at(rel)}`), ''] : []),
+    'Procedures — read the one that fits before doing that job (they are Claude Code skills; here they are plain instructions, and the paths inside them are relative to the file):',
+    '',
+    ...skills.map((rel) => `- ${at(rel)} — ${skillDescription(at(rel))}`),
+    '',
+    CODEX_RULES_END
+  ]
+  return `${lines.join('\n')}\n`
 }
 
 function replaceManagedBlock(text, block) {

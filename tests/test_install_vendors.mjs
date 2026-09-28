@@ -20,8 +20,15 @@ test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text ar
   assert.equal(r.status, 0, r.all)
   const text = readFileSync(file, 'utf8')
   assert.ok(text.startsWith('# mine\n\nkeep this line\n'), 'the person\'s text is untouched')
-  assert.match(text, /<!-- agent-kit: begin[\s\S]*# Оркестрация агентов[\s\S]*# Адаптер вендора: Claude Code[\s\S]*<!-- agent-kit: end -->/)
+  assert.match(text, /<!-- agent-kit: begin[\s\S]*<!-- agent-kit: end -->/)
   assert.equal(text.split('agent-kit: begin').length, 2, 'one block')
+  // An index, not a copy: Codex reads at most 32 KiB of all AGENTS.md combined.
+  const current = join(W.home, '.agent-kit', 'current')
+  for (const rel of ['rules/orchestration.md', 'rules/vendor-claude.md', 'skills/ux-critic-review/SKILL.md', 'skills/ux-guidance/SKILL.md']) {
+    assert.ok(text.includes(join(current, rel)), `points at ${rel}`)
+  }
+  assert.doesNotMatch(text, /# Оркестрация агентов/, 'the rules themselves are not inlined')
+  assert.ok(Buffer.byteLength(text) < 8 * 1024, `the block stays small (${Buffer.byteLength(text)} bytes)`)
 
   const hooksFile = join(W.home, '.codex', 'hooks.json')
   const hooks = JSON.parse(readFileSync(hooksFile, 'utf8'))
