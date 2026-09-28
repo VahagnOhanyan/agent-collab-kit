@@ -9,7 +9,7 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: "/usr/bin/python3 \"$HOME/.agent-kit/current/hooks/readonly-guard.py\" || exit 2"
+          command: "node \"$HOME/.agent-kit/current/bin/agent-kit-hook\" readonly-guard || exit 2"
           timeout: 10
 ---
 

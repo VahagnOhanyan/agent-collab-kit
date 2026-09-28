@@ -196,16 +196,29 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
 test('Codex hooks: ours is added once and replaced in place; the person\'s hooks stay', () => {
   const theirs = { type: 'command', command: 'my-own-check.sh' }
   const existing = { other: 1, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }], Stop: [{ hooks: [theirs] }] } }
-  const once = lib.mergeCodexHooks(existing)
-  const twice = lib.mergeCodexHooks(once)
+  const command = lib.codexHookCommand('/opt/node/bin/node', '/Users/x/.agent-kit/current')
+  const once = lib.mergeCodexHooks(existing, command)
+  const twice = lib.mergeCodexHooks(once, command)
   assert.deepEqual(twice, once, 'idempotent')
   assert.equal(once.other, 1)
   assert.deepEqual(once.hooks.Stop, existing.hooks.Stop)
   assert.deepEqual(once.hooks.PreToolUse[0], { matcher: 'Bash', hooks: [theirs] })
-  const ours = once.hooks.PreToolUse.filter((g) => g.hooks.some((h) => h.command.includes('codex-guard.py')))
+  const ours = once.hooks.PreToolUse.filter((g) => g.hooks.some((h) => h.command === command))
   assert.equal(ours.length, 1)
   assert.equal(ours[0].matcher, '^(Bash|apply_patch)$')
-  assert.deepEqual(lib.mergeCodexHooks(null).hooks.PreToolUse.length, 1, 'no file yet')
+  assert.deepEqual(lib.mergeCodexHooks(null, command).hooks.PreToolUse.length, 1, 'no file yet')
+})
+
+test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {
+  const command = lib.codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.agent-kit\\current')
+  assert.match(command, /^"C:\\Program Files\\nodejs\\node\.exe" ".*agent-kit-hook" codex-guard$/)
+  assert.doesNotMatch(command, /python|\$HOME/)
+  const old = { hooks: { PreToolUse: [{ matcher: '^(Bash|apply_patch)$', hooks: [{ type: 'command', command: '/usr/bin/python3 "$HOME/.agent-kit/current/hooks/codex-guard.py"' }] }] } }
+  const merged = lib.mergeCodexHooks(old, command)
+  assert.equal(merged.hooks.PreToolUse.length, 1, 'the python entry is gone, not kept next to the new one')
+  assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, command)
+  const moved = lib.mergeCodexHooks(merged, lib.codexHookCommand('/usr/local/bin/node', '/h/.agent-kit/current'))
+  assert.equal(moved.hooks.PreToolUse.length, 1, 'a moved node replaces our entry in place')
 })
 
 test('the Codex rules block: appended once, replaced in place, never touching the text around it', () => {

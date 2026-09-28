@@ -70,9 +70,12 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/ux-critic-review/SKILL.md',
   'rules/vendor-codex.md',
   'rules/vendor-claude.md',
-  'hooks/codex-guard.py',
-  'hooks/scope-guard.py',
-  'hooks/readonly-guard.py',
+  'hooks/codex-guard.mjs',
+  'hooks/scope-guard.mjs',
+  'hooks/readonly-guard.mjs',
+  'hooks/model-guard.mjs',
+  'hooks/lib/paths.mjs',
+  'bin/agent-kit-hook',
   'bin/collab',
   'bin/apple-lock',
   'collab/src/mcp/server.mjs',
@@ -1994,27 +1997,29 @@ function summarizeCodexRules(ctx, plan) {
 // do for Claude Code. Our entry is recognised by the command's path; anything
 // else in the file is the person's and stays. Codex runs a new or changed hook
 // only after the person trusts it once with /hooks — the installer says so.
-const CODEX_HOOK_MARK = '.agent-kit/current/hooks/codex-guard.py'
-const CODEX_HOOK_GROUP = Object.freeze({
-  matcher: '^(Bash|apply_patch)$',
-  hooks: [
-    {
-      type: 'command',
-      command: '/usr/bin/python3 "$HOME/.agent-kit/current/hooks/codex-guard.py"',
-      timeout: 30,
-      statusMessage: 'agent-kit: explicit model, plan before code'
-    }
-  ]
-})
+// The command names node and the launcher by absolute path and quotes both: the same string runs under
+// sh and cmd, with no $HOME and no /usr/bin/python3. The older python entry is recognised and replaced.
+const CODEX_HOOK_MARKS = Object.freeze([/\.agent-kit[\\/]+current[\\/]+hooks[\\/]+codex-guard\.py/, /agent-kit-hook"?\s+codex-guard\b/])
 
-function mergeCodexHooks(existing) {
+function codexHookCommand(nodePath, currentPath) {
+  return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-kit-hook')}" codex-guard`
+}
+
+function codexHookGroup(command) {
+  return {
+    matcher: '^(Bash|apply_patch)$',
+    hooks: [{ type: 'command', command, timeout: 30, statusMessage: 'agent-kit: explicit model, plan before code' }]
+  }
+}
+
+function mergeCodexHooks(existing, command) {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
   const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
-  const ours = (h) => typeof h?.command === 'string' && h.command.includes(CODEX_HOOK_MARK)
+  const ours = (h) => typeof h?.command === 'string' && CODEX_HOOK_MARKS.some((mark) => mark.test(h.command))
   const groups = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
     .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
     .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
-  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, JSON.parse(JSON.stringify(CODEX_HOOK_GROUP))] } }
+  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, codexHookGroup(command)] } }
 }
 
 function planCodexHooks(ctx) {
@@ -2032,7 +2037,7 @@ function planCodexHooks(ctx) {
       throw new InstallError(`cannot safely merge ${file}: it is not valid JSON (${error.message}). Fix it by hand.`)
     }
   }
-  const next = Buffer.from(`${JSON.stringify(mergeCodexHooks(parsed), null, 2)}\n`, 'utf8')
+  const next = Buffer.from(`${JSON.stringify(mergeCodexHooks(parsed, codexHookCommand(ctx.node.path, ctx.currentPath)), null, 2)}\n`, 'utf8')
   return { file, exists: Boolean(st), original, next, changed: !original || !next.equals(original), mode: st ? st.mode & 0o777 : 0o644 }
 }
 
@@ -2601,6 +2606,7 @@ async function main(argv) {
 
 module.exports = {
   mergeCodexHooks,
+  codexHookCommand,
   replaceManagedBlock,
   CODEX_RULES_BEGIN,
   CODEX_RULES_END,

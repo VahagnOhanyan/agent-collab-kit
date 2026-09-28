@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// Лаунчер хуков: `node <путь>/bin/agent-kit-hook <имя>` запускает hooks/<имя>.mjs тем же Node.
+// Одна и та же команда на macOS и Windows: без оболочки, без $HOME, без /usr/bin/python3.
+// Сбой запуска самого хука — код 2 (блок): сломанная установка не должна молча снимать границу.
+// Хук, который сам граница, экспортирует `failClosed = true`: если stdin не закрылся за STDIN_SECONDS,
+// хост убил бы его по таймауту (= пропуск), поэтому блокируем сами. Остальные при таком сбое пропускают.
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const NAME = /^[a-z][a-z-]*$/;
+// Самый короткий таймаут хоста во frontmatter — 10 с; ожидание stdin плюс сторож хука (5 с) должны уложиться.
+const STDIN_SECONDS = 4;
+const name = process.argv[2] ?? '';
+const fail = (message) => {
+  process.stderr.write(`agent-kit-hook: ${message}\n`);
+  process.exit(2);
+};
+
+if (!NAME.test(name)) fail(`неизвестное имя хука: ${JSON.stringify(name)}`);
+
+let hook;
+try {
+  hook = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks', `${name}.mjs`)).href);
+} catch (error) {
+  fail(`не удалось загрузить хук ${name}: ${error?.message ?? error}`);
+}
+if (typeof hook.main !== 'function') fail(`хук ${name} не экспортирует main()`);
+
+function readStdin() {
+  return new Promise((resolve) => {
+    const chunks = [];
+    const timer = setTimeout(() => resolve({ timedOut: true }), STDIN_SECONDS * 1000);
+    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('end', () => {
+      clearTimeout(timer);
+      resolve({ buffer: Buffer.concat(chunks) });
+    });
+    process.stdin.on('error', () => {
+      clearTimeout(timer);
+      resolve({ buffer: Buffer.concat(chunks) });
+    });
+  });
+}
+
+const input = await readStdin();
+if (input.timedOut) {
+  if (hook.failClosed) fail(`stdin не закрылся за ${STDIN_SECONDS} с — блокирую`);
+  process.exit(0);
+}
+
+let code;
+try {
+  code = await hook.main({
+    stdinBuffer: input.buffer,
+    stdinText: input.buffer.toString('utf8'),
+    env: process.env,
+    cwd: process.cwd(),
+    stderr: (text) => process.stderr.write(text),
+  });
+} catch (error) {
+  fail(`хук ${name} упал: ${error?.stack ?? error}`);
+}
+process.exit(Number.isInteger(code) ? code : 2);

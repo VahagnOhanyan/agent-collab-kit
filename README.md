@@ -9,9 +9,12 @@
 | `collab` | Журнал агентов: задачи, ревью, решения, одобрения владельца. MCP-сервер + CLI | `collab/`, `bin/collab`, модель угроз — `collab/SECURITY.md` |
 | `/codex-review` | Ручной запуск Codex на ждущие ревью из журнала | `skills/codex-review/` |
 | `/ui-review` | Скриншот экрана → варианты дизайна от Codex → **одобрение владельца** → реализация → сравнение | `skills/ui-review/`, скрипты `ui-review/` |
-| `implementer` | Агент-исполнитель; писать может только в области, заданные владельцем | `agents/implementer.md`, хук `hooks/scope-guard.py` |
-| `verifier` | Агент-проверяющий, ничего не меняет | `agents/verifier.md`, хук `hooks/readonly-guard.py` |
-| `model` обязателен в `Agent()` | Вызов субагента без явной `model` (кроме `subagent_type: "fork"`) отменяется до делегирования, а не ловится потом по транскрипту | `hooks/model-guard.py` — подключается в `.claude/settings.json` ведущей сессии проекта (`PreToolUse`, matcher `Agent`), не во фронтматтере субагента и без проектных данных |
+| `implementer` | Агент-исполнитель; писать может только в области, заданные владельцем | `agents/implementer.md`, хук `hooks/scope-guard.mjs` |
+| `verifier` | Агент-проверяющий, ничего не меняет | `agents/verifier.md`, хук `hooks/readonly-guard.mjs` |
+| `model` обязателен в `Agent()` | Вызов субагента без явной `model` (кроме `subagent_type: "fork"`) отменяется до делегирования, а не ловится потом по транскрипту | `hooks/model-guard.mjs` — подключается в `.claude/settings.json` ведущей сессии проекта (`PreToolUse`, matcher `Agent`) командой `node "$HOME/.agent-kit/current/bin/agent-kit-hook" model-guard || exit 2`. Старый `hooks/model-guard.py` оставлен на переход, пока проекты не переключили строку |
+| Хуки | Все хуки — Node (`hooks/*.mjs`), один код для macOS и Windows; хост запускает их через лаунчер `bin/agent-kit-hook <имя>` | `hooks/`, модель угроз — `hooks/SECURITY-hooks.md` |
+
+**Платформы.** macOS и Windows; нужен Node 20.19+. На macOS проверено прогонами; на Windows код есть, но живой проверки ещё не было (см. `hooks/SECURITY-hooks.md`).
 | Правило оркестрации | План до первой правки, уровни L0–L3, маршрутизация, слоты проверок; ставится в `~/.claude/rules/` | `rules/orchestration.md` |
 | Правило терминологии | Любая задача начинается со словаря «термин → имя в коде → что видно», который владелец подтверждает до работы; ставится в `~/.claude/rules/` | `rules/terminology.md` |
 | Реестр проектов | Доверенные настройки каждого подключённого проекта (вне самих репозиториев); заводится `collab connect` | `~/.agent-kit/projects/<id>/` |
@@ -99,7 +102,7 @@ collab init --adopt          # привязать перенесённый ил�
 
 ```bash
 node --test collab/test/                                    # журнал
-/usr/bin/python3 -m unittest tests/test_scope_guard.py tests/test_readonly_guard.py
+node --test tests/test_*_guard.mjs tests/test_agent_hook_commands.mjs   # хуки, ~40 с
 bash tests/test_ui_review_scripts.sh
 node --test tests/test_install_*.mjs                        # установщик, ~3 мин (4 файла параллельно)
 ```

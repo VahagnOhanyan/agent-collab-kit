@@ -32,7 +32,7 @@ test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text ar
 
   const hooksFile = join(W.home, '.codex', 'hooks.json')
   const hooks = JSON.parse(readFileSync(hooksFile, 'utf8'))
-  assert.ok(hooks.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command.includes('.agent-kit/current/hooks/codex-guard.py'))))
+  assert.ok(hooks.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command.endsWith(`${join('.agent-kit', 'current', 'bin', 'agent-kit-hook')}" codex-guard`))))
   assert.match(r.stdout, /trust it once in Codex with \/hooks/)
 
   const again = W.run(['--source', world.source, '--skip-kit-tests'])

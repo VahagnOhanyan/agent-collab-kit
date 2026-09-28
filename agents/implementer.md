@@ -8,7 +8,7 @@ hooks:
     - matcher: "Edit|Write|NotebookEdit"
       hooks:
         - type: command
-          command: "KIT_AGENT=implementer /usr/bin/python3 \"$HOME/.agent-kit/current/hooks/scope-guard.py\" || exit 2"
+          command: "KIT_AGENT=implementer node \"$HOME/.agent-kit/current/bin/agent-kit-hook\" scope-guard || exit 2"
           timeout: 15
 ---
 
