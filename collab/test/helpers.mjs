@@ -38,17 +38,20 @@ export function cleanEnv(extra = {}) {
 // a repository's .mcp.json. A child process gets them through a throwaway
 // launcher script that calls main() with the options, written to a temp dir
 // and removed afterwards, so no such entry point ships with the package.
+// Unless a test names one, the machine composition is a directory that does not
+// exist: a test must not read the composition of whoever runs it.
 function writeLauncher(kind, options) {
   const dir = mkdtempSync(join(tmpdir(), 'collab-launch-'))
   const file = join(dir, `${kind}.mjs`)
   const target = pathToFileURL(kind === 'cli' ? CLI : SERVER).href
+  options = { machineDir: join(dir, 'no-machine-composition'), ...options }
   const call = kind === 'cli' ? `main(process.argv.slice(2), ${JSON.stringify(options)})` : `main(${JSON.stringify(options)})`
   writeFileSync(file, `import { main } from ${JSON.stringify(target)}\nawait ${call}\n`)
   return { file, remove: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
 export function runCli(args, { cwd, env = {}, launcher = false, options = null } = {}) {
-  const custom = options ? writeLauncher('cli', options) : null
+  const custom = options || !launcher ? writeLauncher('cli', options || {}) : null
   try {
     return spawnSync(process.execPath, [custom ? custom.file : launcher ? LAUNCHER : CLI, ...args], {
       cwd,
@@ -62,8 +65,8 @@ export function runCli(args, { cwd, env = {}, launcher = false, options = null }
 
 // A tiny MCP stdio client: writes lines, resolves each response by id.
 export function startServer({ agentId = 'claude', cwd, env = {}, options = null }) {
-  const custom = options ? writeLauncher('server', options) : null
-  const child = spawn(process.execPath, [custom ? custom.file : SERVER], {
+  const custom = writeLauncher('server', options || {})
+  const child = spawn(process.execPath, [custom.file], {
     cwd,
     env: cleanEnv({ COLLAB_AGENT_ID: agentId, ...env }),
     stdio: ['pipe', 'pipe', 'pipe']

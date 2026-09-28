@@ -11,6 +11,23 @@ import { setup, IS_WINDOWS, NODE, git, makeSource, commitChange, makeWorld, snap
 
 const world = setup()
 
+// Codex as the lead reads ~/.codex/AGENTS.md, not Claude Code's rules/.
+test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text around it is the person\'s and stays', () => {
+  const W = makeWorld('codex-rules')
+  const file = join(W.home, '.codex', 'AGENTS.md')
+  writeFileSync(file, '# mine\n\nkeep this line\n')
+  const r = W.run(['--source', world.source, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  const text = readFileSync(file, 'utf8')
+  assert.ok(text.startsWith('# mine\n\nkeep this line\n'), 'the person\'s text is untouched')
+  assert.match(text, /<!-- agent-kit: begin[\s\S]*# Оркестрация агентов[\s\S]*# Адаптер вендора: Claude Code[\s\S]*<!-- agent-kit: end -->/)
+  assert.equal(text.split('agent-kit: begin').length, 2, 'one block')
+
+  const again = W.run(['--source', world.source, '--skip-kit-tests'])
+  assert.equal(again.status, 0, again.all)
+  assert.equal(readFileSync(file, 'utf8'), text, 'a second install changes nothing')
+})
+
 test('a dirty source (or one without commits) is refused and the files are named', () => {
   const W = makeWorld('dirty')
   const dirty = makeSource('dirty')

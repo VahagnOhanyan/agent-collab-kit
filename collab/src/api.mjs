@@ -87,6 +87,7 @@ export function createApi({
   clock = systemClock,
   configDir = undefined,
   registryDir = defaultRegistryDir(),
+  machineDir = undefined,
   projectRoot = null
 } = {}) {
   if (!agentId) {
@@ -119,7 +120,7 @@ export function createApi({
 
   // Identity and config are checked before the journal, so a misregistered
   // agent fails loudly even in a folder that has no journal.
-  const config = loadConfig({ journalRoot: roots.journalRoot, configDir, registryDir, home })
+  const config = loadConfig({ journalRoot: roots.journalRoot, configDir, registryDir, home, ...(machineDir !== undefined ? { machineDir } : {}) })
   const registry = createRegistry(config)
   registry.agent(agentId) // fails fast if the caller is not a registered agent
 
@@ -178,10 +179,16 @@ export function createApi({
     whoami() {
       const declared = registry.agent(agentId)
       const mine = tasks.listTasks(ctx, { owner: agentId, open: true })
+      const lead = config.agents?.lead || null
       return {
         agent_id: agentId,
         name: declared.name,
         provider: declared.provider,
+        // Who leads is the person's composition, not the catalog: the lead
+        // orchestrates (plans, routes, integrates, reports to the owner); every
+        // other agent takes work and reviews through the ledger.
+        lead: lead === agentId,
+        lead_agent: lead,
         roles: declared.roles,
         capabilities: declared.capabilities,
         briefing: declared.briefing,

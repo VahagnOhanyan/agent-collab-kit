@@ -27,7 +27,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
-import { DEFAULT_CONFIG_DIR, defaultRegistryDir, safeRealpath } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, defaultRegistryDir, MACHINE_CONFIG_DIR, safeRealpath } from './paths.mjs'
 import { findProject } from './projects.mjs'
 
 export const AGENT_STATUSES = Object.freeze(['available', 'busy', 'waiting', 'offline', 'failed'])
@@ -125,6 +125,12 @@ export function validateRegistry(config) {
         problems.push(`${where} enables automatic launching without a note saying who decided that`)
       }
     }
+  }
+
+  // Who leads is the person's choice, never the catalog's: optional, and when
+  // named it must be one of the agents declared here.
+  if (agents?.lead !== undefined && !seen.has(agents.lead)) {
+    problems.push(`agents.json: lead "${agents.lead}" is not one of the declared agents`)
   }
 
   // An independent review needs somebody other than the author to exist.
@@ -528,19 +534,24 @@ function applyBuiltinAdapters(agentsConfig, builtinAgents, warnings) {
 // from the built-in defaults. `config.meta` (non-enumerable) records where
 // every file came from, so briefing files resolve against the directory that
 // declared them and the policy guard knows whether it has work to do.
+// `overrideDir` may be one directory or a list, most specific first (a project's
+// collab/ before the person's machine composition): each file comes from the
+// first directory that has it, otherwise from the built-in catalog.
 export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }) {
   const builtinDir = safeRealpath(DEFAULT_CONFIG_DIR)
-  let override = overrideDir ? safeRealpath(resolve(overrideDir)) : null
-  if (override === builtinDir) override = null
-  if (override && source.kind === 'config-dir' && !existsSync(override)) {
-    throw new CollabConfigError([`config directory ${override} does not exist`])
+  const overrides = (Array.isArray(overrideDir) ? overrideDir : [overrideDir])
+    .filter(Boolean)
+    .map((dir) => safeRealpath(resolve(dir)))
+    .filter((dir) => dir !== builtinDir)
+  if (source.kind === 'config-dir' && overrides[0] && !existsSync(overrides[0])) {
+    throw new CollabConfigError([`config directory ${overrides[0]} does not exist`])
   }
 
   const config = {}
   const meta = { source, files: {}, dirs: {}, overridden: {}, warnings: [], builtinPolicy: null }
   for (const [key, name] of Object.entries(CONFIG_FILES)) {
-    const candidate = override ? join(override, name) : null
-    const file = candidate && existsSync(candidate) ? candidate : join(builtinDir, name)
+    const candidate = overrides.map((dir) => join(dir, name)).find((path) => existsSync(path))
+    const file = candidate || join(builtinDir, name)
     config[key] = readConfig(file, name)
     meta.files[key] = file
     meta.dirs[key] = dirname(file)
@@ -570,15 +581,30 @@ export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }
 
 // Parameters only. COLLAB_CONFIG_DIR / COLLAB_REGISTRY_DIR are deliberately not
 // read: a server's environment can come from a repository's .mcp.json.
-export function loadConfig({ journalRoot = null, configDir = undefined, registryDir = defaultRegistryDir(), home = undefined } = {}) {
+// An explicit configDir (tests) is the whole configuration. Otherwise: the
+// project's own files, then the person's machine composition, then the catalog.
+export function loadConfig({
+  journalRoot = null,
+  configDir = undefined,
+  registryDir = defaultRegistryDir(),
+  machineDir = MACHINE_CONFIG_DIR,
+  home = undefined
+} = {}) {
   if (configDir) return loadConfigFrom(configDir, { kind: 'config-dir', dir: resolve(configDir) })
+  const machine = machineDir && existsSync(machineDir) ? [machineDir] : []
   if (journalRoot) {
     const project = findProject(journalRoot, { registry: registryDir, home })
     if (project) {
-      return loadConfigFrom(join(project.dir, 'collab'), { kind: 'project', id: project.id, dir: project.dir, registry: registryDir })
+      return loadConfigFrom([join(project.dir, 'collab'), ...machine], {
+        kind: 'project',
+        id: project.id,
+        dir: project.dir,
+        registry: registryDir,
+        machine: machine[0] || null
+      })
     }
   }
-  return loadConfigFrom(null, { kind: 'built-in' })
+  return machine.length ? loadConfigFrom(machine, { kind: 'machine', dir: machine[0] }) : loadConfigFrom(null, { kind: 'built-in' })
 }
 
 // Kept for callers that want one directory (or the defaults) and nothing else.

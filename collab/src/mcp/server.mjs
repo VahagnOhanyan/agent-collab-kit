@@ -144,7 +144,12 @@ export async function main(options = {}) {
   console.info = console.error
 
   const trusted = Object.fromEntries(
-    Object.entries({ configDir: options.configDir, registryDir: options.registryDir, projectRoot: options.projectRoot }).filter(([, v]) => v)
+    Object.entries({
+      configDir: options.configDir,
+      registryDir: options.registryDir,
+      machineDir: options.machineDir,
+      projectRoot: options.projectRoot
+    }).filter(([, v]) => v)
   )
   const agentId = process.env.COLLAB_AGENT_ID
   let api = null

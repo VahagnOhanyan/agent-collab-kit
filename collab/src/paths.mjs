@@ -60,6 +60,10 @@ function ownHome() {
   }
 }
 export const PERSISTENT_REGISTRY_DIR = join(ownHome(), '.agent-kit', 'projects')
+// The person's own composition — which agents they have, who leads, who holds
+// which role — written by `collab setup`. Between a project's files and the
+// built-in vendor catalog; never in any repository.
+export const MACHINE_CONFIG_DIR = join(ownHome(), '.agent-kit', 'collab')
 export const RELEASE_REGISTRY_DIR = resolve(INSTALL_ROOT, '..', 'projects')
 // Decided at every call, not once at import: a long-running MCP server must
 // follow the move to the persistent registry the moment `connect` makes it,

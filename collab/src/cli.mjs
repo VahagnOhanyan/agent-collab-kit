@@ -18,14 +18,15 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
-import { initJournal, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
 import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
 import { findProject } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
-import { loadBuiltinAgents, planAgentSetup, applyAgentSetup, writeProjectAgentsFile } from './registry.mjs'
+import { loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
+import { detectBinary, planComposition, writeComposition } from './composition.mjs'
 
 const C = process.stdout.isTTY
   ? { dim: '\x1b[2m', off: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m' }
@@ -71,8 +72,26 @@ function printError(error) {
 // Commands that do not need a journal.
 // Trusted inputs reach the CLI only as arguments to main() (tests); the
 // environment never supplies them.
-const trustedOptions = ({ configDir, registryDir, projectRoot } = {}) =>
-  Object.fromEntries(Object.entries({ configDir, registryDir, projectRoot }).filter(([, value]) => value))
+const trustedOptions = ({ configDir, registryDir, machineDir, projectRoot } = {}) =>
+  Object.fromEntries(Object.entries({ configDir, registryDir, machineDir, projectRoot }).filter(([, value]) => value))
+
+// Who the CLI reads the ledger as when nobody said: the lead of the person's
+// composition (project first, then machine), else the first agent the
+// configuration declares — never a vendor named in code.
+function defaultIdentity(options) {
+  try {
+    const roots = resolveRoots({ projectRoot: options.projectRoot })
+    const config = loadConfig({
+      journalRoot: roots.journalRoot,
+      configDir: options.configDir,
+      registryDir: options.registryDir,
+      ...(options.machineDir ? { machineDir: options.machineDir } : {})
+    })
+    return config.agents?.lead || config.agents?.agents?.[0]?.id || null
+  } catch {
+    return null
+  }
+}
 
 // A registry entry grants agents rights (where to write, what to run), so it is
 // written only by a person: not from an agent's shell, and only at an
@@ -82,7 +101,7 @@ function refuseUnlessHuman(options, what) {
   if (process.env.COLLAB_AGENT_ID) {
     process.stderr.write(
       `refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n` +
-        `${what} changes what agents may do — the owner runs it at their own terminal. --dry-run shows the proposal.\n`
+        `${what} changes what agents may do — it is the owner's decision, at their own terminal. --dry-run shows the proposal.\n`
     )
     process.exit(3)
   }
@@ -98,6 +117,65 @@ async function confirmTyped(options, prompt, expected) {
   const typed = await rl.question(prompt)
   rl.close()
   return typed.trim() === expected
+}
+
+// `collab setup`: the person's composition for this machine — which agents,
+// who leads, who holds which role. Answers come from --agents a,b --lead a, or
+// are asked at the terminal. Writing is the owner's, like connect.
+async function machineSetup(flags, options) {
+  if (!flags['dry-run']) refuseUnlessHuman(options, 'collab setup')
+  const catalog = loadBuiltinAgents()
+  const roleDefs = loadConfigFrom().roles.roles
+  const machineDir = options.machineDir || MACHINE_CONFIG_DIR
+  const detected = (catalog.agents || []).filter((a) => detectBinary(a) && which(detectBinary(a))).map((a) => a.id)
+  out(
+    `${C.bold}collab setup${C.off} — this machine's composition ${dim(join(machineDir, 'agents.json'))}`,
+    `  catalog      ${(catalog.agents || []).map((a) => a.id).join(', ')}`,
+    `  installed    ${detected.join(', ') || '— none of them found on PATH'}`
+  )
+
+  const ask = async (question) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    try {
+      return (await rl.question(question)).trim()
+    } finally {
+      rl.close()
+    }
+  }
+  const interactive = !flags['dry-run'] && !options.assumeHuman && process.stdin.isTTY && process.stdout.isTTY
+
+  let include = typeof flags.agents === 'string' ? flags.agents.split(',').map((s) => s.trim()).filter(Boolean) : null
+  if (!include) {
+    include = []
+    for (const id of detected) {
+      if (!interactive || !/^n(o)?$/i.test(await ask(`include ${id}? [Y/n] `))) include.push(id)
+    }
+  }
+  let lead = typeof flags.lead === 'string' ? flags.lead : include.length === 1 ? include[0] : null
+  if (!lead && interactive && include.length) lead = await ask(`who leads — the agent you work in? (${include.join('/')}) `)
+
+  const plan = planComposition({ catalog, roleDefs, include, lead })
+  if (!plan.ok) {
+    out(`refusing: ${plan.reason}${include.length > 1 && !lead ? ' — pass --lead <id>' : ''}`)
+    process.exit(1)
+  }
+  out(`  lead         ${plan.content.lead}`)
+  for (const agent of plan.content.agents) out(`  ${agent.id.padEnd(12)} ${agent.roles.join(', ')}`)
+  out('')
+  if (flags['dry-run']) {
+    out('dry run — nothing written')
+    return
+  }
+  if (interactive && !/^y(es)?$/i.test(await ask('write this composition? [y/N] '))) {
+    out('aborted — nothing changed')
+    process.exit(0)
+  }
+  const file = writeComposition(machineDir, plan.content, { catalogDir: DEFAULT_CONFIG_DIR })
+  const { problems } = validateRegistry(loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir }))
+  out(`${C.green}written${C.off}  ${file}`)
+  for (const p of problems) out(`${C.red}problem${C.off}  ${p}`)
+  out('Edit it by hand any time, or run collab setup again. Restart open agent sessions to pick it up.')
+  if (problems.length) process.exit(1)
 }
 
 function rootHere(options) {
@@ -281,7 +359,11 @@ const STANDALONE = {
   },
 
   'check-config'({ flags }, options) {
-    const result = checkConfig({ projectId: typeof flags.project === 'string' ? flags.project : null, registryDir: options.registryDir })
+    const result = checkConfig({
+      projectId: typeof flags.project === 'string' ? flags.project : null,
+      registryDir: options.registryDir,
+      machineDir: options.machineDir
+    })
     out(dim(`registry ${result.registry}`), '')
     for (const report of result.reports) {
       const mark = report.problems.length ? `${C.red}${report.problems.length} problem(s)${C.off}` : `${C.green}ok${C.off}`
@@ -306,6 +388,7 @@ const STANDALONE = {
   // Same barriers as approve/init --adopt: an owner decision, at their own
   // terminal, never from an agent's shell.
   async setup({ flags }, options) {
+    if (!flags.project) return machineSetup(flags, options)
     if (process.env.COLLAB_AGENT_ID) {
       process.stderr.write(
         `refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n` +
@@ -820,7 +903,8 @@ const COMMANDS = {
       '  disconnect [--dry-run]  take this project off the registry; its journal stays; owner only',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
-      '  setup                  interactively choose which agent vendors take part in this project\'s orchestration',
+      '  setup [--agents a,b] [--lead a] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role; owner only',
+      '  setup --project        narrow the composition for this project (which agents take part here)',
       '  project [--json]       journal root, worktree, registry project and config source for this directory',
       '  status                 who is doing what, what is waiting, what the tree looks like',
       '  tasks [--all]          list tasks',
@@ -931,9 +1015,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   }
 
   try {
-    // The CLI acts as the owner's stand-in; `claude` is used only as the ledger
-    // identity for reads, and approve/reject refuse to use it at all.
-    const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || 'claude', ...trusted })
+    // The CLI acts as the owner's stand-in; the default identity is used only
+    // for reads, and approve/reject refuse to use it at all.
+    const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || defaultIdentity(trusted), ...trusted })
     await handler(api, parsed)
   } catch (error) {
     if (error instanceof CollabError) {

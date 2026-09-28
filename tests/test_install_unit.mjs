@@ -193,6 +193,16 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
   assert.equal(readFileSync(join(home, '.claude', 'agents', 'verifier.md'), 'utf8'), 'verifier v3\n')
 })
 
+test('the Codex rules block: appended once, replaced in place, never touching the text around it', () => {
+  const { replaceManagedBlock, CODEX_RULES_BEGIN: B, CODEX_RULES_END: E } = lib
+  const block = (s) => `${B}\n${s}\n${E}\n`
+  assert.equal(replaceManagedBlock('', block('v1')), block('v1'))
+  const first = replaceManagedBlock('# mine\n', block('v1'))
+  assert.equal(first, `# mine\n\n${block('v1')}`)
+  const around = `${first}after\n`
+  assert.equal(replaceManagedBlock(around, block('v2')), `# mine\n\n${block('v2')}after\n`)
+})
+
 // Three layers (28.09.2026): the team layer goes to everyone, a vendor adapter
 // only where the vendor is, the personal rule only when its owner wrote one.
 test('three layers: the Codex adapter only with Codex, the personal rule only when written', () => {

@@ -7,9 +7,10 @@
 // It reads configuration only. It never opens a journal, so it is safe to run
 // against a project whose `.collab/` is live.
 
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { defaultRegistryDir } from './paths.mjs'
+import { defaultRegistryDir, MACHINE_CONFIG_DIR } from './paths.mjs'
 import { listProjects } from './projects.mjs'
 import { checkBriefings, loadConfigFrom, loweringRules, validateRegistry } from './registry.mjs'
 import { TOOLS } from './mcp/tools.mjs'
@@ -52,9 +53,11 @@ function check(label, load, { problems = [], warnings = [] } = {}) {
   return report
 }
 
-export function checkConfig({ projectId = null, registryDir = defaultRegistryDir(), home = homedir() } = {}) {
+export function checkConfig({ projectId = null, registryDir = defaultRegistryDir(), machineDir = MACHINE_CONFIG_DIR, home = homedir() } = {}) {
   const registry = registryDir
   const reports = [check('built-in defaults', () => loadConfigFrom())]
+  const machine = machineDir && existsSync(machineDir) ? [machineDir] : []
+  if (machine.length) reports.push(check(`machine composition (${machineDir})`, () => loadConfigFrom(machine, { kind: 'machine', dir: machineDir })))
 
   const entries = listProjects(registry, { home })
   const selected = projectId ? entries.filter((e) => e.id === projectId) : entries
@@ -79,7 +82,7 @@ export function checkConfig({ projectId = null, registryDir = defaultRegistryDir
     reports.push(
       check(
         label,
-        () => loadConfigFrom(join(entry.dir, 'collab'), { kind: 'project', id: entry.id, dir: entry.dir, registry }),
+        () => loadConfigFrom([join(entry.dir, 'collab'), ...machine], { kind: 'project', id: entry.id, dir: entry.dir, registry }),
         { problems: duplicates, warnings: entry.warnings }
       )
     )

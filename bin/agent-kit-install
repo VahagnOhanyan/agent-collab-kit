@@ -69,6 +69,7 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/ux-guidance/SKILL.md',
   'skills/ux-critic-review/SKILL.md',
   'rules/vendor-codex.md',
+  'rules/vendor-claude.md',
   'hooks/scope-guard.py',
   'hooks/readonly-guard.py',
   'bin/collab',
@@ -1900,6 +1901,65 @@ function applyCodex(ctx, plan, journal, changes) {
   if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
 }
 
+// ── Codex as the lead: its instructions (~/.codex/AGENTS.md) ─────────────────
+// Codex reads ~/.codex/AGENTS.md, not Claude Code's rules/. So where Codex is
+// present, the same team layer, the adapters of the OTHER vendors present and
+// the person's personal layer are kept there too — inside a managed block,
+// assembled from the release being installed. The person's own text outside
+// the block is never touched.
+const CODEX_RULES_BEGIN = '<!-- agent-kit: begin — managed by agent-kit-install; edit ~/agent-kit, not this block -->'
+const CODEX_RULES_END = '<!-- agent-kit: end -->'
+const CODEX_RULES_SOURCES = ['rules/orchestration.md', 'rules/modules.md', 'rules/terminology.md', 'rules/apple-toolchain.md']
+
+function codexRulesBlock(ctx) {
+  const rels = [...CODEX_RULES_SOURCES]
+  if (ctx.claudeBin && commandExists(ctx.claudeBin)) rels.push('rules/vendor-claude.md')
+  rels.push('personal/rules/personal.md')
+  const bodies = rels
+    .map((rel) => path.join(ctx.currentPath, rel))
+    .filter((file) => lstatOrNull(file))
+    .map((file) => fs.readFileSync(file, 'utf8').trimEnd())
+  return `${CODEX_RULES_BEGIN}\n\n${bodies.join('\n\n---\n\n')}\n\n${CODEX_RULES_END}\n`
+}
+
+function replaceManagedBlock(text, block) {
+  const start = text.indexOf(CODEX_RULES_BEGIN)
+  const end = text.indexOf(CODEX_RULES_END, start)
+  if (start !== -1 && end !== -1) return text.slice(0, start) + block + text.slice(end + CODEX_RULES_END.length).replace(/^\n/, '')
+  if (!text) return block
+  return `${text.replace(/\n*$/, '\n\n')}${block}`
+}
+
+function planCodexRules(ctx) {
+  if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
+  if (!codexAdapterWanted(ctx)) return { skipped: true, reason: 'codex is not installed' }
+  const file = path.join(path.dirname(ctx.codexConfig), 'AGENTS.md')
+  const st = lstatOrNull(file)
+  if (st && !st.isFile()) throw new InstallError(`${file} exists and is not a regular file — move it away and install again`)
+  return { file, exists: Boolean(st), original: st ? fs.readFileSync(file) : null, mode: st ? st.mode & 0o777 : 0o644 }
+}
+
+function applyCodexRules(ctx, plan, journal, changes) {
+  if (plan.exists && !fs.readFileSync(plan.file).equals(plan.original)) {
+    throw new InstallError(`${plan.file} changed while the installer was running`)
+  }
+  const next = Buffer.from(replaceManagedBlock(plan.exists ? plan.original.toString('utf8') : '', codexRulesBlock(ctx)), 'utf8')
+  if (plan.exists && next.equals(plan.original)) return
+  if (plan.exists) {
+    writeFileAtomic(plan.file, next, plan.mode)
+    journal.add(`rewrote ${plan.file}`, () => writeFileAtomic(plan.file, plan.original, plan.mode))
+  } else {
+    ensureDir(path.dirname(plan.file), journal)
+    writeFileAtomic(plan.file, next, 0o644)
+    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
+  }
+  changes.push(`codex: ${plan.exists ? 'updated' : 'created'} the agent-kit block in ${plan.file}`)
+}
+
+function summarizeCodexRules(ctx, plan) {
+  return `codex: sync the agent-kit block in ${plan.file}`
+}
+
 function summarizeCodex(ctx, plan) {
   return plan.changed ? `codex: ${plan.exists ? (plan.replaced ? 'replace' : 'append') : 'create'} [${CODEX_TABLE}] in ${plan.file}` : null
 }
@@ -2250,6 +2310,7 @@ function rollbackCommand(ctx) {
 // many clients there are or what they are called.
 const MCP_CLIENTS = [
   { id: 'codex', plan: planCodex, apply: applyCodex, summary: summarizeCodex, detailPlanned: detailPlannedCodex, detailApplied: detailAppliedCodex },
+  { id: 'codex-rules', plan: planCodexRules, apply: applyCodexRules, summary: summarizeCodexRules },
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini }
 ]
@@ -2444,6 +2505,9 @@ async function main(argv) {
 }
 
 module.exports = {
+  replaceManagedBlock,
+  CODEX_RULES_BEGIN,
+  CODEX_RULES_END,
   parseArgs,
   resolveClaudeConfigDirs,
   assertConfigDirsInside,

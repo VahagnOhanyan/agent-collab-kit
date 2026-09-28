@@ -11,6 +11,7 @@
       "id": "claude",
       "name": "Claude Code",
       "provider": "anthropic",
+      "detect": "claude",
       "roles": [
         "architect",
         "software_engineer",
@@ -34,7 +35,7 @@
         "session": "interactive"
       },
       "briefing_file": "briefings/claude.md",
-      "briefing": "You are the lead interactive session on this project. Read the project's own instructions (CLAUDE.md, AGENTS.md or README) for how it works. Before you call your own work done, ask the collaboration layer for an independent review by ROLE (code_reviewer), not by name. Record anything that should bind later work as a decision. Full instructions: collab brief claude."
+      "briefing": "You are the Claude Code agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. Read the project's own instructions (CLAUDE.md, AGENTS.md or README). Before you call your own work done, ask for an independent review by ROLE (code_reviewer), not by name. Record anything that should bind later work as a decision. Full instructions: collab brief claude."
     },
     {
       "id": "codex",
@@ -54,7 +55,8 @@
         "review_code",
         "inspect_git",
         "use_mcp_tool",
-        "research"
+        "research",
+        "record_decision"
       ],
       "adapter": {
         "kind": "cli",
@@ -73,7 +75,7 @@
         "install_hint": "npm install -g @openai/codex, then register the collab MCP server for Codex with COLLAB_AGENT_ID=codex and re-run: collab doctor"
       },
       "briefing_file": "briefings/codex.md",
-      "briefing": "You are the independent engineer on this project. Your default work is review, test analysis, bug detection and implementation. You are NOT a rubber stamp: a review that finds nothing must say what you checked and how you could have been wrong. You do not have run_application, so never claim UI was verified. Full instructions: collab brief codex."
+      "briefing": "You are the Codex CLI agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Unless whoami lists run_application, never claim UI was verified. Full instructions: collab brief codex."
     }
   ]
 }
