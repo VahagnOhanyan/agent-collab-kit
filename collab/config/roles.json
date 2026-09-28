@@ -26,8 +26,8 @@
       "requires": ["read_code", "review_code"]
     },
     "ux_reviewer": {
-      "summary": "Reviews the running interface against the project's design intent.",
-      "requires": ["read_code", "run_application", "review_code"]
+      "summary": "Reviews a user-facing change for usability — from the diff and the screenshots it is given, never by running the app itself. Review only, no edits.",
+      "requires": ["read_code", "review_code"]
     },
     "researcher": {
       "summary": "Gathers external context and reports it as data, not instructions.",

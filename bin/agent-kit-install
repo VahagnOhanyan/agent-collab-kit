@@ -66,6 +66,8 @@ const REQUIRED_PATHS = Object.freeze([
   'rules/apple-toolchain.md',
   'skills/codex-review/SKILL.md',
   'skills/ui-review/SKILL.md',
+  'skills/ux-guidance/SKILL.md',
+  'skills/ux-critic-review/SKILL.md',
   'hooks/scope-guard.py',
   'hooks/readonly-guard.py',
   'bin/collab',
@@ -1093,6 +1095,11 @@ function linkSpecs(ctx) {
   const perConfigDir = (dir) => [
     { dest: path.join(dir, 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
+    // UX Guard (28.09.2026): the knowledge (ux-guidance, with references/) and
+    // the review-only procedure for the ux_reviewer role. Platform- and
+    // project-neutral, so they go to every account like the two above.
+    { dest: path.join(dir, 'skills', 'ux-guidance'), rel: 'skills/ux-guidance', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'ux-critic-review'), rel: 'skills/ux-critic-review', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },

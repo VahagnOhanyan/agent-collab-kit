@@ -43,7 +43,8 @@
       "roles": [
         "software_engineer",
         "code_reviewer",
-        "test_engineer"
+        "test_engineer",
+        "ux_reviewer"
       ],
       "capabilities": [
         "read_code",

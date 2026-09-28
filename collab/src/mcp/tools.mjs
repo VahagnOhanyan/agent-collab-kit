@@ -44,6 +44,20 @@ const TASK_STATUSES = [
 
 const LEVELS = ['L0', 'L1', 'L2', 'L3']
 
+// Mirror domain/spec.mjs UX_IMPACT and UX_DOMAINS; kept identical by
+// test/ux-guard.test.mjs, not by an import.
+export const UX_IMPACT = ['NONE', 'LOW', 'MEDIUM', 'HIGH']
+export const UX_DOMAINS = [
+  'interaction',
+  'async-feedback',
+  'destructive-action',
+  'navigation',
+  'maps',
+  'media',
+  'accessibility',
+  'adaptive-layout'
+]
+
 // Mirrors domain/reviews.mjs SLOTS, the way TASK_STATUSES below mirrors
 // transitions.mjs: this file deliberately imports nothing, so the two lists are
 // kept identical by a test (test/routing.test.mjs) rather than by an import.
@@ -74,7 +88,17 @@ const SPEC = object({
   }),
   implementation_risk: str('How easily this is done WRONG, which is not the same as how hard it is.', { enum: LEVELS }),
   review_risk: str('What a missed mistake would cost. One line in auth is L3 however small the diff.', { enum: LEVELS }),
-  classification_reason: str('One line on why those levels — read later to see whether the reading was right.')
+  classification_reason: str('One line on why those levels — read later to see whether the reading was right.'),
+  ux_impact: str(
+    'What the USER sees, understands or can do differently — not how hard the code is. NONE internal only; LOW spacing/icon/copy; MEDIUM a localized interaction change (button, sheet, state, gesture, error/loading); HIGH a new or changed workflow. HIGH cannot be completed without an approved review by the ux_reviewer role.',
+    { enum: UX_IMPACT }
+  ),
+  ux_domains: arr('Which UX areas the change touches; decides which ux-guidance references are loaded.', {
+    type: 'string',
+    enum: UX_DOMAINS
+  }),
+  needs_ux_critic: { type: 'boolean', description: 'MEDIUM only: true when the interaction is ambiguous enough to need an independent ux_reviewer. Always true for HIGH.' },
+  needs_visual_verification: { type: 'boolean', description: 'True when the change must be seen rendered (screenshot) before it counts as done.' }
 })
 
 const EVIDENCE = object({

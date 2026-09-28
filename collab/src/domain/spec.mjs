@@ -27,6 +27,25 @@ const REASON_MAX = 400
 export const SPEC_LISTS = Object.freeze(['non_goals', 'constraints', 'assumptions', 'acceptance_criteria'])
 export const SPEC_LEVELS = Object.freeze(['complexity', 'implementation_risk', 'review_risk'])
 
+// UX impact is a fourth reading of the same kind as the three levels: the lead
+// judges it while writing the plan, the layer only checks its shape and gates
+// completion on it. It measures what the USER sees, understands or can do —
+// not how hard the code is — so a one-line change can be HIGH and a module
+// extraction NONE.
+export const UX_IMPACT = Object.freeze(['NONE', 'LOW', 'MEDIUM', 'HIGH'])
+export const UX_DOMAINS = Object.freeze([
+  'interaction',
+  'async-feedback',
+  'destructive-action',
+  'navigation',
+  'maps',
+  'media',
+  'accessibility',
+  'adaptive-layout'
+])
+export const UX_FLAGS = Object.freeze(['needs_ux_critic', 'needs_visual_verification'])
+export const UX_REVIEWER_ROLE = 'ux_reviewer'
+
 function list(value, field) {
   if (value === undefined || value === null) return undefined
   if (!Array.isArray(value)) {
@@ -72,7 +91,7 @@ export function normaliseSpec(config, input, existing = null) {
     throw new CollabError(CODES.INVALID_INPUT, 'spec must be an object', {})
   }
   const levels = config.models?.levels || {}
-  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason'])
+  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason', 'ux_impact', 'ux_domains', ...UX_FLAGS])
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
       throw new CollabError(CODES.INVALID_INPUT, `spec has no field "${key}"`, { field: key, known: [...known] })
@@ -99,7 +118,75 @@ export function normaliseSpec(config, input, existing = null) {
     }
     next.classification_reason = assertNoSecret(clean, 'spec.classification_reason')
   }
+  if (input.ux_impact !== undefined && input.ux_impact !== null && input.ux_impact !== '') {
+    if (!UX_IMPACT.includes(input.ux_impact)) {
+      throw new CollabError(CODES.INVALID_INPUT, `spec.ux_impact must be one of ${UX_IMPACT.join(', ')}`, {
+        field: 'ux_impact',
+        value: input.ux_impact
+      })
+    }
+    next.ux_impact = input.ux_impact
+  }
+  const domains = list(input.ux_domains, 'ux_domains')
+  if (domains !== undefined) {
+    const unknown = domains.filter((d) => !UX_DOMAINS.includes(d))
+    if (unknown.length) {
+      throw new CollabError(CODES.INVALID_INPUT, `spec.ux_domains has unknown domain(s): ${unknown.join(', ')}`, {
+        field: 'ux_domains',
+        unknown,
+        known: UX_DOMAINS
+      })
+    }
+    next.ux_domains = [...new Set(domains)]
+  }
+  for (const flag of UX_FLAGS) {
+    if (input[flag] === undefined || input[flag] === null) continue
+    if (typeof input[flag] !== 'boolean') {
+      throw new CollabError(CODES.INVALID_INPUT, `spec.${flag} must be true or false`, { field: flag })
+    }
+    next[flag] = input[flag]
+  }
+  // Contradictory, not missing: a HIGH change that opts out of the critic is
+  // the one case the gate exists for, so it is refused rather than recorded.
+  if (next.ux_impact === 'HIGH' && next.needs_ux_critic === false) {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      'spec.ux_impact HIGH always gets an independent UX review; needs_ux_critic cannot be false for it',
+      { field: 'needs_ux_critic' }
+    )
+  }
   return Object.keys(next).length ? next : null
+}
+
+export function uxCriticRequired(spec) {
+  if (!spec) return false
+  if (spec.ux_impact === 'HIGH') return true
+  return spec.ux_impact === 'MEDIUM' && spec.needs_ux_critic === true
+}
+
+const BLOCKING_UX = new Set(['blocker', 'critical', 'major'])
+
+// Why a task that needs a UX review cannot be completed yet, or null. The
+// latest submitted review by the ux_reviewer role decides: it must approve and
+// carry no proven blocker/major — a finding without evidence is a hypothesis,
+// not a blocker, the same rule every other review follows.
+export function uxGateProblem(task, reviews = []) {
+  if (!uxCriticRequired(task.spec)) return null
+  const submitted = reviews
+    .filter((r) => r.task_id === task.id && r.requested_role === UX_REVIEWER_ROLE && r.submitted_at)
+    .sort((a, b) => String(a.submitted_at).localeCompare(String(b.submitted_at)))
+  const latest = submitted[submitted.length - 1]
+  if (!latest) {
+    return `its ux_impact is ${task.spec.ux_impact} and it has no review by the ${UX_REVIEWER_ROLE} role yet — request_review with reviewer_role "${UX_REVIEWER_ROLE}" and slot "ui"`
+  }
+  if (latest.verdict !== 'approved') {
+    return `the latest ${UX_REVIEWER_ROLE} review (${latest.id}) is ${latest.verdict}, not approved`
+  }
+  const open = (latest.findings || []).filter((f) => BLOCKING_UX.has(f.severity) && f.confidence !== 'hypothesis')
+  if (open.length) {
+    return `the latest ${UX_REVIEWER_ROLE} review (${latest.id}) still carries ${open.length} proven blocker/major finding(s)`
+  }
+  return null
 }
 
 export const CRITERION_STATUS = Object.freeze(['met', 'not_met', 'unverified'])

@@ -17,6 +17,7 @@
 // and one letter apart, so the status is only ever written as
 // TASK_STATUS.APPROVED and the other is always spelled out as an approval record.
 
+import { uxGateProblem } from './domain/spec.mjs'
 import { CODES, CollabError } from './errors.mjs'
 
 export const TASK_STATUS = Object.freeze({
@@ -88,7 +89,7 @@ const GUARDS = {
     if (ctx?.pendingApproval) {
       return `the owner has not answered approval ${ctx.pendingApproval} yet`
     }
-    return null
+    return uxGateProblem(task, ctx?.reviews || [])
   },
   [S.BLOCKED]: (task, ctx) => (ctx?.reason ? null : 'blocking a task requires a reason'),
   [S.APPROVED]: (task, ctx) => {

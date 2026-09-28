@@ -161,7 +161,8 @@ export function createTask(ctx, input) {
         ? {
             complexity: taskSpec.complexity || null,
             implementation_risk: taskSpec.implementation_risk || null,
-            review_risk: taskSpec.review_risk || null
+            review_risk: taskSpec.review_risk || null,
+            ux_impact: taskSpec.ux_impact || null
           }
         : null
     })
@@ -171,6 +172,12 @@ export function createTask(ctx, input) {
 
 function approvalFor(tx, task) {
   return task.approval_id ? tx.get('approvals', task.approval_id) : null
+}
+
+// Both ways into `completed` (complete_task and update_task with a status) pass
+// these to the guard; a path that passes none fails closed on a UX-gated task.
+function reviewsOf(tx, task) {
+  return tx.list('reviews', { filter: (r) => r.task_id === task.id })
 }
 
 export function claimTask(ctx, { task_id = null, role = null, lease_seconds = null, git_base = null } = {}) {
@@ -300,7 +307,10 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
         // and then claim it — the lease bypassed in two steps.
         assertMayHold(tx, task, ctx.agentId, 'change the status of')
       }
-      assertTransition(task, status, { reason, pendingApproval, admission })
+      const reviews = status === TASK_STATUS.COMPLETED ? reviewsOf(tx, task) : []
+      // The spec being written in this same call counts: raising ux_impact and
+      // completing in one update must not slip past the gate on the old spec.
+      assertTransition({ ...task, spec: fields.spec }, status, { reason, pendingApproval, admission, reviews })
       fields.status = status
       if (admission) Object.assign(fields, admission.fields)
       if (status === TASK_STATUS.BLOCKED) fields.blocked_reason = reason
@@ -322,7 +332,7 @@ export function completeTask(ctx, { task_id, summary = '', evidence = null, expe
     const approval = approvalFor(tx, task)
     const pendingApproval = approval && approval.status === 'pending' ? approval.id : null
 
-    assertTransition(task, TASK_STATUS.COMPLETED, { pendingApproval })
+    assertTransition(task, TASK_STATUS.COMPLETED, { pendingApproval, reviews: reviewsOf(tx, task) })
     const next = tx.put(
       'tasks',
       { ...task, status: TASK_STATUS.COMPLETED, lease: null, completion_summary: summary, evidence: bundle },
