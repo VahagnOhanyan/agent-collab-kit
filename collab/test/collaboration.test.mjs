@@ -458,14 +458,14 @@ test('two tasks cannot claim the same file, and the error names who holds it', a
   try {
     const mine = await w.claude.createTask({ title: 'Edit the style sync', action: 'edit a file' })
     await w.claude.claimTask({ task_id: mine.id })
-    await w.claude.claimFiles({ task_id: mine.id, paths: ['Tripix/TripMap/Presentation/Core/TripMapView+StyleSync.swift'] })
+    await w.claude.claimFiles({ task_id: mine.id, paths: ['App/Map/Presentation/Core/TripMapView+StyleSync.swift'] })
 
     const theirs = await w.codex.createTask({ title: 'Also edit the style sync', action: 'edit a file' })
     await w.codex.claimTask({ task_id: theirs.id })
 
     let error = null
     try {
-      await w.codex.claimFiles({ task_id: theirs.id, paths: ['Tripix/TripMap/Presentation/Core/TripMapView+StyleSync.swift'] })
+      await w.codex.claimFiles({ task_id: theirs.id, paths: ['App/Map/Presentation/Core/TripMapView+StyleSync.swift'] })
     } catch (e) {
       error = e
     }
@@ -804,7 +804,7 @@ test('files are claimed by whoever holds the task, not by anybody holding its id
     const task = await w.claude.createTask({ title: 'Nobody took this', action: 'edit a file' })
     let error = null
     try {
-      await w.claude.claimFiles({ task_id: task.id, paths: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift'] })
+      await w.claude.claimFiles({ task_id: task.id, paths: ['App/Map/Presentation/Core/TripMapSheetLiftPolicy.swift'] })
     } catch (e) {
       error = e
     }
@@ -818,13 +818,13 @@ test('an ownerless task holds no files, however long it sits there', async () =>
   const w = world()
   try {
     // create_task's own `files` list is the other way a claim can exist with no
-    // owner. On 2026-09-13 a task in `created` held three files of the Tripix
+    // owner. On 2026-09-13 a task in `created` held three files of a project
     // tree this way and `collab status` printed its holder as `null`: a task in
     // `created` has no lease, so `lease_expired` stayed false forever.
     const ghost = await w.claude.createTask({
       title: 'Never claimed',
       action: 'edit a file',
-      files: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift']
+      files: ['App/Map/Presentation/Core/TripMapSheetLiftPolicy.swift']
     })
     assert.equal(ghost.owner, null)
 
@@ -832,10 +832,10 @@ test('an ownerless task holds no files, however long it sits there', async () =>
     await w.codex.claimTask({ task_id: real.id })
     const claimed = await w.codex.claimFiles({
       task_id: real.id,
-      paths: ['Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift']
+      paths: ['App/Map/Presentation/Core/TripMapSheetLiftPolicy.swift']
     })
     assert.ok(
-      claimed.files.includes('Tripix/TripMap/Presentation/Core/TripMapSheetLiftPolicy.swift'),
+      claimed.files.includes('App/Map/Presentation/Core/TripMapSheetLiftPolicy.swift'),
       'ownership is what holds a file, not the listing'
     )
   } finally {

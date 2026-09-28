@@ -295,7 +295,7 @@ export function setup() {
   before(() => {
     BASE = realpathSync(mkdtempSync(join(tmpdir(), 'agent-kit-install-test-')))
     TEMPLATE = join(BASE, 'template')
-    // 'projects': this machine's own registries (e.g. projects/tripix) are
+    // 'projects': this machine's own registries (e.g. projects/<id>) are
     // exactly the kind of local, un-reproducible runtime state '.collab' is
     // excluded for — a real one leaking into TEMPLATE would ride along into
     // every built release once copyLiveProjectRegistries (agent-kit-install)

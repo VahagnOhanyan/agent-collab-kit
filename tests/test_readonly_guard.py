@@ -63,7 +63,7 @@ def make_world(settings=None, raw_settings=None, info=None, exit_code=0):
     return dict(_BASE_ENV, HOME=str(base / "home"))
 
 
-# Мир по умолчанию — проект, включивший Apple (как Tripix): так тесты политик
+# Мир по умолчанию — проект, включивший Apple (iOS-проект): так тесты политик
 # xcodebuild/xcrun/swift проверяют аргументы, а не падают раньше на «платформа не включена».
 ENV = make_world({"platforms": ["apple"]})
 NO_COLLAB_ENV = dict(_BASE_ENV, HOME="/nonexistent")

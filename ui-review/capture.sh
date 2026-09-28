@@ -8,7 +8,7 @@
 #
 #   ui-review/capture.sh OUT.png [options]
 #     --install                 install the Debug build from DerivedData first
-#     --env KEY=VALUE           launch env for the app (repeatable), e.g. TRIPIX_DEBUG_OPEN_TRIP_ID=<id>
+#     --env KEY=VALUE           launch env for the app (repeatable), e.g. APP_DEBUG_OPEN_SCREEN=<id>
 #     --appearance dark|light   system appearance (default: dark). The app follows it only if its
 #                               OWN in-app appearance setting is "system" — see the project's
 #                               ui-review.json "appearanceNote", if any.

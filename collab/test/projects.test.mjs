@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
@@ -288,60 +288,27 @@ test('a registry policy that weakens the built-in table is refused at load; a st
 // is why it is a no-op body rather than node:test's own `skip` — zero effect
 // on the "# skipped" count the install's own TAP gate refuses on) when there
 // is not: a project-count-dependent assertion belongs behind a real
-// registration, never behind a hardcoded path a stranger cannot have.
-const TRIPIX_REGISTERED = existsSync(join(KIT_REGISTRY, 'tripix'))
+// registration, never behind a hardcoded path a stranger cannot have — and
+// never behind a particular project's name: the kit is not about any one.
+const REGISTERED = existsSync(KIT_REGISTRY)
+  ? readdirSync(KIT_REGISTRY).filter((id) => existsSync(join(KIT_REGISTRY, id, 'project.json')))
+  : []
 
-test('the Tripix registry entry is valid (configuration only — its journal is never opened)', () => {
-  if (!TRIPIX_REGISTERED) return
-  const dir = join(KIT_REGISTRY, 'tripix')
-  const entry = readProjectEntry(dir, 'tripix')
-  assert.deepEqual(entry.problems, [])
-  // One absolute root ending in /Tripix — not a hardcoded home directory, so
-  // this keeps working under a different username or a moved checkout.
-  assert.equal(entry.roots.length, 1)
-  assert.ok(isAbsolute(entry.roots[0]) && entry.roots[0].endsWith('/Tripix'), entry.roots[0])
+test('every project registered on this machine is valid (configuration only — no journal is opened)', () => {
+  for (const id of REGISTERED) {
+    const dir = join(KIT_REGISTRY, id)
+    const entry = readProjectEntry(dir, id)
+    assert.deepEqual(entry.problems, [], id)
+    assert.ok(entry.roots.length >= 1 && entry.roots.every((root) => isAbsolute(root)), `${id}: absolute roots`)
 
-  const config = loadConfigFrom(join(dir, 'collab'), { kind: 'project', id: 'tripix', dir })
-  // Five of the six: models.json is machine-level and a project copy would be
-  // ignored, so Tripix deliberately does not ship one.
-  const { models: modelsOverridden, ...replaceable } = config.meta.overridden
-  assert.ok(Object.values(replaceable).every(Boolean), 'Tripix replaces every file it may replace')
-  assert.equal(modelsOverridden, false, 'the model registry is never a project override')
-  const { problems } = validateRegistry(config)
-  assert.deepEqual(problems, [])
-  assert.deepEqual(checkBriefings(config), [])
-
-  const ruleIds = config.policy.rules.map((r) => r.id)
-  assert.ok(ruleIds.includes('production-hosts') && ruleIds.includes('deploy-paths'))
-  assert.ok(['preflight', 'backend-tests', 'ios-build'].every((id) => id in config.runners.runners))
-
-  const view = createRegistry(config)
-  assert.deepEqual(view.find({ role: 'ios_engineer' }).map((a) => a.id), ['claude'])
-  assert.equal(view.agent('codex').adapter.enabled, false)
-  assert.match(readFileSync(view.briefingPath('codex'), 'utf8'), /submit_review/)
+    const config = loadConfigFrom(join(dir, 'collab'), { kind: 'project', id, dir })
+    assert.equal(config.meta.overridden.models, false, `${id}: the model registry is never a project override`)
+    assert.deepEqual(validateRegistry(config).problems, [], id)
+    assert.deepEqual(checkBriefings(config), [], id)
+  }
 })
 
-test('G: Tripix carries its dev-host rule over as an explicit, justified lowering, and check-config lists it', () => {
-  if (TRIPIX_REGISTERED) {
-    const policyFile = JSON.parse(readFileSync(join(KIT_REGISTRY, 'tripix', 'collab', 'policy.json'), 'utf8'))
-    assert.deepEqual(policyFile.rules.find((r) => r.id === 'dev-host'), {
-      id: 'dev-host',
-      class: 'SAFE_WRITE',
-      pattern: 'dev\\.aweiro\\.com|localhost|127\\.0\\.0\\.1',
-      reason: 'The dev backend is where agents are meant to work.',
-      lowers_default: true,
-      justification: "dev.aweiro.com and local hosts are not production; owner's existing decision carried over from Tripix"
-    })
-
-    const out = runCli(['check-config', '--project', 'tripix'], { cwd: tmpdir() })
-    assert.equal(out.status, 0, out.stdout + out.stderr)
-    assert.match(out.stdout, /lowering rules/)
-    assert.match(out.stdout, /dev-host\s+SAFE_WRITE/)
-    assert.match(out.stdout, /owner's existing decision carried over from Tripix/)
-  }
-
-  // Generic from here on — a synthetic project, proving lowering rules are
-  // listed at all, regardless of whether Tripix happens to be registered.
+test('G: lowering rules are listed by check-config', () => {
   const base = tempDir('collab-check-lower-')
   try {
     // A temp registry, handed to the CLI as a parameter.
@@ -362,9 +329,9 @@ test('collab check-config passes on the kit registry and fails, naming the rule,
     const ok = runCli(['check-config'], { cwd: base, options: { registryDir: KIT_REGISTRY } })
     assert.equal(ok.status, 0, ok.stdout + ok.stderr)
     assert.match(ok.stdout, /built-in defaults\s+ok/)
-    if (TRIPIX_REGISTERED) {
-      assert.match(ok.stdout, /project "tripix" .*ok/)
-      const viaLauncher = runCli(['check-config', '--project', 'tripix'], { cwd: base, launcher: true })
+    for (const id of REGISTERED) {
+      assert.match(ok.stdout, new RegExp(`project "${id}" .*ok`))
+      const viaLauncher = runCli(['check-config', '--project', id], { cwd: base, launcher: true })
       assert.equal(viaLauncher.status, 0, viaLauncher.stdout + viaLauncher.stderr)
     }
 

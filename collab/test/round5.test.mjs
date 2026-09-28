@@ -184,7 +184,7 @@ test('R5-3: a markerless legacy layout is accepted only for a registry project t
     assert.equal(api.doctor().journal_kind, 'legacy')
 
     // Only a real boolean counts. (Deliberately not asserted against the live kit registry:
-    // Tripix's entry dropped the flag once its journal was adopted — tests use fixtures only.)
+    // a real project's entry drops the flag once its journal is adopted — tests use fixtures only.)
     writeJson(join(registry, 'loose', 'project.json'), { id: 'loose', roots: [join(base, 'loose')], legacy_journal: 'yes' })
     assert.ok(readProjectEntry(join(registry, 'loose'), 'loose').problems.some((p) => /legacy_journal/.test(p)))
   } finally {

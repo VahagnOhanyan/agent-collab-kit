@@ -68,6 +68,7 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/ui-review/SKILL.md',
   'skills/ux-guidance/SKILL.md',
   'skills/ux-critic-review/SKILL.md',
+  'rules/vendor-codex.md',
   'hooks/scope-guard.py',
   'hooks/readonly-guard.py',
   'bin/collab',
@@ -924,6 +925,16 @@ function copyLiveProjectRegistries(sourceDir, buildDir) {
   }
 }
 
+// personal/ is .gitignore'd for the same reason as projects/: it is one
+// person's layer (their vendors, models, limits, machine) and never part of
+// the team's history. Copied from disk into the build so the release carries
+// it; absent on a teammate's machine until they write their own.
+function copyLivePersonalLayer(sourceDir, buildDir) {
+  const from = path.join(sourceDir, 'personal')
+  if (!lstatOrNull(from)) return
+  fs.cpSync(from, path.join(buildDir, 'personal'), { recursive: true })
+}
+
 async function build(ctx, source, journal) {
   let parent
   if (ctx.opts.dryRun) parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-dry-')))
@@ -944,6 +955,7 @@ async function build(ctx, source, journal) {
     out(`build: git archive ${source.sha} -> ${dir}`)
     checkLayout(dir)
     copyLiveProjectRegistries(source.dir, dir)
+    copyLivePersonalLayer(source.dir, dir)
     const before = manifest(dir)
 
     let counts = null
@@ -1091,10 +1103,37 @@ function pruneReleases(ctx, history, current, previous) {
 // Everything downstream — planning, applying, the copy manifest, the "not
 // created by this installer" refusal, --dry-run and rollback — keys off the
 // destination path, so more directories just mean more entries in this list.
+// Three layers (owner's decision 28.09.2026). The team layer goes to everyone.
+// A vendor adapter — the vendor's rule and its skills — only where that vendor
+// is present, by the same signal planCodex uses to register it. The personal
+// layer only if this person wrote one (personal/rules/personal.md in the source).
+// A bare ctx (unit tests build one by hand) keeps the adapter, as before, and
+// has no personal layer; tests set codexPresent / personalPresent to choose.
+function codexAdapterWanted(ctx) {
+  if (typeof ctx.codexPresent === 'boolean') return ctx.codexPresent
+  if (!ctx.codexConfig) return true
+  return commandExists('codex') || Boolean(lstatOrNull(path.dirname(ctx.codexConfig)))
+}
+
+function personalLayerPresent(ctx) {
+  if (typeof ctx.personalPresent === 'boolean') return ctx.personalPresent
+  return Boolean(ctx.source && lstatOrNull(path.join(ctx.source, 'personal', 'rules', 'personal.md')))
+}
+
 function linkSpecs(ctx) {
+  const codex = codexAdapterWanted(ctx)
+  const personal = personalLayerPresent(ctx)
   const perConfigDir = (dir) => [
-    { dest: path.join(dir, 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
-    { dest: path.join(dir, 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
+    ...(codex
+      ? [
+          { dest: path.join(dir, 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
+          { dest: path.join(dir, 'skills', 'ui-review'), rel: 'skills/ui-review', kind: 'dir', posixCopy: true },
+          { dest: path.join(dir, 'rules', 'vendor-codex.md'), rel: 'rules/vendor-codex.md', kind: 'file', posixCopy: true }
+        ]
+      : []),
+    ...(personal
+      ? [{ dest: path.join(dir, 'rules', 'personal.md'), rel: 'personal/rules/personal.md', kind: 'file', posixCopy: true }]
+      : []),
     // UX Guard (28.09.2026): the knowledge (ux-guidance, with references/) and
     // the review-only procedure for the ux_reviewer role. Platform- and
     // project-neutral, so they go to every account like the two above.

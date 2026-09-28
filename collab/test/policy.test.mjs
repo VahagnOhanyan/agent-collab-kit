@@ -28,7 +28,7 @@ test('paying for something is FINANCIAL and needs the owner', () => {
     'buy a subscription to the flight data API',
     'enable billing on the Google Cloud project',
     'upgrade the plan so we get more minutes',
-    'register the domain aweiro.app'
+    'register the domain example.app'
   ]) {
     const verdict = classifyAction(policy, action)
     assert.equal(verdict.action_class, 'FINANCIAL', `"${action}" must be FINANCIAL`)
@@ -179,7 +179,7 @@ test('a secret in message content is refused, not warned about', () => {
     ['sk-abcdefghijklmnopqrstuvwx', 'OpenAI-style'],
     ['ghp_abcdefghijklmnopqrstuvwxyz01', 'GitHub'],
     ['AKIAIOSFODNN7EXAMPLE', 'AWS'],
-    ['postgresql://tripix:hunter2@db.example.com:5432/x', 'database URL']
+    ['postgresql://appuser:hunter2@db.example.com:5432/x', 'database URL']
   ]
   for (const [sample] of samples) {
     let error = null
@@ -322,7 +322,7 @@ test('the kubectl case: a project rule cannot lower an action below the built-in
 const DEV_HOST = {
   id: 'dev-host',
   class: 'SAFE_WRITE',
-  pattern: 'dev\\.aweiro\\.com|localhost|127\\.0\\.0\\.1',
+  pattern: 'dev\\.example\\.com|localhost|127\\.0\\.0\\.1',
   reason: 'The dev backend is where agents are meant to work.'
 }
 
@@ -384,7 +384,7 @@ test('G: lowers_default on a built-in rule, class or default changes nothing', (
 test('Russian phrasing classifies, and the dangerous side is covered wider than the safe one', () => {
   // Why this exists: the table was English-only, so a Russian action matched
   // nothing, fell to the unmatched class (SECURITY_SENSITIVE) and its task could
-  // not be claimed AT ALL. On 2026-09-13 three tasks in the Tripix journal were
+  // not be claimed AT ALL. On 2026-09-13 three tasks in a project journal were
   // stuck exactly there, one of them holding seven files with no owner.
   for (const [action, expected] of [
     ['Заменить закон подъёма карты на следование за краем шторки', 'SAFE_WRITE'],
@@ -418,7 +418,7 @@ test('Russian phrasing classifies, and the dangerous side is covered wider than 
   assert.equal(classifyAction(policy, 'Выход из вертолётика на альбомном детенте').requires_approval, true)
 })
 
-// ── real corpus from the Tripix .collab/tasks journal ─────────────────────
+// ── real corpus from a project's .collab/tasks journal ────────────────────
 //
 // On 2026-09-13 three ordinary tasks fell to SECURITY_SENSICE with
 // `matched: []` because their exact phrasing sat outside the table's
@@ -455,7 +455,7 @@ test('real task actions from the .collab/tasks journal classify without asking, 
       'SAFE_WRITE'
     ],
     [
-      'Edit Tripix/TripMap/Presentation/Core/TripMapView+CoordinatorHelicopterOrbit.swift to fix the camera pull-back when the helicopter toggle is switched off on the album detent; implement a soft exit that keeps the centre and straightens pitch and bearing.',
+      'Edit App/Map/Presentation/Core/TripMapView+CoordinatorHelicopterOrbit.swift to fix the camera pull-back when the helicopter toggle is switched off on the album detent; implement a soft exit that keeps the centre and straightens pitch and bearing.',
       'SAFE_WRITE'
     ],
     [
@@ -471,7 +471,7 @@ test('real task actions from the .collab/tasks journal classify without asking, 
       'SAFE_WRITE'
     ],
     [
-      'Перенести чистые файлы камеры из Tripix/TripMap/Presentation/Core в папку Tripix/TripMap/CameraCore без изменения кода и добавить проверку, что файлы этой папки не импортируют MapboxMaps и SwiftUI',
+      'Перенести чистые файлы камеры из App/Map/Presentation/Core в папку App/Map/CameraCore без изменения кода и добавить проверку, что файлы этой папки не импортируют MapboxMaps и SwiftUI',
       'SAFE_WRITE'
     ],
     // the two examples that motivated this test

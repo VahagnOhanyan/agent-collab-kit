@@ -9,3 +9,8 @@ tests/.tmp-test-*/
 # tool's business to version. Add yours locally under projects/<id>/.
 /projects/*
 !/projects/README.md
+
+# Personal layer (rules/personal.md): one person's vendors, models, limits and
+# machine specifics. Copied into the release from disk like projects/, never
+# versioned — every teammate keeps their own or none.
+/personal/

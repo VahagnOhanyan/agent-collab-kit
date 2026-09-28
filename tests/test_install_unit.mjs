@@ -72,34 +72,34 @@ test('claude mcp get parser: real Claude Code 2.x text format', () => {
 })
 
 test('claude mcp get parser: formats captured from Claude Code 2.1.270; the exit code is never used', () => {
-  const aweiro = [
-    'aweiro:',
+  const demo = [
+    'demo:',
     '  Scope: Project config (shared via .mcp.json)',
     '  Status: ✔ Connected',
     '  Type: stdio',
     '  Command: node',
     '  Args: backend/mcp/server.js',
     '  Environment:',
-    '    AWEIRO_API_BASE_URL=${AWEIRO_API_BASE_URL}',
-    '    AWEIRO_SEED_TOKEN=<value>',
-    '    AWEIRO_AS_USER=${AWEIRO_AS_USER}',
+    '    DEMO_API_BASE_URL=${DEMO_API_BASE_URL}',
+    '    DEMO_SEED_TOKEN=<value>',
+    '    DEMO_AS_USER=${DEMO_AS_USER}',
     '',
-    'To remove this server, run: claude mcp remove aweiro -s project'
+    'To remove this server, run: claude mcp remove demo -s project'
   ].join('\n')
-  const reg = lib.parseClaudeGet({ status: 0, stdout: aweiro, stderr: '' }, 'aweiro')
+  const reg = lib.parseClaudeGet({ status: 0, stdout: demo, stderr: '' }, 'demo')
   assert.equal(reg.found, true)
   assert.equal(reg.scopeLabel, 'Project config (shared via .mcp.json)')
   assert.notEqual(reg.scope, 'user')
   assert.equal(reg.command, 'node')
   assert.equal(reg.args, 'backend/mcp/server.js')
-  assert.deepEqual(reg.env, { AWEIRO_API_BASE_URL: '${AWEIRO_API_BASE_URL}', AWEIRO_SEED_TOKEN: '<value>', AWEIRO_AS_USER: '${AWEIRO_AS_USER}' })
-  assert.deepEqual(lib.parseClaudeGet({ status: 1, stdout: aweiro, stderr: '' }, 'aweiro'), reg, 'same text, other exit code: same result')
+  assert.deepEqual(reg.env, { DEMO_API_BASE_URL: '${DEMO_API_BASE_URL}', DEMO_SEED_TOKEN: '<value>', DEMO_AS_USER: '${DEMO_AS_USER}' })
+  assert.deepEqual(lib.parseClaudeGet({ status: 1, stdout: demo, stderr: '' }, 'demo'), reg, 'same text, other exit code: same result')
 
   const notFound = 'No MCP server named "collab". Configured servers: claude.ai Google Drive\n'
   assert.deepEqual(lib.parseClaudeGet({ status: 0, stdout: notFound, stderr: '' }), { found: false })
-  assert.throws(() => lib.parseClaudeGet({ status: 0, stdout: aweiro, stderr: '' }), /could not interpret/, 'another server is not "not found"')
+  assert.throws(() => lib.parseClaudeGet({ status: 0, stdout: demo, stderr: '' }), /could not interpret/, 'another server is not "not found"')
 
-  const userish = aweiro.replace('aweiro:', 'collab:').replace('Project config (shared via .mcp.json)', 'user config (some future wording)')
+  const userish = demo.replace('demo:', 'collab:').replace('Project config (shared via .mcp.json)', 'user config (some future wording)')
   assert.equal(lib.parseClaudeGet({ status: 0, stdout: userish, stderr: '' }).scope, 'user')
 })
 
@@ -191,4 +191,34 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
   lib.applyLinksWindows(ctx, planned, new lib.Journal(), changes)
   assert.equal(readFileSync(dest, 'utf8'), 'rule v3\n', 'the copy comes from the release being installed')
   assert.equal(readFileSync(join(home, '.claude', 'agents', 'verifier.md'), 'utf8'), 'verifier v3\n')
+})
+
+// Three layers (28.09.2026): the team layer goes to everyone, a vendor adapter
+// only where the vendor is, the personal rule only when its owner wrote one.
+test('three layers: the Codex adapter only with Codex, the personal rule only when written', () => {
+  const home = join(world.base, 'layers-home')
+  const base = {
+    home,
+    bindir: join(home, 'bin'),
+    kitDir: join(home, '.agent-kit'),
+    kitDirReal: join(home, '.agent-kit'),
+    currentPath: join(home, '.agent-kit', 'current')
+  }
+  const rels = (ctx) => lib.linkSpecs(ctx).map((s) => s.rel)
+  const ADAPTER = ['skills/codex-review', 'skills/ui-review', 'rules/vendor-codex.md']
+  const TEAM = ['rules/orchestration.md', 'skills/ux-guidance', 'skills/ux-critic-review', 'agents/verifier.md']
+
+  const withoutCodex = rels({ ...base, codexPresent: false })
+  for (const rel of ADAPTER) assert.ok(!withoutCodex.includes(rel), `${rel} must not go to a machine without Codex`)
+  for (const rel of TEAM) assert.ok(withoutCodex.includes(rel), `${rel} is team layer`)
+  const withCodex = rels({ ...base, codexPresent: true })
+  for (const rel of ADAPTER) assert.ok(withCodex.includes(rel), `${rel} goes where Codex is`)
+
+  const source = join(world.base, 'layers-source')
+  mkdirSync(join(source, 'personal', 'rules'), { recursive: true })
+  assert.ok(!rels({ ...base, source }).includes('personal/rules/personal.md'), 'no personal file, no personal rule')
+  writeFileSync(join(source, 'personal', 'rules', 'personal.md'), 'mine\n')
+  const personal = lib.linkSpecs({ ...base, source }).find((s) => s.rel === 'personal/rules/personal.md')
+  assert.ok(personal, 'a written personal file is installed')
+  assert.equal(personal.dest, join(home, '.claude', 'rules', 'personal.md'))
 })

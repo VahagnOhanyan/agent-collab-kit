@@ -59,6 +59,20 @@ codex exec --skip-git-repo-check -s read-only -m gpt-5.6-sol -C "<tree>" \
 - `-i` takes several values: always put the prompt BEFORE any `-i`.
 - The review run keeps the `collab` MCP server ON: Codex needs it for `whoami`, `get_messages`, `get_task` and `submit_review` — without it the verdict never reaches the journal. Any other Codex run from this skill that does not need collab (an ad-hoc question, a dry run of the prompt) gets `-c mcp_servers.collab.enabled=false`, so it cannot read or write the journal as `codex`.
 
+### UX review (role `ux_reviewer`)
+
+When the pending review has `requested_role: "ux_reviewer"` (the team skill `ux-critic-review` prepared the screenshots and the list of `ux-guidance` reference paths), run the same way, with that skill's reviewer prompt (`<agent-id>` = `codex`) and the screenshots as images:
+
+```bash
+codex exec --skip-git-repo-check -s read-only -m <L2 slug from collab models> -C "<tree>" \
+  -o "<out_dir>/<rev_id>.txt" \
+  "<reviewer prompt from ux-critic-review, step 4>" \
+  -i "<screenshot1.png>" -i "<screenshot2.png>" \
+  </dev/null
+```
+
+Review only: the prompt forbids edits and `-s read-only` enforces it.
+
 ## 4. Check before relaying
 
 1. Read the verdict via the CLI (`collab task <task_id>`, or `collab reviews --pending`) — the collab record is the truth, not Codex's chat reply and not `.collab/` files read directly.

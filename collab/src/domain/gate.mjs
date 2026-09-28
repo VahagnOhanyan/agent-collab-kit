@@ -16,8 +16,7 @@
 // assertMayHold is rule 2 on its own, for moves that are not into work but would
 // let a caller take a task away (releasing it, re-statusing it).
 //
-// A GRANT IS SINGLE-USE for every class (ADR-0011 in Tripix: "грант
-// одноразовый"). `never_standing` is recorded on the consumed approval for the
+// A GRANT IS SINGLE-USE for every class ("грант одноразовый"). `never_standing` is recorded on the consumed approval for the
 // audit trail; there are no standing grants to exempt from it.
 
 import { CODES, CollabError } from '../errors.mjs'

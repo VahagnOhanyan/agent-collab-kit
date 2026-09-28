@@ -17,8 +17,8 @@ Argument: a `tsk_…` id. No journal (`collab project --json` → `initialized: 
 
 ## 2. Prepare the evidence
 
-- **Diff**: the tree and range the change lives in (same rule as `codex-review` step 2 — one matching tree or ask the owner).
-- **Screenshots** — when `needs_visual_verification` is true or the change is visual: capture the affected states with the project's own screenshot procedure (in Tripix: the `ui-shot` skill; the device via `device-run` only with the owner's word). Name every PNG by state (`empty.png`, `loading.png`, `error.png`, `after-return.png`) — the reviewer sees pixels, not your intent. No screenshots possible → say so in the request; the reviewer then judges from the diff only and must mark visual claims as hypotheses.
+- **Diff**: the tree and range the change lives in — exactly one tree touching the task's files, or ask the owner.
+- **Screenshots** — when `needs_visual_verification` is true or the change is visual: capture the affected states with the project's own screenshot procedure (its screenshot/simulator skill; a physical device only with the owner's word). Name every PNG by state (`empty.png`, `loading.png`, `error.png`, `after-return.png`) — the reviewer sees pixels, not your intent. No screenshots possible → say so in the request; the reviewer then judges from the diff only and must mark visual claims as hypotheses.
 - **Knowledge**: only the `ux-guidance` references matching `spec.ux_domains` (see that skill's table). Pass their absolute paths under `$HOME/.agent-kit/current/skills/ux-guidance/references/`, not their content.
 
 ## 3. Request the review in collab
@@ -27,23 +27,13 @@ Argument: a `tsk_…` id. No journal (`collab project --json` → `initialized: 
 
 ## 4. Run the reviewer — read-only, in the background
 
-Today `ux_reviewer` is held by `codex`. A private output directory first (separate call, reuse the printed path):
+`routed_to` names the agent holding `ux_reviewer`. Launch it with its vendor's adapter — the rule `rules/vendor-<id>.md` and that vendor's review skill say how (read-only mode, explicit model from `collab models` at L2 unless the owner agreed to pay for more, output into a private `mktemp -d` directory, screenshots attached as images, never `sleep`-poll). No adapter for that vendor on this machine → say so and stop; do not improvise a CLI.
 
-```bash
-out_dir=$(mktemp -d "${TMPDIR:-/tmp}/ux-review.XXXXXXXX") && chmod 700 "$out_dir" && echo "$out_dir"
+The reviewer prompt is the same for every vendor — only `<agent-id>` changes:
+
+```text
+You are the agent '<agent-id>' acting as the ux_reviewer role. The 'collab' MCP tools are deferred — find them with tool search first, then whoami and get_messages with unread_only true. Your job is exactly one review: <rev_id> on task <task_id>. Read the task (get_task) and the request. Read the change in THIS tree (git diff against <base>) and the attached screenshots. Read these guidance files: <paths>. You CANNOT run the app — judge only what the diff and the screenshots show, and mark anything else as a hypothesis (no evidence field). Look for: a technically correct but confusing flow, poor discoverability of the entry point, unnecessary steps, missing feedback, bad loading/error/empty states, hidden state, broken leave-and-return, cancel/retry gaps, gesture conflicts, inaccessible interaction (labels, targets, Dynamic Type, reduced motion), layout that breaks on another size, behaviour inconsistent with the rest of the product. Do NOT redesign unrelated parts, do not question settled product decisions without a usability reason, and file subjective taste as nit. Severity: blocker = the user cannot finish the task, can lose data or trigger something dangerous by accident; major = confusing, hard to discover or clearly inconsistent; minor = works but worth improving; nit = polish. Every blocker/major needs evidence (screenshot name or file:line) and a concrete user scenario. Do not modify files. Finish with submit_review on <rev_id>: approved when nothing blocker/major is proven; changes_requested with findings otherwise.
 ```
-
-```bash
-codex exec --skip-git-repo-check -s read-only -m gpt-5.6-sol -C "<tree>" \
-  -o "<out_dir>/<rev_id>.txt" \
-  "You are the agent 'codex' acting as the ux_reviewer role. The 'collab' MCP tools are deferred — find them with tool search first, then whoami and get_messages with unread_only true. Your job is exactly one review: <rev_id> on task <task_id>. Read the task (get_task) and the request. Read the change in THIS tree (git diff against <base>) and the attached screenshots. Read these guidance files: <paths>. You CANNOT run the app — judge only what the diff and the screenshots show, and mark anything else as a hypothesis (no evidence field). Look for: a technically correct but confusing flow, poor discoverability of the entry point, unnecessary steps, missing feedback, bad loading/error/empty states, hidden state, broken leave-and-return, cancel/retry gaps, gesture conflicts, inaccessible interaction (labels, targets, Dynamic Type, reduced motion), layout that breaks on another size, behaviour inconsistent with the rest of the product. Do NOT redesign unrelated parts, do not question settled product decisions without a usability reason, and file subjective taste as nit. Severity: blocker = the user cannot finish the task, can lose data or trigger something dangerous by accident; major = confusing, hard to discover or clearly inconsistent; minor = works but worth improving; nit = polish. Every blocker/major needs evidence (screenshot name or file:line) and a concrete user scenario. Do not modify files. Finish with submit_review on <rev_id>: approved when nothing blocker/major is proven; changes_requested with findings otherwise." \
-  -i "<screenshot1.png>" -i "<screenshot2.png>" \
-  </dev/null
-```
-
-- Prompt BEFORE any `-i`. `run_in_background: true`, never `sleep`-poll. `</dev/null` always.
-- `gpt-5.6-sol` is the L2 rung — enough for UX review; a stronger rung only with the cost named to the owner first. `collab models` is the ladder, not memory.
-- If another agent holds the role, run that agent's own CLI with the same prompt; the protocol (read-only, `submit_review`) does not change.
 
 ## 5. Check, then relay
 

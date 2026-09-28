@@ -172,13 +172,13 @@ test('a failure after changes began rolls back everything this run changed', () 
 })
 
 test('a different user-scope collab registration is refused without --replace-claude', () => {
-  const old = { scope: 'user', command: 'node', args: ['/Users/x/Tripix/tools/collab/src/mcp/server.mjs'], env: { COLLAB_AGENT_ID: 'claude' } }
+  const old = { scope: 'user', command: 'node', args: ['/Users/x/App/tools/collab/src/mcp/server.mjs'], env: { COLLAB_AGENT_ID: 'claude' } }
   const W = makeWorld('foreign-claude', { claudeState: { collab: old } })
   const before = W.snapshot()
   let r = W.run(['--source', world.source, '--skip-kit-tests'])
   assert.notEqual(r.status, 0)
   assert.match(r.stderr, /different user-scope "collab"/)
-  assert.match(r.stderr, /Tripix\/tools\/collab/)
+  assert.match(r.stderr, /App\/tools\/collab/)
   assert.match(r.stderr, /--replace-claude/)
   assert.deepEqual(W.snapshot(), before)
   assert.deepEqual(mutating(W.claudeCalls()), [])
@@ -194,16 +194,16 @@ test('a different user-scope collab registration is refused without --replace-cl
 })
 
 test('Codex config: the existing collab block is replaced, everything else byte-identical, backup written', () => {
-  const head = '# Codex — personal config\nmodel = "gpt-5"\n\n[projects."/Users/x/Tripix"]\ntrust_level = "trusted"\n\n'
+  const head = '# Codex — personal config\nmodel = "gpt-5"\n\n[projects."/Users/x/App"]\ntrust_level = "trusted"\n\n'
   const oldBlock =
-    '[mcp_servers.collab]\n# Aweiro collaboration layer — shared tasks, messages, reviews, decisions and\n# approvals. Managed by tools/collab/codex/install.mjs; see docs/tooling/collab.md.\ncommand = "node"\nargs = ["/Users/x/Tripix/tools/collab/src/mcp/server.mjs"]\nenv = { COLLAB_AGENT_ID = "codex" }\nstartup_timeout_sec = 20\n'
+    '[mcp_servers.collab]\n# Collaboration layer — shared tasks, messages, reviews, decisions and\n# approvals. Managed by tools/collab/codex/install.mjs; see docs/tooling/collab.md.\ncommand = "node"\nargs = ["/Users/x/App/tools/collab/src/mcp/server.mjs"]\nenv = { COLLAB_AGENT_ID = "codex" }\nstartup_timeout_sec = 20\n'
   const rest = '\n# the next table\n[mcp_servers.other]\ncommand = "other"\nnotes = """\n[mcp_servers.collab]\n"""\n'
   const original = head + oldBlock + rest
   const W = makeWorld('codex', { codex: original })
   const r = W.run(['--source', world.source, '--skip-kit-tests'])
   assert.equal(r.status, 0, r.all)
   assert.match(r.stdout, /codex: replaced \[mcp_servers\.collab\]/)
-  assert.match(r.stdout, /replaced codex block was:\n\[mcp_servers\.collab\]\n# Aweiro/)
+  assert.match(r.stdout, /replaced codex block was:\n\[mcp_servers\.collab\]\n# Collaboration layer/)
   const configPath = join(W.home, '.codex', 'config.toml')
   assert.equal(readFileSync(configPath, 'utf8'), `${head}${expectedBlock(W.home)}\n${rest}`)
   const backups = readdirSync(join(W.home, '.codex')).filter((f) => f.startsWith('config.toml.backup-'))

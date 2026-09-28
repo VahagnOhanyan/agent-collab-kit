@@ -4,7 +4,7 @@
 #   apple-lock <command> [args…]
 #
 # Xcode, the simulators and the connected phone are one resource per machine:
-# every session of every project (Tripix, brockerApp, …) and every agent
+# every session of every project on the machine and every agent
 # (Claude, its subagents, Codex) shares them. Two of them at once is how test
 # runs died on 25.09.2026: one session's `simctl launch` / device build ran
 # while another session's `xcodebuild test` was cloning its simulator, and the

@@ -616,7 +616,7 @@ test('the slot list the tool surface offers is the slot list the domain accepts'
 
 // ── the three deferred defects: no quorum deadlock, no stranded task ────────
 // (a second pending gating review, a review stuck on an offline reviewer, and
-// nothing able to void one — found in the live Tripix journal on 2026-09-15)
+// nothing able to void one — found in a live project journal on 2026-09-15)
 
 test('a second gating review is refused while one is pending, naming it and how to release it', async () => {
   const w = world()

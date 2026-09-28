@@ -378,7 +378,7 @@ export function claimFiles(ctx, { task_id, paths }) {
     const now = tx.now()
     const leaseSeconds = ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
     const conflicts = []
-    // AN OWNERLESS TASK HOLDS NOTHING. On 2026-09-13 three files in the Tripix
+    // AN OWNERLESS TASK HOLDS NOTHING. On 2026-09-13 three files in a project
     // tree were locked by a task nobody had ever claimed, and `collab status`
     // printed its holder as `null`: the listing was there, the lease never was,
     // so `lease_expired` stayed false forever. Ownership is what holds a file,
@@ -418,7 +418,7 @@ export function claimFiles(ctx, { task_id, paths }) {
 const toPosixPath = (p) => String(p).replace(/\\/g, '/')
 const normalisePaths = (paths) => (Array.isArray(paths) ? paths.map(toPosixPath) : paths)
 
-// Directory-prefix aware: claiming `Tripix/TripMap/` conflicts with a claim on a
+// Directory-prefix aware: claiming `App/Map/` conflicts with a claim on a
 // file inside it, which is the case that actually bites.
 function overlaps(a, b) {
   if (a === b) return true
