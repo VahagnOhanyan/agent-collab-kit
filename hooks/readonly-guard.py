@@ -32,6 +32,7 @@ import os
 import re
 import signal
 import stat
+import subprocess
 import sys
 
 # Сторож: таймаут хука во frontmatter — 10 с; сработать надо раньше хоста.
@@ -357,20 +358,6 @@ def policy_printf(cmd, args, cwd):
 def policy_find(cmd, args, cwd):
     reject_args(cmd, args, exact=("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls"),
                 prefixes=("-fprint",))
-
-
-def policy_jq(cmd, args, cwd):
-    # Решение владельца 27.09.2026: пункт 4b (аудит того, соблюла ли маршрутизацию сама
-    # ведущая сессия) — домен Codex, не Claude, потому что Claude-verifier, аудирующий
-    # Claude-сессию, менее независим, чем кросс-вендорный аудит. jq остаётся читателем для
-    # всего остального; запрещён только сам этот аудит — его гоняет Codex через
-    # ~/agent-kit/projects/tripix/collab/briefings/codex-verifier.md.
-    for a in texts(args):
-        if "routing-audit.jq" in a or "review-rounds.jq" in a:
-            raise Blocked(
-                "`jq ... %s` не разрешён verifier'у: пункт 4b — домен Codex, не Claude "
-                "(см. ~/agent-kit/projects/tripix/collab/briefings/codex-verifier.md)" % a
-            )
 
 
 _SORT_LONG = ("--reverse", "--numeric-sort", "--unique", "--ignore-case", "--stable", "--version-sort",
@@ -737,8 +724,8 @@ def policy_collab(cmd, args, cwd):
     t = texts(args)
     if t in (["project"], ["project", "--json"]):
         return
-    # `collab reviews` — только чтение: вердикты, слоты и сила находок ревью для проверки
-    # «эскалация после двух раундов» (agents/review-rounds.jq). Флаги — ровно эти, id — без спецсимволов.
+    # `collab reviews` — только чтение: вердикты, слоты и сила находок ревью задачи.
+    # Флаги — ровно эти, id — без спецсимволов.
     if t and t[0] == "reviews":
         rest = t[1:]
         i = 0
@@ -758,21 +745,114 @@ ALLOWLIST = {
     "ls": any_args, "cat": any_args, "head": any_args, "tail": any_args, "wc": any_args, "stat": any_args,
     "du": any_args, "df": any_args, "pwd": any_args, "which": any_args, "echo": any_args, "printf": policy_printf,
     "uname": any_args, "whoami": any_args, "id": any_args, "grep": any_args, "egrep": any_args,
-    "fgrep": any_args, "cut": any_args, "tr": any_args, "jq": policy_jq, "diff": any_args, "cmp": any_args,
+    "fgrep": any_args, "cut": any_args, "tr": any_args, "jq": any_args, "diff": any_args, "cmp": any_args,
     "comm": any_args, "basename": any_args, "dirname": any_args, "realpath": any_args, "readlink": any_args,
     "shasum": any_args, "md5": any_args, "sw_vers": any_args,
     "env": no_args, "command": policy_command, "date": policy_date, "file": policy_file, "rg": policy_rg,
-    "find": policy_find, "sort": policy_sort, "uniq": policy_uniq, "plutil": policy_plutil,
-    "xcode-select": policy_xcode_select,
+    "find": policy_find, "sort": policy_sort, "uniq": policy_uniq,
     # git
     "git": policy_git,
-    # тест-раннеры, сборка, гейт
+    # тест-раннеры, гейт
     "node": policy_node, "python3": policy_python, "python": policy_python, "npm": policy_npm,
-    "pnpm": policy_pnpm, "yarn": policy_yarn, "swift": policy_swift, "xcodebuild": policy_xcodebuild,
+    "pnpm": policy_pnpm, "yarn": policy_yarn,
     "bash": policy_shell_script, "sh": policy_shell_script,
-    # симулятор (чтение) и реестр проекта
-    "xcrun": policy_xcrun, "collab": policy_collab,
+    # реестр проекта
+    "collab": policy_collab,
 }
+
+# --- платформенные команды и настройки проекта ---------------------------------------
+# Ядро ставится во все проекты машины, поэтому сборка и симулятор конкретной платформы —
+# не общий allowlist, а группа, которую проект включает сам. Политики аргументов остаются
+# здесь (это проверенная логика границы), в проект уходит только «включено или нет».
+# Настройки читаются из ДОВЕРЕННОГО реестра — <registryDir>/<projectId>/readonly-guard.json,
+# найденного через `collab project --json`, как в scope-guard: не из репозитория и не из
+# окружения, которое пишет frontmatter (иначе любой репозиторий объявил бы себя чужим
+# проектом). Не удалось узнать — блок, а не разрешение.
+
+PLATFORM_POLICIES = {
+    "apple": {
+        "swift": policy_swift, "xcodebuild": policy_xcodebuild, "xcrun": policy_xcrun,
+        "xcode-select": policy_xcode_select, "plutil": policy_plutil,
+    },
+}
+PLATFORM_COMMANDS = frozenset(name for group in PLATFORM_POLICIES.values() for name in group)
+SETTINGS_KEYS = frozenset(("platforms",))
+FIXED_PATH = "/usr/bin:/bin:/opt/homebrew/bin"
+COLLAB_TIMEOUT_SECONDS = 3
+PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SETTINGS_CACHE = []
+
+
+def _collab_project(cwd, home):
+    collab = os.path.join(home, ".agent-kit", "current", "bin", "collab")
+    try:
+        proc = subprocess.Popen([collab, "project", "--json"], cwd=cwd, env={"PATH": FIXED_PATH, "HOME": home},
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                start_new_session=True, close_fds=True)
+    except OSError as exc:
+        raise Blocked("не удалось запустить collab, чтобы узнать проект (%s)" % exc)
+    try:
+        out, _ = proc.communicate(timeout=COLLAB_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise Blocked("collab project --json не ответил за %d с — проект не узнать" % COLLAB_TIMEOUT_SECONDS)
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise Blocked("collab project --json завершился с кодом %s — проект не узнать" % proc.returncode)
+    try:
+        info = json.loads(out.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Blocked("collab project --json вернул не JSON — проект не узнать")
+    if not isinstance(info, dict) or info.get("error"):
+        raise Blocked("collab project --json не сообщил проект")
+    return info
+
+
+def project_settings(cwd):
+    if _SETTINGS_CACHE:
+        return _SETTINGS_CACHE[0]
+    home = os.environ.get("HOME", "")
+    if not home.startswith("/"):
+        raise Blocked("HOME не задан — настройки проекта не прочитать")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
+        raise Blocked("нет рабочего каталога — настройки проекта не прочитать")
+    info = _collab_project(cwd, home)
+    settings = {}
+    project_id = info.get("projectId")
+    if project_id is not None:
+        registry = info.get("registryDir")
+        if not isinstance(project_id, str) or not PROJECT_ID_RE.match(project_id):
+            raise Blocked("collab вернул некорректный projectId")
+        if not isinstance(registry, str) or not os.path.isabs(registry):
+            raise Blocked("collab не сообщил абсолютный registryDir")
+        path = os.path.join(registry, project_id, "readonly-guard.json")
+        try:
+            with open(path, "rb") as fh:
+                settings = json.loads(fh.read().decode("utf-8"))
+        except FileNotFoundError:
+            settings = {}
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise Blocked("не удалось прочитать %s (%s)" % (path, exc))
+        if not isinstance(settings, dict) or set(settings) - SETTINGS_KEYS:
+            raise Blocked("%s: ожидается объект с ключами %s" % (path, ", ".join(sorted(SETTINGS_KEYS))))
+        platforms = settings.get("platforms", [])
+        if not isinstance(platforms, list) or any(p not in PLATFORM_POLICIES for p in platforms):
+            raise Blocked("%s: platforms — список из %s" % (path, ", ".join(sorted(PLATFORM_POLICIES))))
+    _SETTINGS_CACHE.append(settings)
+    return settings
+
+
+def platform_policy(name, cwd):
+    for group in project_settings(cwd).get("platforms", []):
+        if name in PLATFORM_POLICIES[group]:
+            return PLATFORM_POLICIES[group][name]
+    raise Blocked("команда `%s` — платформенная; проект не включил её группу в реестре "
+                  "(~/agent-kit/projects/<id>/readonly-guard.json, \"platforms\")" % name)
+
+
 ABSOLUTE_DIRS = ("/bin/", "/usr/bin/")
 _COMMAND_WORD = re.compile(r"^[A-Za-z0-9_./+-]+$")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -808,7 +888,7 @@ def check_simple_command(items, cwd):
             name = "collab"
         else:
             directory, name = os.path.split(text)
-            if directory + "/" not in ABSOLUTE_DIRS or name not in ALLOWLIST:
+            if directory + "/" not in ABSOLUTE_DIRS or (name not in ALLOWLIST and name not in PLATFORM_COMMANDS):
                 raise Blocked("команда `%s` не входит в allowlist verifier (абсолютные пути — только /bin, /usr/bin для "
                               "разрешённых команд)" % text)
     elif "/" in text:
@@ -817,6 +897,8 @@ def check_simple_command(items, cwd):
     else:
         name = text
     policy = ALLOWLIST.get(name)
+    if policy is None and name in PLATFORM_COMMANDS:
+        policy = platform_policy(name, cwd)
     if policy is None:
         raise Blocked("команда `%s` не входит в allowlist verifier" % text)
     policy(name, args, cwd)

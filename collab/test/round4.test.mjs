@@ -92,7 +92,7 @@ test('R4-2: collab reviews --reviewer --pending --task --json lists reviews with
     assert.equal(JSON.parse(run(['--json']).stdout).length, 3)
     assert.deepEqual(JSON.parse(run(['--reviewer', 'claude', '--json']).stdout), [])
 
-    // verifier's review-rounds check reads slot and finding strength from this JSON, not the text.
+    // Slot and finding strength are machine-readable in this JSON, not only in the text.
     const shaped = await claude.createTask({ title: 'Shaped review', action: 'edit a file' })
     await claude.claimTask({ task_id: shaped.id })
     const slotted = await claude.requestReview({ task_id: shaped.id, slot: 'implementation' })

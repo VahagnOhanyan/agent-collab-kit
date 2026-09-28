@@ -35,7 +35,7 @@
 
 Все компоненты путей и шаблонов сравниваются после NFC + casefold(): том
 нечувствителен к регистру и нормализации, а realpath сохраняет написание
-вызывающего, так что `Tripix/claude.md` и `Tripix/CLAUDE.md` — один файл.
+вызывающего, так что `App/claude.md` и `App/CLAUDE.md` — один файл.
 """
 import json
 import os

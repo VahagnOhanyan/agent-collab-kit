@@ -20,9 +20,11 @@
 Запуск: `PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest -v tests/test_readonly_guard.py`
 из каталога черновиков.
 """
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,15 +39,42 @@ VERIFIER_MD = DRAFTS / "agents" / "verifier.md"
 FRONTMATTER_PYTHON = "/usr/bin/python3"
 PYTHON = FRONTMATTER_PYTHON if os.path.exists(FRONTMATTER_PYTHON) else sys.executable
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
-ENV = {"HOME": "/nonexistent", "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+_BASE_ENV = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
 
 
-def run_guard(stdin, timeout=20):
+def make_world(settings=None, raw_settings=None, info=None, exit_code=0):
+    """Временный HOME с фейковым `collab project --json` по боевому пути и реестром.
+    Платформенные команды и запрет аудита маршрутизации — настройка проекта."""
+    base = Path(tempfile.mkdtemp(prefix="ro-guard-"))
+    atexit.register(shutil.rmtree, str(base), True)
+    registry = base / "registry"
+    (registry / "demo").mkdir(parents=True)
+    if raw_settings is not None:
+        (registry / "demo" / "readonly-guard.json").write_bytes(raw_settings)
+    elif settings is not None:
+        (registry / "demo" / "readonly-guard.json").write_text(json.dumps(settings), encoding="utf-8")
+    bin_dir = base / "home" / ".agent-kit" / "current" / "bin"
+    bin_dir.mkdir(parents=True)
+    payload = bin_dir / "collab.payload"
+    payload.write_text(json.dumps(info if info is not None else {"projectId": "demo", "registryDir": str(registry)}))
+    script = bin_dir / "collab"
+    script.write_text('#!/bin/sh\ncat "%s"\nexit %d\n' % (payload, exit_code))
+    script.chmod(0o755)
+    return dict(_BASE_ENV, HOME=str(base / "home"))
+
+
+# Мир по умолчанию — проект, включивший Apple (как Tripix): так тесты политик
+# xcodebuild/xcrun/swift проверяют аргументы, а не падают раньше на «платформа не включена».
+ENV = make_world({"platforms": ["apple"]})
+NO_COLLAB_ENV = dict(_BASE_ENV, HOME="/nonexistent")
+
+
+def run_guard(stdin, timeout=20, env=None):
     if isinstance(stdin, dict):
         stdin = json.dumps(stdin)
     if isinstance(stdin, str):
         stdin = stdin.encode("utf-8", "surrogatepass")
-    proc = subprocess.run([PYTHON, str(HOOK_PATH)], input=stdin, capture_output=True, env=ENV, timeout=timeout)
+    proc = subprocess.run([PYTHON, str(HOOK_PATH)], input=stdin, capture_output=True, env=env or ENV, timeout=timeout)
     proc.stderr = proc.stderr.decode("utf-8", "replace")
     return proc
 
@@ -80,6 +109,45 @@ class GuardCase(unittest.TestCase):
                     self.assertAllowed(command)
                 else:
                     self.assertBlocked(command)
+
+
+class ProjectSettingsTests(unittest.TestCase):
+    """Платформенные команды — из доверенного реестра проекта; проект не узнать — блок."""
+
+    XCODE = "xcodebuild -list"
+
+    def code(self, command, env):
+        return run_guard(bash(command), env=env)
+
+    def test_platform_enabled_by_project(self):
+        env = make_world({"platforms": ["apple"]})
+        for command in (self.XCODE, "/usr/bin/xcodebuild -list", "xcrun simctl list", "swift test", "plutil -p I.plist"):
+            with self.subTest(command=command):
+                self.assertEqual(self.code(command, env).returncode, 0)
+        self.assertEqual(self.code("xcodebuild archive", env).returncode, 2, "policy arguments still apply")
+
+    def test_platform_not_enabled_is_blocked(self):
+        for env in (make_world({"platforms": []}), make_world(None), make_world(info={"projectId": None})):
+            proc = self.code(self.XCODE, env)
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("платформенная", proc.stderr)
+
+    def test_unknown_project_blocks_platform_but_not_readers(self):
+        for env in (NO_COLLAB_ENV, make_world(exit_code=1), make_world(info={"error": "x"})):
+            with self.subTest(env=env["HOME"]):
+                self.assertEqual(self.code(self.XCODE, env).returncode, 2)
+                self.assertEqual(self.code("ls -la", env).returncode, 0, "a reader needs no project lookup")
+
+    def test_malformed_settings_block(self):
+        for env in (make_world({"platforms": ["android"]}), make_world({"platforms": "apple"}),
+                    make_world({"extra": True}), make_world({"deny_routing_audit": True}),
+                    make_world(raw_settings=b"{not json")):
+            self.assertEqual(self.code(self.XCODE, env).returncode, 2)
+
+    def test_jq_is_a_plain_reader_without_project_lookup(self):
+        for command in ("jq . f.json", "jq -s -f /x/agents/any-filter.jq t.jsonl"):
+            with self.subTest(command=command):
+                self.assertEqual(self.code(command, NO_COLLAB_ENV).returncode, 0)
 
 
 class AbnormalInputTests(unittest.TestCase):
@@ -321,14 +389,6 @@ class DeniedCommandTests(GuardCase):
         "printf -v PATH /tmp; cat", "printf -v PATH /tmp", "printf -vPATH x", "printf -v x y",
         "rg -z needle f", "rg -nz x", "rg -zn x", "rg --search-zip x", "rg --search-zip=true x",
     )
-    JQ_AUDIT_DENIED = (
-        # Решение владельца 27.09.2026: пункт 4b (аудит маршрутизации ведущей сессии) — домен
-        # Codex, не Claude; verifier не аудирует ведущую сессию сам.
-        "jq -s -f /Users/x/.agent-kit/current/agents/routing-audit.jq --arg plan '' /tmp/t.jsonl",
-        "jq -s -f /Users/x/.agent-kit/current/agents/routing-audit.jq --arg plan /p.md /tmp/t.jsonl",
-        "collab reviews --task tsk_x --json | jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
-        "jq -f /Users/x/.agent-kit/current/agents/review-rounds.jq",
-    )
     RUNNER_DENIED = (
         # node
         "node x.js", "node scripts/check.js", "node -e 1", "node --eval 1", "node -p 1", "node -r x --test",
@@ -391,9 +451,6 @@ class DeniedCommandTests(GuardCase):
 
     def test_reader_flags_denied(self):
         self.check_all(self.READER_FLAGS_DENIED, 2)
-
-    def test_jq_audit_denied(self):
-        self.check_all(self.JQ_AUDIT_DENIED, 2)
 
     def test_runner_denied(self):
         self.check_all(self.RUNNER_DENIED, 2)

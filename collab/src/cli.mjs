@@ -491,8 +491,8 @@ const COMMANDS = {
         summary: r.summary || r.release_reason || null,
         task_title: task ? task.title : null,
         task_status: task ? task.status : null,
-        // For verifier's review-rounds check (agents/review-rounds.jq): which question the review
-        // answered and how strong each finding was — severity and proven/hypothesis, not the text.
+        // Which question the review answered and how strong each finding was — severity and
+        // proven/hypothesis, not the text — so a script can count real rounds without parsing prose.
         slot: r.slot || null,
         blocking: r.blocking === undefined ? null : r.blocking,
         findings: (r.findings || []).map((f) => ({ severity: f.severity || null, confidence: f.confidence || null }))
