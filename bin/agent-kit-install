@@ -83,6 +83,7 @@ const REQUIRED_PATHS = Object.freeze([
   'hooks/lib/paths.mjs',
   'hooks/lib/plan-gate.mjs',
   'hooks/lib/project.mjs',
+  'hooks/lib/shellparse.mjs',
   'bin/agent-kit-hook',
   'bin/collab',
   'bin/apple-lock',
@@ -2030,7 +2031,8 @@ function mergePreToolUseHook(existing, marks, group, event = 'PreToolUse') {
   const groups = (Array.isArray(hooks[event]) ? hooks[event] : [])
     .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
     .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
-  return { ...base, hooks: { ...hooks, [event]: [...groups, group] } }
+  // group === null: only remove ours (a hook whose module the release does not have).
+  return { ...base, hooks: { ...hooks, [event]: group ? [...groups, group] : groups } }
 }
 
 const codexHookCommand = (nodePath, currentPath) => hookCommand(nodePath, currentPath, 'codex-guard')
@@ -2055,16 +2057,20 @@ const CLAUDE_HOOKS = Object.freeze([
 
 const claudeHookCommand = (nodePath, currentPath, name = 'model-guard') => hookCommand(nodePath, currentPath, name)
 
-function mergeClaudeHooks(existing, nodePath, currentPath) {
+// `available(name)` — does the release being pointed at have this hook's module? A rollback to a release
+// without one removes its entry: the launcher exits 2 for a missing module, which would block every call.
+function mergeClaudeHooks(existing, nodePath, currentPath, available = () => true) {
   return CLAUDE_HOOKS.reduce(
     (settings, { name, event = 'PreToolUse', matcher, timeout }) =>
       mergePreToolUseHook(
         settings,
         hookMarks(name),
-        {
-          ...(matcher ? { matcher } : {}),
-          hooks: [{ type: 'command', command: claudeHookCommand(nodePath, currentPath, name), timeout }]
-        },
+        available(name)
+          ? {
+              ...(matcher ? { matcher } : {}),
+              hooks: [{ type: 'command', command: claudeHookCommand(nodePath, currentPath, name), timeout }]
+            }
+          : null,
         event
       ),
     existing
@@ -2101,12 +2107,12 @@ function applyJsonHooks(plan, journal) {
   return true
 }
 
-function planClaudeHooks(ctx) {
+function planClaudeHooks(ctx, available) {
   if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
   if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
   return {
     files: ctx.claudeDirs.map((dir) =>
-      planJsonHooks(path.join(dir, 'settings.json'), (parsed) => mergeClaudeHooks(parsed, ctx.node.path, ctx.currentPath))
+      planJsonHooks(path.join(dir, 'settings.json'), (parsed) => mergeClaudeHooks(parsed, ctx.node.path, ctx.currentPath, available))
     )
   }
 }
@@ -2653,6 +2659,21 @@ function rollback(ctx) {
     changes.push(`current -> releases/${target} (was ${current.sha})`)
     assertConfigDirsInside(ctx)
     applyLinks(ctx, links, journal, changes)
+    // settings.json keeps calling hooks through `current`: without this, a release that lacks a module
+    // (the launcher answers 2) would block every call after the rollback.
+    const releaseDir = path.join(ctx.releasesDir, target)
+    const hasHook = (name) => Boolean(lstatOrNull(path.join(releaseDir, 'hooks', `${name}.mjs`)))
+    let node = ctx.node
+    if (!node) {
+      try {
+        node = resolveNode()
+      } catch {
+        node = { path: 'node' } // only entries whose module the release has are rewritten with it; the dropped ones need no Node
+        out('warning: Node was not found; hooks that stay in settings.json are written with a bare `node`')
+      }
+    }
+    const hooksPlan = planClaudeHooks({ ...ctx, node }, hasHook)
+    applyClaudeHooks(ctx, hooksPlan, journal, changes)
   } catch (error) {
     const undone = journal.rollback()
     if (undone.length) error.message += `\nthis run was rolled back:\n${undone.map((u) => `  ${u}`).join('\n')}`

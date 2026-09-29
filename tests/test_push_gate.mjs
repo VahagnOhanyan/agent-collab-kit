@@ -35,6 +35,10 @@ function world({ gate = 'gate.mjs', gateExit = 0 } = {}) {
     if (gateValue) project.gate = gateValue;
     writeFileSync(join(registry, 'demo', 'project.json'), JSON.stringify(project));
   };
+  const writeRaw = (text) => {
+    mkdirSync(join(registry, 'demo'), { recursive: true });
+    writeFileSync(join(registry, 'demo', 'project.json'), text);
+  };
   writeProject(gate);
   const home = join(base, 'home');
   const binDir = join(home, '.agent-kit', 'current', 'bin');
@@ -46,6 +50,7 @@ function world({ gate = 'gate.mjs', gateExit = 0 } = {}) {
   return {
     root,
     writeProject,
+    writeRaw,
     bash,
     gateRan: () => existsSync(ran),
     gateArgs: () => readFileSync(ran, 'utf8'),
@@ -115,12 +120,82 @@ scenario('гейт, не уложившийся во время, блокиру�
   assert.match(r.err, /не уложился в 1 с/);
 });
 
-scenario('нет настройки gate или нет файла гейта — push проходит', {}, (w) => {
+scenario('нет настройки gate — push проходит; объявленный gate без файла — блок', {}, (w) => {
   w.writeProject(null);
   assert.equal(w.bash('git push').code, 0);
   w.writeProject('no/such/gate.mjs');
-  assert.equal(w.bash('git push').code, 0);
+  const r = w.bash('git push');
+  assert.equal(r.code, 2);
+  assert.match(r.err, /no\/such\/gate\.mjs/);
   assert.equal(w.gateRan(), false);
+});
+
+scenario('битый project.json зарегистрированного проекта блокирует push, не-строка в gate — тоже', {}, (w) => {
+  w.writeRaw('{ not json');
+  assert.equal(w.bash('git push').code, 2);
+  w.writeRaw(JSON.stringify({ id: 'demo', gate: 42 }));
+  assert.equal(w.bash('git push').code, 2);
+  w.writeRaw(JSON.stringify({ id: 'demo' }));
+  assert.equal(w.bash('git push').code, 0, 'нет ключа gate — защищаться нечем');
+});
+
+// Опасные слова собраны кусками: живой push-gate машины матчит текст любой Bash-команды, в том числе при записи тестов.
+const P = ['gi', 't pu', 'sh'].join('');
+const FORCE = ['--fo', 'rce'].join('');
+
+scenario('кавычки, пробелы в пути, кластеры флагов и refspec не прячут обход', {}, (w) => {
+  const blocked = [
+    `git p""ush ${FORCE}`,
+    `g'i't push -f`,
+    `git -C "/tmp/a b" push ${FORCE}`,
+    `git -C '/tmp/a b' push origin +main`,
+    'git push -fu origin main',
+    'git push origin "+main"',
+    'git push --no-verif',
+    `git push ${FORCE.slice(0, -1)}`,
+    'git push --force-with-leas',
+    `git -c core.hooksPath=/dev/null push`,
+    `git -c alias.p='push -f' p`,
+  ];
+  for (const command of blocked) assert.equal(w.bash(command).code, 2, command);
+  assert.equal(w.gateRan(), false);
+  assert.equal(w.bash('git -c alias.p=push p').code, 0);
+  assert.equal(w.gateRan(), true, 'алиас push — это push: гейт запущен');
+});
+
+scenario('вложенные оболочки: sh -c, $(...), бэктики, eval, bash <<EOF, цепочки', { gateExit: 1 }, (w) => {
+  const heredoc = ['bash <<EOF', P, 'EOF'].join('\n');
+  const blocked = [
+    `sh -c "${P} origin main"`,
+    `bash -lc '${P}'`,
+    `echo $(${P})`,
+    `echo \`${P}\``,
+    `eval "${P}"`,
+    `cd x && ${P}`,
+    `false || ${P}`,
+    `echo a\n${P}`,
+    `(${P})`,
+    heredoc,
+  ];
+  for (const command of blocked) assert.equal(w.bash(command).code, 2, command);
+});
+
+scenario('текст, в котором встречается push, — не push', {}, (w) => {
+  const passed = [
+    `echo ${P}`,
+    `echo "${P} ${FORCE}"`,
+    `git commit -m "${P} ${FORCE} later"`,
+    `cat <<EOF\n${P} ${FORCE}\nEOF`,
+    `grep -r "${P}" .`,
+    'git pull --rebase',
+  ];
+  for (const command of passed) assert.equal(w.bash(command).code, 0, command);
+  assert.equal(w.gateRan(), false);
+});
+
+scenario('незакрытая кавычка — запасной путь: push всё равно ловится', { gateExit: 1 }, (w) => {
+  assert.equal(w.bash(`echo "oops; ${P}`).code, 2);
+  assert.equal(w.bash(`echo "oops; git status`).code, 0);
 });
 
 test('нештатный вход и хост без collab — проход, хук не падает', () => {

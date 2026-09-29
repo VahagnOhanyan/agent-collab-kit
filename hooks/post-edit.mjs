@@ -54,6 +54,7 @@ function ruleMatches(rule, root, rel) {
 
 export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
   try {
+    const started = Date.now();
     let event;
     try {
       event = JSON.parse(stdinText);
@@ -79,7 +80,7 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
     }
 
     const budgetMs = (Number(env.POST_EDIT_SECONDS) > 0 ? Number(env.POST_EDIT_SECONDS) : BUDGET_SECONDS_DEFAULT) * 1000;
-    const deadline = Date.now() + budgetMs;
+    const deadline = started + budgetMs; // бюджет общий: чтение реестра и git входят в него
     const failed = [];
     for (const gate of gates) {
       const file = path.resolve(root, gate);

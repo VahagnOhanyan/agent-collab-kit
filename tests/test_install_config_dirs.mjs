@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setup, lib, NODE, makeSource, commitChange, makeWorld, snapshot } from './helpers/install-world.mjs'
 
@@ -120,6 +120,36 @@ test('rollback takes every config directory back, not just the first', () => {
   for (const dir of [join(W.home, '.claude'), second]) {
     assert.equal(readFileSync(join(dir, 'rules', 'orchestration.md'), 'utf8'), ruleV1, `${dir} is back on the previous release`)
   }
+})
+
+test('rollback to a release without a hook module drops that hook from settings.json, and keeps the person\'s own', () => {
+  const W = makeWorld('rollback-hooks')
+  const source = makeSource('rollback-hooks')
+  const args = ['--skip-kit-tests']
+  const settingsFile = join(W.home, '.claude', 'settings.json')
+  assert.equal(W.run(['--source', source, ...args]).status, 0)
+  const cur = join(W.home, '.agent-kit', 'current')
+  // Make the installed release look like one from before these three hooks existed.
+  for (const name of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
+  const own = { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }
+  const first = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  first.hooks.PreToolUse.push(own)
+  writeFileSync(settingsFile, JSON.stringify(first))
+
+  commitChange(source, 'rules/orchestration.md', 'rule v2\n')
+  assert.equal(W.run(['--source', source, ...args]).status, 0)
+  const commandsOf = (event) => (JSON.parse(readFileSync(settingsFile, 'utf8')).hooks[event] ?? []).flatMap((g) => g.hooks).map((h) => h.command)
+  assert.ok(commandsOf('PreToolUse').includes(lib.claudeHookCommand(NODE, cur, 'push-gate')), 'v2 has push-gate')
+  assert.equal(commandsOf('SessionStart').length, 1)
+
+  const back = W.run(['--rollback', ...args])
+  assert.equal(back.status, 0, back.all)
+  assert.deepEqual(
+    [...commandsOf('PreToolUse')].sort(),
+    [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), 'my-own-hook'].sort()
+  )
+  assert.deepEqual(commandsOf('PostToolUse'), [])
+  assert.deepEqual(commandsOf('SessionStart'), [])
 })
 
 test('a config directory whose Claude cannot run is reported, and the install still completes', () => {

@@ -8,8 +8,11 @@ import path from 'node:path';
 import { cleanEnv, homeDir } from './lib/paths.mjs';
 import { gitRoot, projectSetting } from './lib/project.mjs';
 
+const BUDGET_MS = 12000; // общий бюджет; таймаут хоста в settings.json — 15 с, убитый хостом хук считается пропуском
+
 export async function main({ stdinText, env, cwd: hostCwd, stdout }) {
   try {
+    const deadline = Date.now() + BUDGET_MS;
     let event = null;
     try {
       event = JSON.parse(stdinText);
@@ -28,7 +31,11 @@ export async function main({ stdinText, env, cwd: hostCwd, stdout }) {
     const full = path.join(root, dir);
     if (!existsSync(full) || !statSync(full).isDirectory()) return 0;
 
-    const git = (...args) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8', env: gitEnv, timeout: 5000 });
+    const git = (...args) => {
+      const left = deadline - Date.now();
+      if (left < 200) return { status: null, stdout: '' };
+      return spawnSync('git', ['-C', root, ...args], { encoding: 'utf8', env: gitEnv, timeout: Math.min(5000, left) });
+    };
     if (git('rev-parse', '--git-dir').status !== 0) return 0;
     const current = git('config', '--get', 'core.hooksPath');
     if (current.status === 0 && current.stdout.trim() === dir) return 0;
