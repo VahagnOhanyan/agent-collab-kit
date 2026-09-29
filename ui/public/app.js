@@ -7,6 +7,7 @@ const main = document.getElementById('main')
 const toastBox = document.getElementById('toast')
 let stream = null
 let toastTimer = null
+let routeSeq = 0 // bumped on every navigation; a slower, older screen must not overwrite a newer one
 
 // ── helpers ───────────────────────────────────────────────────────────────
 function el(tag, props, ...children) {
@@ -64,11 +65,23 @@ const STATUS_TONE = {
   blocked: 'bad', failed: 'bad', rejected: 'bad', offline: 'muted',
   changes_requested: 'warn', waiting_for_user: 'warn', waiting_for_agent: 'warn', pending: 'warn', busy: 'warn', waiting: 'warn'
 }
-const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, text: status ?? '—' })
+// Values the ledger stores as English words are shown in Russian; the raw value
+// stays in the tooltip, because it is what the terminal commands and logs use.
+const STATUS_RU = {
+  completed: 'завершена', cancelled: 'отменена', created: 'создана', approved: 'одобрена', changes_requested: 'нужны правки',
+  blocked: 'заблокирована', waiting_for_user: 'ждёт вас', waiting_for_agent: 'ждёт агента', in_progress: 'в работе', review: 'на ревью',
+  pending: 'ожидает', available: 'доступен', offline: 'не в сети', busy: 'занят', waiting: 'ждёт', failed: 'упало', granted: 'выдано',
+  rejected: 'отклонено', open: 'открыто', disputed: 'спор', escalated: 'передано владельцу', decided: 'решено', resolved: 'решено'
+}
+const REVIEW_MODE_RU = { cross_vendor: 'ревью другой модельной семьёй', single_vendor: 'ревью той же модельной семьёй' }
+const statusText = (status) => (status === undefined || status === null ? '—' : STATUS_RU[status] || status)
+const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, title: status ?? '', text: statusText(status) })
 const when = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—')
 const chips = (list) => el('div', { class: 'chips' }, (list || []).map((item) => el('span', { class: 'pill', text: item })))
-const command = (text) =>
-  el('div', { class: 'cmd' }, el('code', { text }), el('button', { type: 'button', onclick: () => copy(text), text: 'Копировать' }))
+// Every copy button says WHAT it copies: a screen reader lists buttons out of
+// context, and four of them named just "Копировать" cannot be told apart.
+const command = (text, purpose = 'команду') =>
+  el('div', { class: 'cmd' }, el('code', { text }), el('button', { type: 'button', 'aria-label': `Копировать ${purpose}`, onclick: () => copy(text), text: 'Копировать' }))
 
 function page(title, subtitle, ...content) {
   return [el('h1', { text: title }), subtitle ? el('p', { class: 'sub', text: subtitle }) : null, ...content]
@@ -98,6 +111,7 @@ async function overview() {
   // status() counts every pending approval; an expired one can no longer be
   // granted, so it is shown apart instead of inflating "waiting for you".
   const waitingNow = await api('/api/waiting').catch(() => null)
+  const known = Boolean(waitingNow) // if it failed the split is unknown; say so, do not guess zero
   const expired = (waitingNow?.approvals || []).filter((a) => a.expired).length
   const live = s.approvals_pending - expired
   // A tile that has a screen behind it is a link to it: the numbers the owner
@@ -110,7 +124,9 @@ async function overview() {
     s.journal_root || data.journal_root,
     el('div', { class: 'grid' },
       tile(s.tasks.open, 'открытых задач', false, '#/tasks'),
-      tile(live, expired ? `ждут вашего одобрения (ещё ${expired} просрочено)` : 'ждут вашего одобрения', live > 0, '#/waiting'),
+      known
+        ? tile(live, expired ? `ждут вашего одобрения (ещё ${expired} просрочено)` : 'ждут вашего одобрения', live > 0, '#/waiting')
+        : tile(s.approvals_pending, 'ждут одобрения (часть может быть просрочена: не удалось проверить)', s.approvals_pending > 0, '#/waiting'),
       tile(s.decisions_open, 'открытых решений', s.decisions_open > 0, '#/waiting'),
       tile(s.reviews_pending, 'ревью в очереди', false, '#/waiting'),
       tile(s.runs_failed, 'проверок упало', s.runs_failed > 0)),
@@ -120,7 +136,7 @@ async function overview() {
         a.current_task_id ? el('a', { href: `#/tasks/${encodeURIComponent(a.current_task_id)}`, class: 'mono', text: a.current_task_id }) : null))),
     el('h2', { text: 'Задачи по статусам' }),
     Object.keys(s.tasks.by_status).length
-      ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('span', { class: `pill ${STATUS_TONE[k] || ''}`, text: `${k}  ${v}` })))
+      ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('span', { class: `pill ${STATUS_TONE[k] || ''}`, title: k, text: `${statusText(k)}  ${v}` })))
       : empty('Задач пока нет'),
     s.delegations?.length
       ? [el('h2', { text: 'Делегирование (заявлено ведущим, не проверено)' }),
@@ -146,22 +162,44 @@ async function tasks(param) {
   // of what the link promises.
   const list = await api(all ? '/api/tasks' : '/api/tasks?open=1')
   const toggle = el('a', { href: all ? '#/tasks' : '#/tasks?all=1', text: all ? 'Только открытые' : 'Показать все, включая закрытые' })
-  return page('Задачи', all ? `Все задачи: ${list.length}` : `Открытые задачи: ${list.length}`, el('div', { class: 'toolbar' }, toggle),
-    list.length
-      ? el('div', { class: 'list' }, list.map((t) =>
-          el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status), el('span', { class: 'grow', text: t.title }), el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))))
-      : empty('Задач нет'))
+  // A long list is searched, not scrolled: id, title, owner and the status word
+  // (raw or Russian) are all matched.
+  const rows = list.map((t) => ({
+    text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)}`.toLowerCase(),
+    node: el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status), el('span', { class: 'grow', text: t.title }), el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
+  }))
+  const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
+  const count = el('span', { class: 'muted small', text: `${list.length}` })
+  const search = el('input', { type: 'search', placeholder: 'Поиск: номер, название, исполнитель, статус', 'aria-label': 'Поиск по задачам', oninput: (e) => {
+    const query = e.target.value.trim().toLowerCase()
+    let shown = 0
+    for (const row of rows) {
+      row.node.hidden = Boolean(query) && !row.text.includes(query)
+      if (!row.node.hidden) shown += 1
+    }
+    none.hidden = shown > 0
+    count.textContent = query ? `${shown} из ${list.length}` : `${list.length}`
+  } })
+  return page('Задачи', all ? 'Все задачи' : 'Открытые задачи', el('div', { class: 'toolbar' }, search, count, toggle),
+    list.length ? el('div', { class: 'list' }, rows.map((row) => row.node)) : empty('Задач нет'), none)
 }
+
+const TERMINAL = new Set(['completed', 'cancelled'])
 
 async function taskDetail(id) {
   const data = await api(`/api/tasks/${encodeURIComponent(id)}`)
   const t = data.task
   const section = (title, items, render) => [el('h2', { text: title }), items?.length ? el('div', { class: 'list' }, items.map(render)) : empty('—')]
   return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'} · ${t.role || 'роль не указана'}`,
-    el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: '#/tasks', text: '← ко всем задачам' })),
+    // Back goes to the list the task can be found in: a closed task is not in the open-only list.
+    el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: TERMINAL.has(t.status) ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' })),
+    t.blocked_reason ? el('div', { class: 'note bad', text: `Заблокирована: ${plain(t.blocked_reason)}` }) : null,
+    t.waiting_on && !TERMINAL.has(t.status) ? el('div', { class: 'note warn', text: `Ждёт: ${plain(t.waiting_on)}` }) : null,
+    t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'detail', text: plain(t.completion_summary) })] : null,
     t.description ? el('div', { class: 'card', text: t.description }) : null,
     t.spec?.acceptance_criteria?.length ? [el('h2', { text: 'Критерии приёмки' }), el('div', { class: 'card' }, t.spec.acceptance_criteria.map((c) => el('div', { text: `• ${c}` })))] : null,
-    section('Ревью', data.reviews, (r) => el('div', { class: 'row' }, pill(r.verdict || 'pending'), el('span', { class: 'mono', text: r.slot || r.reviewer_role || '' }), el('span', { class: 'grow muted', text: r.reviewer_role || '' }))),
+    // The verdict alone is not the review: what the reviewer found is the point.
+    [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
     section('Делегирование', data.delegations || t.delegations, (d) => el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by || ''} → ${d.to || ''}` }), el('span', { class: 'pill', text: d.model || '' }), el('span', { class: 'grow', text: d.purpose || '' }), pill(d.outcome || 'идёт'))),
     section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, pill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
     section('Сообщения', data.messages, (m) => el('div', { class: 'row msg' },
@@ -170,8 +208,21 @@ async function taskDetail(id) {
     t.files?.length ? [el('h2', { text: 'Файлы задачи' }), el('div', { class: 'card mono', text: t.files.join('\n') })] : null)
 }
 
-const labelled = (label, text) => el('div', {}, el('div', { class: 'cmd-label', text: label }), command(text))
+const labelled = (label, text, purpose) => el('div', {}, el('div', { class: 'cmd-label', text: label }), command(text, purpose))
 const plain = (value) => (value === undefined || value === null ? '' : typeof value === 'string' ? value : JSON.stringify(value))
+
+function reviewCard(r) {
+  const findings = r.findings || []
+  return el('div', { class: 'card' },
+    el('div', {}, pill(r.verdict || 'pending'), ' ', el('span', { class: 'mono', text: `${r.slot || r.requested_role || ''}${r.round ? ` · раунд ${r.round}` : ''}` }),
+      r.reviewer ? el('span', { class: 'muted', text: ` · ${r.reviewer}` }) : null,
+      r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'та же модельная семья' }) : null),
+    r.summary ? el('div', { class: 'detail', text: plain(r.summary) }) : null,
+    ...findings.map((f) => el('div', { class: 'position' },
+      el('span', { class: `pill ${f.severity === 'blocker' || f.severity === 'major' ? 'bad' : ''}`, text: f.severity || 'нет оценки' }),
+      f.file ? el('span', { class: 'mono small', text: ` ${f.file}${f.line ? `:${f.line}` : ''}` }) : null,
+      el('div', { class: 'muted', text: plain(f.note || f.summary || f.title || '') }))))
+}
 
 // What the owner needs to judge a request: the action, what it costs, why it is
 // asked, until when it holds, and both ways to answer it.
@@ -185,9 +236,13 @@ function approvalCard(x) {
     x.expired
       ? el('div', { class: 'note bad', text: `Срок действия истёк ${when(x.expires_at)}: одобрение, скорее всего, уже не примут; агент должен запросить его заново.` })
       : x.expires_at ? el('div', { class: 'muted small', text: `Действует до ${when(x.expires_at)}` }) : null,
-    el('div', { class: 'mono muted', text: `запросил ${x.requested_by || '?'}${x.task_id ? ` · задача ${x.task_id}` : ''}` }),
-    labelled('Одобрить (в терминале)', `collab approve ${x.id}`),
-    labelled('Отклонить (в терминале, причина обязательна)', `collab reject ${x.id} --note "причина"`))
+    el('div', { class: 'mono muted' }, `запросил ${x.requested_by || '?'}`, x.task_id ? [' · ', el('a', { href: `#/tasks/${encodeURIComponent(x.task_id)}`, text: `задача ${x.task_id}` })] : null),
+    // An expired request cannot be granted; offering its commands only sends the
+    // owner to a terminal failure, so it gets none.
+    ...(x.expired
+      ? []
+      : [labelled('Одобрить (в терминале)', `collab approve ${x.id}`, 'команду одобрения'),
+         labelled('Отклонить (в терминале, причина обязательна)', `collab reject ${x.id} --note "причина"`, 'команду отклонения')]))
 }
 
 // A dispute is decided by reading the question, the options and what each agent
@@ -203,7 +258,9 @@ function decisionCard(x) {
     ...options.map((o) => el('div', { class: 'option' },
       el('div', {}, el('strong', { text: o.label || o.id })),
       o.summary ? el('div', { class: 'muted', text: o.summary }) : null,
-      labelled('Выбрать (в терминале)', `collab decide ${x.id} ${o.id}`))),
+      labelled('Выбрать (в терминале)', `collab decide ${x.id} ${o.id}`, `команду выбора варианта «${o.label || o.id}»`))),
+    // A dispute without predefined options is answered in the owner's own words.
+    ...(options.length ? [] : [labelled('Ответить своими словами (в терминале)', `collab decide ${x.id} <ваше решение>`, 'команду ответа на спор')]),
     (x.positions || []).length ? el('h3', { text: 'Позиции агентов' }) : null,
     ...(x.positions || []).map((p) => el('div', { class: 'position' },
       el('span', { class: 'mono', text: `${p.agent || '?'} → ${label.get(p.option) || p.option || '—'}` }),
@@ -212,12 +269,18 @@ function decisionCard(x) {
 
 async function waiting() {
   const data = await api('/api/waiting')
-  const a = data.approvals || []
+  const live = (data.approvals || []).filter((x) => !x.expired)
+  const stale = (data.approvals || []).filter((x) => x.expired)
   const d = data.decisions || []
   const r = data.reviews || []
   return page('Ждёт вас', 'Одобрения и решения выдаются только в терминале: панель их показывает, но не выдаёт.',
-    el('h2', { text: `Одобрения (${a.length})` }),
-    a.length ? a.map(approvalCard) : empty('Нет ожидающих одобрений'),
+    el('h2', { text: `Одобрения (${live.length})` }),
+    live.length ? live.map(approvalCard) : empty('Нет одобрений, которые можно выдать'),
+    // Expired requests are not work for the owner: they are kept apart and folded,
+    // so a long tail of them does not bury the live ones.
+    stale.length
+      ? el('details', { class: 'stale' }, el('summary', { text: `Просроченные одобрения (${stale.length}): выдать их уже нельзя, агент должен запросить заново` }), ...stale.map(approvalCard))
+      : null,
     el('h2', { text: `Решения (${d.length})` }),
     d.length ? d.map(decisionCard) : empty('Нет открытых споров'),
     el('h2', { text: `Ревью в очереди (${r.length})` }),
@@ -225,8 +288,14 @@ async function waiting() {
 }
 
 async function events() {
+  const mine = routeSeq
   const initial = await api('/api/events?limit=100')
+  // The owner may have moved on while the request was in flight; a superseded
+  // screen must not open a stream nobody will close.
+  if (mine !== routeSeq) return []
   const box = el('div', { class: 'log', id: 'log', tabindex: '0', role: 'log', 'aria-label': 'Лента событий' })
+  const emptyNote = el('div', { class: 'empty', text: 'В журнале пока нет событий', hidden: initial.length > 0 })
+  const noMatch = el('div', { class: 'empty', text: 'Ни одно событие не подходит под фильтр', hidden: true })
   let follow = true
   let filter = ''
   const rows = []
@@ -237,12 +306,18 @@ async function events() {
     rows.push({ node, text: `${event.type} ${event.actor} ${event.subject?.id} ${JSON.stringify(event.data ?? {})}`.toLowerCase() })
     node.hidden = filter && !rows[rows.length - 1].text.includes(filter)
     box.append(node)
+    emptyNote.hidden = true
     if (follow) box.scrollTop = box.scrollHeight
   }
   initial.forEach(render)
   const search = el('input', { type: 'search', placeholder: 'Фильтр', 'aria-label': 'Фильтр событий', oninput: (e) => {
     filter = e.target.value.trim().toLowerCase()
-    for (const row of rows) row.node.hidden = Boolean(filter) && !row.text.includes(filter)
+    let shown = 0
+    for (const row of rows) {
+      row.node.hidden = Boolean(filter) && !row.text.includes(filter)
+      if (!row.node.hidden) shown += 1
+    }
+    noMatch.hidden = shown > 0 || rows.length === 0
   } })
   const followBtn = el('button', { type: 'button', 'aria-pressed': 'true', text: 'Автопрокрутка: вкл', onclick: () => {
     follow = !follow
@@ -256,12 +331,12 @@ async function events() {
   }
   stream.onopen = () => setConn('ok', 'подключено')
   stream.onerror = () => setConn('warn', 'переподключение…')
-  return page('Лента', 'События журнала в реальном времени', el('div', { class: 'toolbar' }, search, followBtn), box)
+  return page('Лента', 'События журнала в реальном времени', el('div', { class: 'toolbar' }, search, followBtn), emptyNote, noMatch, box)
 }
 
 async function roster() {
   const data = await api('/api/roster')
-  return page('Состав', `Ведущий: ${data.lead || 'не назначен'} · режим ревью: ${data.review_mode || '—'}`,
+  return page('Состав', `Ведущий: ${data.lead || 'не назначен'} · ${REVIEW_MODE_RU[data.review_mode] || data.review_mode || 'режим ревью не задан'}`,
     data.lead ? null : el('div', { class: 'note warn' }, 'Состав на этой машине не настроен, действуют встроенные настройки. ', el('a', { href: '#/setup', text: 'Открыть мастер настройки' })),
     el('h2', { text: 'Агенты' }),
     el('table', {}, el('thead', {}, el('tr', {}, ['Агент', 'Провайдер', 'Роли', 'Статус'].map((h) => el('th', { text: h })))),
@@ -316,7 +391,11 @@ async function setup() {
   const reviewNote = el('div', { class: 'note' })
   const checkOut = el('div', {})
 
+  let previewSeq = 0
   const drawPreview = async () => {
+    // Clicks can outrun the server: only the answer to the LATEST selection may
+    // be drawn, or two command sets and a wrong lastPlan would stay on screen.
+    const seq = ++previewSeq
     out.replaceChildren()
     lastPlan = null
     reviewNote.textContent = ''
@@ -324,9 +403,14 @@ async function setup() {
     if (!lead || !chosen.has(lead)) lead = [...chosen][0]
     const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0' })
     let preview
-    try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return out.append(el('div', { class: 'note bad', text: error.message })) }
+    try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return seq === previewSeq ? out.append(el('div', { class: 'note bad', text: error.message })) : undefined }
+    if (seq !== previewSeq) return
     if (!preview.ok) return out.append(el('div', { class: 'note bad', text: preview.reason }))
     lastPlan = preview.plan
+    const missing = [...chosen].filter((id) => !detect.installed.includes(id))
+    if (missing.length) {
+      out.append(el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` }))
+    }
     reviewNote.textContent = preview.plan.review_mode === 'single_vendor'
       ? 'Одна модельная семья: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
       : 'Разные модельные семьи: ревью никогда не достаётся автору.'
@@ -352,11 +436,18 @@ async function setup() {
     const have = new Set(machine.agents.map((a) => a.id))
     const mismatches = []
     if (machine.lead !== lastPlan.lead) mismatches.push(`ведущий: записан ${machine.lead || 'никто'}, выбран ${lastPlan.lead}`)
-    if (machine.review_mode !== lastPlan.review_mode) mismatches.push(`режим ревью: записан ${machine.review_mode || '—'}, выбран ${lastPlan.review_mode}`)
+    if (machine.review_mode !== lastPlan.review_mode) mismatches.push(`режим ревью: записан «${REVIEW_MODE_RU[machine.review_mode] || machine.review_mode || '—'}», выбран «${REVIEW_MODE_RU[lastPlan.review_mode] || lastPlan.review_mode}»`)
     const missing = [...want].filter((id) => !have.has(id))
     const extra = [...have].filter((id) => !want.has(id))
     if (missing.length) mismatches.push(`нет на машине: ${missing.join(', ')}`)
     if (extra.length) mismatches.push(`записано лишнее: ${extra.join(', ')}`)
+    // "Exactly this composition" includes who holds which role.
+    for (const wanted of lastPlan.agents) {
+      const recorded = machine.agents.find((a) => a.id === wanted.id)
+      if (!recorded) continue
+      const same = wanted.roles.length === recorded.roles.length && wanted.roles.every((role) => recorded.roles.includes(role))
+      if (!same) mismatches.push(`роли ${wanted.id}: записаны «${recorded.roles.join(', ') || 'никаких'}», выбраны «${wanted.roles.join(', ')}»`)
+    }
     return mismatches.length
       ? [el('div', { class: 'note warn', text: 'Не применено: записанный состав отличается от выбранного.' }), ...mismatches.map((m) => el('div', { class: 'muted small', text: `• ${m}` }))]
       : [el('div', { class: 'note ok', text: 'Применено: на машине записан именно этот состав. Перезапустите открытые сессии агентов, чтобы они его подхватили.' })]
@@ -414,7 +505,7 @@ function projectCard(p) {
   return el('div', { class: 'card' },
     el('div', { class: 'mono', text: p.journalRoot || p.cwd || '' }),
     el('div', { class: 'chips' }, el('span', { class: `pill ${p.initialized ? 'ok' : 'warn'}`, text: p.initialized ? 'журнал есть' : 'журнала нет' }), el('span', { class: `pill ${connected ? 'ok' : 'warn'}`, text: connected ? `подключён как ${p.projectId}` : 'не подключён к набору' })),
-    connected ? null : [el('p', { class: 'sub', text: 'Посмотреть, что запишет подключение (ничего не пишет):' }), command('collab connect --dry-run'), el('div', { class: 'muted', text: 'Применить подключение — `collab connect` в терминале проекта.' })])
+    connected ? null : [el('p', { class: 'sub', text: 'Посмотреть, что запишет подключение (ничего не пишет):' }), command('collab connect --dry-run', 'команду просмотра подключения'), el('div', { class: 'muted', text: 'Применить подключение — команда collab connect без --dry-run, в терминале проекта.' })])
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
@@ -439,7 +530,10 @@ async function refreshBadge() {
   } catch { /* the badge is a convenience; the screens report real errors */ }
 }
 
+const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждёт вас', events: 'Лента', roster: 'Состав', kit: 'Скиллы и агенты', setup: 'Мастер настройки' }
+
 async function route() {
+  const seq = ++routeSeq
   closeStream()
   setConn('', 'панель только для чтения')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
@@ -448,12 +542,16 @@ async function route() {
     if (link.dataset.route === name) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current')
   }
   main.replaceChildren(el('p', { class: 'muted', text: 'Загрузка…' }))
+  let nodes
   try {
-    const nodes = await screen(rest.length ? decodeURIComponent(rest.join('/')) : undefined)
-    main.replaceChildren(...[nodes].flat(3).filter(Boolean))
+    nodes = await screen(rest.length ? decodeURIComponent(rest.join('/')) : undefined)
   } catch (error) {
-    main.replaceChildren(...failure(error))
+    nodes = seq === routeSeq ? failure(error) : null
   }
+  // Somebody navigated again while this screen was loading: its result is stale.
+  if (seq !== routeSeq) return
+  main.replaceChildren(...[nodes].flat(3).filter(Boolean))
+  document.title = `${TITLES[name] || TITLES.overview} · Agent Kit`
   main.focus({ preventScroll: true })
   refreshBadge()
 }

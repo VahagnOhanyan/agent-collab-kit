@@ -135,3 +135,9 @@ a.tile.link:hover { border-color: var(--accent); }
 .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
 .chip { border-radius: 14px; padding: 2px 12px; font-size: 12.5px; }
+
+/* Round 2 */
+details.stale { margin: 8px 0; }
+details.stale > summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
+details.stale[open] > summary { margin-bottom: 8px; }
+[hidden] { display: none !important; }
