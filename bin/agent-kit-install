@@ -1054,11 +1054,13 @@ function appendHistory(ctx, entry, journal) {
   })
 }
 
-// Installs in order (rollbacks excluded). The rollback target of `sha` is the
-// release installed before its latest install that still exists, so repeated
-// --rollback walks further back instead of toggling.
+// Switches to a release in order: rollbacks and `record-dirs` (a config directory remembered without a switch)
+// are not steps. The rollback target of `sha` is the release installed before its latest install that still
+// exists, so repeated --rollback walks further back instead of toggling.
+const releaseSteps = (history) => history.filter((e) => e.action !== 'rollback' && e.action !== 'record-dirs').map((e) => e.sha)
+
 function rollbackTarget(ctx, history, sha) {
-  const seq = history.filter((e) => e.action !== 'rollback').map((e) => e.sha)
+  const seq = releaseSteps(history)
   let index = seq.lastIndexOf(sha)
   if (index === -1) index = seq.length
   for (let i = index - 1; i >= 0; i -= 1) {
@@ -1068,7 +1070,7 @@ function rollbackTarget(ctx, history, sha) {
 }
 
 function pruneReleases(ctx, history, current, previous) {
-  const seq = history.filter((e) => e.action !== 'rollback').map((e) => e.sha)
+  const seq = releaseSteps(history)
   const newest = []
   for (let i = seq.length - 1; i >= 0; i -= 1) if (!newest.includes(seq[i])) newest.push(seq[i])
   const keep = new Set([...newest.slice(0, KEEP_RELEASES), current, previous, rollbackTarget(ctx, history, current)].filter(Boolean))
@@ -2019,7 +2021,7 @@ function summarizeCodexRules(ctx, plan) {
 function hookMarks(name) {
   return [
     new RegExp(`^(?:\\S*python3?(?:\\.exe)?"?\\s+)?"?[^"\\s]*\\.agent-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py"?(?:\\s*\\|\\|\\s*exit\\s+2)?\\s*$`),
-    new RegExp(`^"[^"]+"\\s+"[^"]*[\\\\/]bin[\\\\/]agent-kit-hook"\\s+${name}\\s*$`)
+    new RegExp(`^"[^"]+"\\s+"[^"]*\\.agent-kit[\\\\/]+current[\\\\/]+bin[\\\\/]+agent-kit-hook"\\s+${name}\\s*$`)
   ]
 }
 
@@ -2035,25 +2037,32 @@ function mergePreToolUseHook(existing, marks, group, event = 'PreToolUse') {
   const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
   const ours = (h) => typeof h?.command === 'string' && marks.some((mark) => mark.test(h.command))
   const groups = []
-  let at = -1
+  let placed = false
+  const place = () => {
+    if (group && !placed) groups.push(group)
+    placed = true
+  }
   for (const g of Array.isArray(hooks[event]) ? hooks[event] : []) {
-    if (!Array.isArray(g?.hooks)) {
+    if (!Array.isArray(g?.hooks) || !g.hooks.some(ours)) {
       groups.push(g)
       continue
     }
-    const kept = g.hooks.filter((h) => !ours(h))
-    if (kept.length === g.hooks.length) {
-      groups.push(g)
-      continue
+    // A group holding ours between a person's hooks is split around it, so the order stays what it was.
+    let run = []
+    const flush = () => {
+      if (run.length) groups.push({ ...g, hooks: run })
+      run = []
     }
-    if (at === -1) at = groups.length
-    if (kept.length) groups.push({ ...g, hooks: kept })
+    for (const h of g.hooks) {
+      if (ours(h)) {
+        flush()
+        place()
+      } else run.push(h)
+    }
+    flush()
   }
   // group === null: only remove ours (a hook whose module the release does not have).
-  if (group) {
-    if (at === -1) groups.push(group)
-    else groups.splice(at, 0, group)
-  }
+  place()
   return { ...base, hooks: { ...hooks, [event]: groups } }
 }
 
@@ -2609,6 +2618,15 @@ async function install(ctx) {
       switchCurrent(ctx, source.sha, journal, plan.current?.raw || null)
       appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', claude_dirs: ctx.claudeDirs.slice(1), kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
       changes.push(`current -> releases/${source.sha} (was ${previous || 'none'})`)
+    } else {
+      // The same release installed again into a config directory history has not seen: record it, or a later
+      // rollback started without the flag would leave that directory's hooks calling a launcher that lost a module.
+      const recorded = new Set(readHistory(ctx).flatMap((e) => (Array.isArray(e.claude_dirs) ? e.claude_dirs : [])))
+      const extra = ctx.claudeDirs.slice(1)
+      if (extra.some((dir) => !recorded.has(dir))) {
+        appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'record-dirs', claude_dirs: extra }, journal)
+        changes.push(`history.jsonl += config directories: ${extra.join(', ')}`)
+      }
     }
     assertConfigDirsInside(ctx)
     applyLinks(ctx, plan.links, journal, changes)
@@ -2652,6 +2670,7 @@ function claudeDirsFromHistory(ctx, history) {
   let dirs = ctx.claudeDirs
   for (const raw of new Set(history.flatMap((e) => (Array.isArray(e.claude_dirs) ? e.claude_dirs : [])))) {
     if (typeof raw !== 'string' || !raw) continue
+    if (!lstatOrNull(raw)) continue // a directory the person has since deleted stays deleted: a rollback does not recreate it
     try {
       dirs = resolveClaudeConfigDirs({ claudeConfigDirs: [...dirs.slice(1), raw] }, ctx.home)
     } catch {
@@ -2671,9 +2690,26 @@ function rollback(baseCtx) {
   const links = planLinks(ctx)
   const missing = REQUIRED_PATHS.filter((rel) => !lstatOrNull(path.join(ctx.releasesDir, target, rel)))
 
+  // settings.json keeps calling hooks through `current`: without this, a release that lacks a module
+  // (the launcher answers 2) would block every call after the rollback. Planned before the dry-run
+  // return, so a settings.json that cannot be merged fails the dry run as it would the real one.
+  const releaseDir = path.join(ctx.releasesDir, target)
+  const hasHook = (name) => Boolean(lstatOrNull(path.join(releaseDir, 'hooks', `${name}.mjs`)))
+  let node = ctx.node
+  if (!node) {
+    try {
+      node = resolveNode()
+    } catch {
+      node = { path: 'node' } // only entries whose module the release has are rewritten with it; the dropped ones need no Node
+      out('warning: Node was not found; hooks that stay in settings.json are written with a bare `node`')
+    }
+  }
+  const hooksPlan = planClaudeHooks({ ...ctx, node }, hasHook, { cleanOnly: true })
+
   if (ctx.opts.dryRun) {
     out(`DRY RUN — nothing was changed.`)
     out(`would switch current: ${current.sha} -> ${target}`)
+    for (const f of hooksPlan.files ?? []) if (f.changed) out(`would update hooks in ${f.file}`)
     for (const l of links) {
       if (l.action === 'ok') continue
       out(l.posixCopy || l.content === null ? `would ${plannedAction(l)} copy ${l.dest} <- ${l.target}` : `would ${l.action} link ${l.dest} -> ${l.target}`)
@@ -2701,20 +2737,6 @@ function rollback(baseCtx) {
     changes.push(`current -> releases/${target} (was ${current.sha})`)
     assertConfigDirsInside(ctx)
     applyLinks(ctx, links, journal, changes)
-    // settings.json keeps calling hooks through `current`: without this, a release that lacks a module
-    // (the launcher answers 2) would block every call after the rollback.
-    const releaseDir = path.join(ctx.releasesDir, target)
-    const hasHook = (name) => Boolean(lstatOrNull(path.join(releaseDir, 'hooks', `${name}.mjs`)))
-    let node = ctx.node
-    if (!node) {
-      try {
-        node = resolveNode()
-      } catch {
-        node = { path: 'node' } // only entries whose module the release has are rewritten with it; the dropped ones need no Node
-        out('warning: Node was not found; hooks that stay in settings.json are written with a bare `node`')
-      }
-    }
-    const hooksPlan = planClaudeHooks({ ...ctx, node }, hasHook, { cleanOnly: true })
     applyClaudeHooks(ctx, hooksPlan, journal, changes)
   } catch (error) {
     const undone = journal.rollback()

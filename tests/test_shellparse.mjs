@@ -70,3 +70,22 @@ test('незакрытая кавычка — null, пустая команда 
   assert.equal(parseCommand("echo 'oops"), null);
   assert.deepEqual(parseCommand('').segments, []);
 });
+
+test('`)` в комментарии внутри подстановки не закрывает её', () => {
+  const inner = parseCommand('echo "$(echo ok # )\nfoo bar)"').segments.flatMap((s) => s.subs);
+  assert.equal(inner.length, 1);
+  assert.match(inner[0], /foo bar/, 'то, что после комментария, осталось внутри подстановки');
+});
+
+test('here-string: одинарные кавычки — данные, `$\'…\'` раскрывается как ANSI-C', () => {
+  const single = parseCommand("cat <<< '$(foo bar)'").segments;
+  assert.equal(single.length, 1, 'нет сегмента из подстановки');
+  assert.deepEqual(single[0].heredocs, ['$(foo bar)']);
+  assert.deepEqual(parseCommand("cat <<< $'a\\nb'").segments[0].heredocs, ['a\nb']);
+});
+
+test('разделитель heredoc в `$\'…\'` — цитированный: тело не исполняется, строка после закрытия — команда', () => {
+  const { segments } = parseCommand("cat <<$'EOF'\n$(foo)\nEOF\nbar baz");
+  assert.deepEqual(segments[0].heredocSubs, []);
+  assert.deepEqual(segments.at(-1).words, ['bar', 'baz']);
+});

@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { setup, lib, NODE, makeSource, commitChange, makeWorld, snapshot } from './helpers/install-world.mjs'
 
 const world = setup()
@@ -295,3 +296,76 @@ test('the config-directory boundary is re-checked before writing, not only when 
   assert.throws(() => lib.assertConfigDirsInside(ctx), /moved while installing|outside/)
 })
 
+
+const readHistory = (W) => readFileSync(join(W.home, '.agent-kit', 'history.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+
+test('re-installing the same release with a new config directory records that directory in the history', () => {
+  const W = makeWorld('history-same-sha')
+  const second = accountDir(W, '.claude-account-2')
+  const source = makeSource('history-same-sha')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
+  assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
+  const recorded = readHistory(W).flatMap((e) => e.claude_dirs ?? [])
+  assert.ok(recorded.some((d) => d.endsWith('.claude-account-2')), 'second directory is remembered')
+  commitChange(source, 'rules/orchestration.md', 'rule v2\n')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
+  const back = W.run(['--rollback', '--skip-kit-tests'])
+  assert.equal(back.status, 0, back.all)
+  assert.equal(readFileSync(join(second, 'rules', 'orchestration.md'), 'utf8').includes('rule v2'), false, 'second directory is rolled back too')
+})
+
+test('a remembered config directory is not a release switch: rollback after A, B, rollback, A again still goes nowhere forward', () => {
+  const W = makeWorld('record-dirs-not-a-step')
+  const source = makeSource('record-dirs-not-a-step')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
+  const cur = join(W.home, '.agent-kit', 'current')
+  const first = realpathSync(cur)
+  commitChange(source, 'rules/orchestration.md', 'rule v2\n')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
+  const back = W.run(['--rollback'])
+  assert.equal(back.status, 0, back.all)
+  assert.equal(realpathSync(cur), first)
+  const second = accountDir(W, '.claude-account-2')
+  // Та же сборка A снова (тот же коммит), теперь с новым каталогом конфигурации: в истории — record-dirs.
+  spawnSync('git', ['-C', source, 'checkout', '-q', 'HEAD~1'], { encoding: 'utf8' })
+  const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
+  assert.equal(again.status, 0, again.all)
+  assert.equal(realpathSync(cur), first, 'та же сборка A')
+  assert.equal(readHistory(W).at(-1).action, 'record-dirs')
+  const forward = W.run(['--rollback'])
+  assert.notEqual(forward.status, 0, 'нет более раннего релиза — отката вперёд на B быть не должно')
+  assert.equal(realpathSync(cur), first)
+})
+
+test('rollback does not resurrect a config directory that was deleted after it was recorded', () => {
+  const W = makeWorld('rollback-deleted-dir')
+  const second = accountDir(W, '.claude-account-2')
+  const source = makeSource('rollback-deleted-dir')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
+  commitChange(source, 'rules/orchestration.md', 'rule v2\n')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
+  rmSync(second, { recursive: true, force: true })
+  const back = W.run(['--rollback'])
+  assert.equal(back.status, 0, back.all)
+  assert.equal(existsSync(second), false, 'the deleted directory stays deleted')
+})
+
+test('rollback --dry-run reports the hook changes and fails on a broken settings.json, like the real one', () => {
+  const { W, second, cur } = twoReleasesWithSecondDir('rollback-dry-hooks')
+  const state = () => ({
+    second: readFileSync(join(second, 'settings.json'), 'utf8'),
+    first: readFileSync(join(W.home, '.claude', 'settings.json'), 'utf8'),
+    history: readFileSync(join(W.home, '.agent-kit', 'history.jsonl'), 'utf8'),
+    current: realpathSync(cur),
+  })
+  const before = state()
+  const settingsBefore = before.second
+  const dry = W.run(['--rollback', '--dry-run'])
+  assert.equal(dry.status, 0, dry.all)
+  assert.match(dry.stdout, /would update hooks in .*settings\.json/)
+  assert.deepEqual(state(), before, 'dry-run wrote nothing: settings, history, current')
+  assert.ok(JSON.parse(settingsBefore).hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command === lib.claudeHookCommand(NODE, cur, 'push-gate'))))
+  writeFileSync(join(second, 'settings.json'), '{ broken')
+  const broken = W.run(['--rollback', '--dry-run'])
+  assert.notEqual(broken.status, 0, broken.all)
+})

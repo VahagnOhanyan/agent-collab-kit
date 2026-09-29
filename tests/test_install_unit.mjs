@@ -269,6 +269,20 @@ test('Claude settings: a wrapper that merely mentions the launcher is not ours; 
   assert.equal(merged.hooks.PreToolUse.findIndex((g) => g.hooks[0].command === wrapper.command), 2)
 })
 
+test('Claude settings: a launcher from another install root is not ours; our entry keeps its place inside a shared group', () => {
+  const cur = '/Users/x/.agent-kit/current'
+  const foreign = { type: 'command', command: '"/usr/bin/node" "/Users/x/custom/bin/agent-kit-hook" push-gate' }
+  const kept = lib.mergeClaudeHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [foreign] }] } }, '/usr/bin/node', cur)
+  assert.ok(kept.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command === foreign.command)), 'foreign launcher survives')
+
+  const oldPush = { type: 'command', command: lib.claudeHookCommand('/old/node', cur, 'push-gate'), timeout: 180 }
+  const before = { type: 'command', command: 'before.sh' }
+  const after = { type: 'command', command: 'after.sh' }
+  const merged = lib.mergeClaudeHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [before, oldPush, after] }] } }, '/new/node', cur)
+  const flat = merged.hooks.PreToolUse.filter((g) => g.matcher === 'Bash').flatMap((g) => g.hooks.map((h) => h.command))
+  assert.deepEqual(flat, [before.command, lib.claudeHookCommand('/new/node', cur, 'push-gate'), after.command], 'order before, ours, after')
+})
+
 test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {
   const command = lib.codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.agent-kit\\current')
   assert.match(command, /^"C:\\Program Files\\nodejs\\node\.exe" ".*agent-kit-hook" codex-guard$/)

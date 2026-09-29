@@ -120,11 +120,12 @@ export function runCapped(argv, { cwd, env, timeoutMs }) {
   });
 }
 
-// `collab project --json` в каталоге cwd; null, если набор не установлен или collab не ответил.
-export function collabProject(cwd, home, timeoutMs = 5000) {
-  if (!path.isAbsolute(home)) return null;
+// `collab project --json` в каталоге cwd: { state: 'absent' } — набор не установлен; { state: 'failed', reason } —
+// collab есть, но не ответил, ответил не JSON или с `error`; { state: 'ok', info }.
+export function collabProjectAnswer(cwd, home, timeoutMs = 5000) {
+  if (!path.isAbsolute(home)) return { state: 'absent' };
   const script = path.join(home, '.agent-kit', 'current', 'bin', 'collab');
-  if (!existsSync(script)) return null;
+  if (!existsSync(script)) return { state: 'absent' };
   try {
     const out = spawnSync(process.execPath, [script, 'project', '--json'], {
       cwd,
@@ -132,12 +133,21 @@ export function collabProject(cwd, home, timeoutMs = 5000) {
       encoding: 'utf8',
       timeout: timeoutMs,
     });
-    if (out.error || out.status === null) return null;
+    if (out.error || out.status === null) return { state: 'failed', reason: `collab project не ответил (${out.error?.code ?? 'таймаут'})` };
+    if (out.status !== 0) return { state: 'failed', reason: `collab project завершился с кодом ${out.status}` };
     const info = JSON.parse(out.stdout);
-    return info && typeof info === 'object' && !Array.isArray(info) && !info.error ? info : null;
-  } catch {
-    return null;
+    if (!info || typeof info !== 'object' || Array.isArray(info)) return { state: 'failed', reason: 'collab project ответил не объектом' };
+    if (info.error) return { state: 'failed', reason: `collab project: ${info.error.message ?? info.error.code ?? 'ошибка'}`, info };
+    return { state: 'ok', info };
+  } catch (error) {
+    return { state: 'failed', reason: `collab project: ${error?.message ?? error}` };
   }
+}
+
+// То же без подробностей: null, если набор не установлен или collab не ответил.
+export function collabProject(cwd, home, timeoutMs = 5000) {
+  const answer = collabProjectAnswer(cwd, home, timeoutMs);
+  return answer.state === 'ok' ? answer.info : null;
 }
 
 // ── командная строка ──────────────────────────────────────────────────────────

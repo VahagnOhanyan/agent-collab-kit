@@ -2,24 +2,24 @@
 // обходов. Гейт — `gate` в доверенном реестре проекта (путь от корня рабочего дерева, например
 // scripts/preflight.sh). Установщик вписывает хук в settings.json каждого конфига Claude.
 //
-//   1. Команда разбирается как оболочка (hooks/lib/shellparse.mjs): push — это запуск `git … push`
-//      в одном из сегментов, а не строка `git push` внутри echo, комментария, heredoc или сообщения коммита.
-//      Понимаются кавычки (`git p""ush`), `git -C "путь с пробелом"`, `-c alias.p=push`, `sh -c "…"`, `eval`,
-//      обёртки (env, sudo, xargs…), heredoc и here-string в оболочку, `$(…)` в том числе в двойных кавычках.
-//   2. Проект берётся по каталогу, в котором push исполнится: `git -C X`, `--git-dir`/`--work-tree`,
-//      `GIT_DIR=`, `env -C`, предшествующий `cd X &&` — а не по каталогу сессии.
-//   3. `--no-verify`, `--force`, `-f` (в т.ч. `-fu`), `--force-with-lease`, `--mirror`, `--delete`, `--prune`,
-//      refspec `+ветка` и `:ветка`, `-c core.hooksPath=…` (и то же через GIT_CONFIG_*), `-c remote.*.push=+…`
-//      → блок (код 2).
-//   4. Иначе запускается `<гейт> --quiet`; красный или не уложившийся во время → блок с хвостом вывода.
+// Модель — «блок при сомнении», а не разбор оболочки. Если в команде (без кавычек и `\`) есть слово `git` и
+// `push`, она пропускается, только если доказуемо проста:
+//   - нет `$`, обратных кавычек, `<<`; нет скобок, блоков, фона и ключевых слов оболочки;
+//   - операторы между командами — только `&&`, `||`, `;`, перевод строки, `|`;
+//   - push — это `git [-C <каталог>] push <аргументы>`: без `-c`, `--git-dir`, `--work-tree`, присваиваний;
+//   - другие команды, упоминающие push, — только echo/printf/grep/rg; оболочки, eval, xargs, обёртки,
+//     export/alias/set — блок;
+//   - `cd` — в существующий каталог и безусловно (в начале цепочки `&&` или перед push в той же цепочке).
+// Всё остальное — блок с просьбой запустить push отдельной простой командой: разбирать оболочку целиком этот хук
+// не берётся (четыре раунда ревью подряд находили расхождения самописного разбора с bash).
 //
-// Ведущая сессия, не граница: косвенные вызовы (переменные, алиасы из конфигурации, функции, `| bash`,
-// `git send-pack`) не гарантируются — см. SECURITY-hooks.md. Проход — только когда защищаться нечем: непонятный
-// вход, набор collab не установлен или не ответил, проект не зарегистрирован, в его реестре нет ключа `gate`.
-// Проект, у которого `gate` объявлен, fail-closed: битый реестр, неверный тип, нет файла гейта, гейт не
-// запустился, неожиданное исключение — блок. Собственный бюджет времени меньше таймаута хоста (180 с) минус
-// ожидание stdin лаунчером: убитый хостом хук считается пропуском.
-import { existsSync } from 'node:fs';
+// Дальше: `--no-verify`, `--force`, `-f` (в т.ч. `-uf`), `--force-with-lease`, `--mirror`, `--delete`, `--prune`,
+// refspec `+ветка` и `:ветка` → блок. Иначе в каталоге push запускается `<гейт> --quiet`; красный или не
+// уложившийся во время → блок с хвостом вывода. Проект, у которого `gate` объявлен, fail-closed: битый реестр,
+// collab не ответил при записи, заявляющей каталог, нет файла гейта, неожиданное исключение — блок. Собственный
+// бюджет времени меньше таймаута хоста (180 с) минус ожидание stdin лаунчером: убитый хостом хук — пропуск.
+// Границы (алиасы из конфигурации git, команда, собранная из переменных без слова push) — SECURITY-hooks.md.
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { CapTimeout, cleanEnv, homeDir, runCapped } from './lib/paths.mjs';
 import { gateArgv, gitRoot, projectSettingStrict } from './lib/project.mjs';
@@ -27,49 +27,60 @@ import { parseCommand } from './lib/shellparse.mjs';
 
 export const failClosed = true;
 
-// Запасной путь, когда команду разобрать нельзя (незакрытая кавычка): прежний поиск по сырой строке.
-export const PUSH_RE = /\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b/;
-export const BYPASS_RE = /(?:^|\s)(--no-verify|--force|-f|--force-with-lease(?:=\S+)?|--mirror|--delete|-d|--prune|[+:]\S+)(?=\s|$)/;
-
 const BUDGET_SECONDS_DEFAULT = 150; // таймаут хоста в settings.json — 180, лаунчер ждёт stdin до 4 с; PUSH_GATE_SECONDS — для тестов
 const MIN_GATE_MS = 500;
-const MAX_DEPTH = 4;
 
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
-const WRAPPERS = new Set(['env', 'sudo', 'doas', 'command', 'exec', 'nohup', 'time', 'nice', 'xargs', 'stdbuf', 'builtin', 'setsid', 'timeout']);
-const KEYWORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until']);
-const GIT_GLOBALS_WITH_ARG = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
-const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+const OPERATORS = new Set(['&&', '||', ';', '\n', '|', '|&']);
+const PIPES = new Set(['|', '|&']);
+// Подкоманды git, которые могут упоминать push в тексте (сообщение, поиск, `git stash push`), но сами ничего не
+// исполняют. Остальные (rebase -x, submodule foreach, bisect run, config alias.*) — блок рядом со словом push.
+const GIT_TEXT_SUBCOMMANDS = new Set([
+  'commit', 'log', 'show', 'tag', 'notes', 'stash', 'shortlog', 'describe', 'status', 'diff', 'add',
+  'checkout', 'switch', 'branch', 'merge', 'reset', 'restore', 'rm', 'mv', 'blame', 'cherry-pick', 'revert', 'remote',
+]); // не в списке: grep (-O/--open-files-in-pager), fetch/pull (--upload-pack) — исполняют аргумент
+const GIT_HARMLESS_GLOBALS = new Set(['--no-pager', '-P']);
+// Куда можно отдать вывод команды, упоминающей push: читатели, не исполняющие вход.
+const PIPE_READERS = new Set(['head', 'tail', 'cat', 'tee', 'grep', 'egrep', 'fgrep', 'rg', 'wc', 'sort', 'uniq', 'less', 'more']);
+const STRUCTURE = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'case', 'esac', 'select', 'function', 'in', '[[', ']]', 'coproc']);
+const MAY_MENTION_PUSH = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg']);
+const FORBIDDEN = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'source', '.', 'exec', 'xargs', 'env', 'sudo', 'doas', 'command',
+  'builtin', 'nohup', 'time', 'nice', 'stdbuf', 'setsid', 'timeout', 'arch', 'xcrun', 'caffeinate', 'export', 'alias',
+  'unalias', 'set', 'declare', 'typeset', 'local', 'readonly', 'unset', 'pushd', 'popd', 'trap', 'hash', 'git-push',
+]);
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const SIMPLE_HINT = 'Запусти push отдельной простой командой: `git push …` или `cd <каталог> && git push …`.';
 
 const programName = (word) => path.posix.basename(word.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase();
 const isLongOption = (name, full, minLength) => name.length >= minLength && full.startsWith(name);
+const mentionsPush = (word) => /push/i.test(word);
 
-// `git -c ключ=значение` и то же через окружение: что из этого отключает хуки или делает push принудительным.
-function configOverride(rawKey, value) {
-  const key = rawKey.toLowerCase();
-  if (key === 'core.hookspath') return '-c core.hooksPath';
-  if (/^remote\..+\.mirror$/.test(key)) return '-c remote.*.mirror';
-  if (/^remote\..+\.push$/.test(key) && /^[+:]/.test(value)) return '-c remote.*.push';
-  return null;
+// Есть ли в команде push вообще: слово `git` и `push` после склейки `\`+перевод строки и снятия кавычек и `\`
+// (`git p""ush`, `git pu\⏎sh` — тоже push). `$'…'` (`$'\x70ush'`) и автоисправление подкоманды git
+// (`help.autocorrect`) прячут слово push — с `git` они сами по себе повод для разбора (и блока).
+// Склейки через пустые `$''`, `$""`, `${…}` и спецпеременные (`g$''it`, `p$@ush`) тоже снимаются: bash собирает
+// из них то же слово. Переменная с непустым значением (`g$x`) — объявленная граница.
+export function mayPush(command) {
+  return [command, decodeEscapes(command)].some(mentionsGitPush);
 }
 
-function envConfigOverride(env) {
-  for (const [name, key] of Object.entries(env)) {
-    const m = /^GIT_CONFIG_KEY_(\d+)$/.exec(name);
-    if (!m) continue;
-    const hit = configOverride(key, env[`GIT_CONFIG_VALUE_${m[1]}`] ?? '');
-    if (hit) return hit;
-  }
-  const parameters = env.GIT_CONFIG_PARAMETERS ?? '';
-  for (const m of parameters.matchAll(/'([^']+)'='([^']*)'/g)) {
-    const hit = configOverride(m[1], m[2]);
-    if (hit) return hit;
-  }
-  for (const m of parameters.matchAll(/'([^'=]+)=([^']*)'/g)) {
-    const hit = configOverride(m[1], m[2]);
-    if (hit) return hit;
-  }
-  return null;
+// Escape-последовательности, которые раскрывают `$'…'`, `printf` и `echo -e`: `\147it`, `\x67it`, `git` → `git`.
+function decodeEscapes(text) {
+  return text
+    .replace(/\\x([0-9a-fA-F]{1,2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u\{?([0-9a-fA-F]{1,6})\}?/g, (_, h) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
+    .replace(/\\0?([0-7]{1,3})/g, (_, o) => String.fromCharCode(parseInt(o, 8) & 0xff));
+}
+
+function mentionsGitPush(command) {
+  const plain = command
+    .replace(/\\\r?\n/g, '')
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/\$(?=["'])/g, '')
+    .replace(/\$[@*#?$!0-9-]/g, '')
+    .replace(/["'\\]/g, '');
+  if (!/\bgit\b/i.test(plain)) return false;
+  return /push/i.test(plain) || command.includes("$'") || /autocorrect/i.test(plain);
 }
 
 // Нарушение в аргументах после `push` или null. Слова — уже без кавычек.
@@ -89,168 +100,126 @@ function pushBypass(args) {
       if (isLongOption(name, '--force', 3) || name.startsWith('--force')) return '--force';
       if (isLongOption(name, '--no-verify', 6)) return '--no-verify';
       if (isLongOption(name, '--mirror', 4)) return '--mirror';
-      if (isLongOption(name, '--delete', 5)) return '--delete';
+      if (isLongOption(name, '--delete', 4)) return '--delete';
       if (isLongOption(name, '--prune', 5)) return '--prune';
-    } else if (/^-[A-Za-z0-9]*[fd]/.test(word)) {
-      return word.includes('f') ? '-f' : '-d';
+    } else {
+      // Кластер коротких флагов до `-o`: всё после `o` — значение push-option (`-ofoo`), а не флаги.
+      for (const ch of word.slice(1)) {
+        if (ch === 'o') break;
+        if (ch === 'f') return '-f';
+        if (ch === 'd') return '-d';
+      }
     }
   }
   return null;
 }
 
-// Слова аргументов git после глобальных опций → { sub, rest, override, aliases, dirs }.
-function parseGit(args) {
-  const aliases = new Map();
-  const dirs = { C: [], gitDir: null, workTree: null };
-  let override = null;
-  const note = (key, value) => {
-    override ??= configOverride(key, value);
-  };
-  let i = 0;
-  while (i < args.length) {
-    const a = args[i];
-    const eq = a.indexOf('=');
-    const [flag, inline] = a.startsWith('--') && eq !== -1 ? [a.slice(0, eq), a.slice(eq + 1)] : [a, null];
-    if (a === '-c') {
-      const kv = args[i + 1] ?? '';
-      const at = kv.indexOf('=');
-      const key = at === -1 ? kv : kv.slice(0, at);
-      const value = at === -1 ? '' : kv.slice(at + 1);
-      note(key, value);
-      if (key.toLowerCase().startsWith('alias.')) aliases.set(key.toLowerCase().slice(6), value);
-      i += 2;
-    } else if (GIT_GLOBALS_WITH_ARG.has(flag)) {
-      const value = inline ?? args[i + 1] ?? '';
-      if (flag === '-C') dirs.C.push(value);
-      else if (flag === '--git-dir') dirs.gitDir = value;
-      else if (flag === '--work-tree') dirs.workTree = value;
-      else if (flag === '--config-env') note(value.split('=')[0], '');
-      i += inline === null ? 2 : 1;
-    } else if (a.startsWith('-')) {
-      i += 1;
-    } else {
-      break;
-    }
-  }
-  return { sub: args[i], rest: args.slice(i + 1), override, aliases, dirs };
-}
-
-// Префикс команды: присваивания `NAME=v`, ключевые слова и обёртки. → { at, env, chdir }; at === -1, если программы нет.
-function analyzePrefix(words) {
-  const env = {};
-  let chdir = null;
-  let i = 0;
-  while (i < words.length) {
-    const w = words[i];
-    const assign = ASSIGNMENT.exec(w);
-    if (assign) {
-      env[assign[1]] = assign[2];
-      i += 1;
-    } else if (KEYWORDS.has(w)) {
-      i += 1;
-    } else if (WRAPPERS.has(programName(w))) {
-      const isEnv = programName(w) === 'env';
-      let j = i + 1;
-      while (j < words.length && !(programName(words[j]) === 'git' || SHELLS.has(programName(words[j])) || programName(words[j]) === 'eval')) {
-        const x = words[j];
-        const a2 = ASSIGNMENT.exec(x);
-        if (a2) env[a2[1]] = a2[2];
-        else if (isEnv && (x === '-C' || x === '--chdir') && j + 1 < words.length) chdir = words[++j];
-        else if (isEnv && x.startsWith('--chdir=')) chdir = x.slice(8);
-        j += 1;
-      }
-      if (j >= words.length) return { at: -1, env, chdir };
-      i = j;
-    } else {
-      return { at: i, env, chdir };
-    }
-  }
-  return { at: -1, env, chdir };
-}
-
-// Каталог, полученный из слова пути; null — не определить (переменная, `cd -`, нет базового каталога).
-function resolveDir(base, raw, home) {
-  if (typeof raw !== 'string' || /[$`*?]/.test(raw)) return null;
+// Существующий каталог из буквального слова пути; null — не определить или его нет. `physical` — как chdir(2)
+// (`git -C`, `cd -P`): `..` после симлинка ведёт в родителя цели, а не лексически назад; иначе — как `cd` в bash.
+function existingDir(base, raw, home, { physical = false } = {}) {
   let d = raw;
-  if (d === '~' || d.startsWith('~/')) {
-    if (!home) return null;
-    d = path.join(home, d.slice(1));
+  if (d === '~' || d.startsWith('~/')) d = `${home}${d.slice(1)}`;
+  if (!path.isAbsolute(d)) {
+    if (!base) return null;
+    d = physical ? `${base}${path.sep}${d}` : path.resolve(base, d);
   }
-  if (path.isAbsolute(d)) return path.resolve(d);
-  return base ? path.resolve(base, d) : null;
+  try {
+    if (!statSync(d).isDirectory()) return null;
+    return physical ? realpathSync.native(d) : path.resolve(d);
+  } catch {
+    return null;
+  }
 }
 
-// Каталог, в котором git push увидит репозиторий: cwd оболочки → `env -C` → `-C…` → --work-tree/--git-dir.
-function pushDirectory(base, chdir, dirs, env, home) {
-  let cur = base;
-  const step = (raw) => {
-    cur = resolveDir(cur, raw, home);
-  };
-  if (chdir) step(chdir);
-  for (const c of dirs.C) step(c);
-  const gitDir = dirs.gitDir ?? env.GIT_DIR ?? null;
-  const workTree = dirs.workTree ?? env.GIT_WORK_TREE ?? null;
-  if (workTree) step(workTree);
-  else if (gitDir) {
-    const g = resolveDir(cur, gitDir, home);
-    cur = g === null ? null : path.basename(g) === '.git' ? path.dirname(g) : g;
-  }
-  return cur;
-}
-
-// Все запуски `git push` в команде: [{ bypass: string|null, dir: string|null }]; null — команду разобрать нельзя.
-// `state` — { cwd, env, home }: каталог оболочки (его двигает `cd`) и присвоенные ранее переменные.
-export function findPushes(command, state = { cwd: null, env: {}, home: null }, depth = 0) {
-  if (depth > MAX_DEPTH) return [];
+// Все push в команде → { pushes: [{ bypass, dir }] } или { reject: причина }. Пустой список — push нет.
+export function analyzePushes(command, cwd, home) {
+  if (!mayPush(command)) return { pushes: [] };
+  if (/[$`]/.test(command)) return { reject: 'подстановка (`$`, обратные кавычки) в команде с push' };
+  if (/autocorrect/i.test(command)) return { reject: 'автоисправление подкоманд git в команде с push' };
+  if (/(^|[^&|>])&\s*$/.test(command)) return { reject: '`&` (фон) в команде с push' }; // разбор теряет конечный оператор
+  if (command.includes('<<')) return { reject: 'heredoc в команде с push' };
   const parsed = parseCommand(command);
-  if (!parsed) return null;
+  if (!parsed) return { reject: 'команду не разобрать' };
+  const segments = parsed.segments;
+  const ops = segments.flatMap((s) => s.pre);
+  const odd = ops.find((op) => !OPERATORS.has(op));
+  if (odd !== undefined) return { reject: `\`${odd === '\n' ? '\\n' : odd}\` (скобки, блок или фон) в команде с push` };
+
   const pushes = [];
-  const local = { cwd: state.cwd, env: { ...state.env }, home: state.home };
-  const recurse = (text, inner = local) => {
-    const found = findPushes(text, { cwd: inner.cwd, env: { ...inner.env }, home: inner.home }, depth + 1);
-    if (found === null) return false;
-    pushes.push(...found);
-    return true;
-  };
-  for (const { words, heredocs, heredocSubs, subs } of parsed.segments) {
-    for (const text of [...subs, ...heredocSubs]) if (!recurse(text)) return null;
-    const { at, env: prefixEnv, chdir } = analyzePrefix(words);
-    if (at === -1) {
-      Object.assign(local.env, prefixEnv); // `NAME=v` без команды задаёт переменную оболочки
+  let dir = cwd; // null — каталог неизвестен
+  let listMovedConditionally = false; // в текущей цепочке `&&` был cd не в её начале
+  const hasOr = ops.includes('||');
+  let carriesPush = false; // левая часть текущего конвейера упоминает push
+  for (let k = 0; k < segments.length; k += 1) {
+    const { words, heredocs, heredocSubs, subs, pre } = segments[k];
+    if (heredocs.length || heredocSubs.length || subs.length) return { reject: 'подстановка или heredoc в команде с push' };
+    const op = pre.at(-1) ?? null;
+    const startsList = op === null || op === ';' || op === '\n';
+    if (startsList && listMovedConditionally) {
+      dir = null; // предыдущая цепочка могла оборваться до своего cd
+      listMovedConditionally = false;
+    }
+    if (words.length === 0) continue;
+    if (ASSIGNMENT.test(words[0])) return { reject: 'присваивание переменных в команде с push' };
+    if (STRUCTURE.has(words[0])) return { reject: `\`${words[0]}\` в команде с push` };
+    const name = programName(words[0]);
+    if (FORBIDDEN.has(name)) return { reject: `\`${name}\` в команде с push` };
+    const piped = PIPES.has(op);
+    if (piped && carriesPush && !PIPE_READERS.has(name)) return { reject: `вывод со словом push уходит в \`${name}\`` };
+    carriesPush = words.some(mentionsPush) || (piped && carriesPush);
+    const inPipe = piped || segments[k + 1]?.pre.some((p) => PIPES.has(p));
+
+    if (name === 'cd') {
+      if (inPipe || hasOr) return { reject: '`cd` в конвейере или рядом с `||` в команде с push' };
+      // bash отвергает незнакомую опцию и остаётся на месте (`cd -Z /tmp; git push` пушит отсюда): только -P, -L, --.
+      const options = [];
+      let at = 1;
+      while (at < words.length && words[at].startsWith('-') && words[at] !== '-') {
+        if (words[at] === '--') {
+          at += 1;
+          break;
+        }
+        options.push(words[at]);
+        at += 1;
+      }
+      const odd = options.find((o) => !/^-[PL]+$/.test(o));
+      if (odd !== undefined) return { reject: `\`cd ${odd}\` — опция, с которой каталог не определить` };
+      if (words.length > at + 1) return { reject: '`cd` с несколькими аргументами в команде с push' };
+      const target = words[at] ?? '~';
+      const moved = target === '-' ? null : existingDir(dir, target, home, { physical: options.join('').lastIndexOf('P') > options.join('').lastIndexOf('L') }); // последняя из -P/-L
+      if (moved === null) return { reject: `каталог \`cd ${target}\` не определить или его нет` };
+      dir = moved;
+      if (!startsList) listMovedConditionally = true;
       continue;
     }
-    const name = programName(words[at]);
-    const args = words.slice(at + 1);
-    const env = { ...local.env, ...prefixEnv };
-    const cwdHere = chdir ? resolveDir(local.cwd, chdir, local.home) : local.cwd;
-    if (name === 'cd' || name === 'pushd') {
-      const target = args.find((a) => !a.startsWith('-'));
-      local.cwd = target === undefined ? local.home : target === '-' ? null : resolveDir(local.cwd, target, local.home);
-    } else if (name === 'git') {
-      const { sub, rest, override, aliases, dirs } = parseGit(args);
-      if (sub === undefined) continue;
-      const alias = aliases.get(sub);
-      const aliasWords = alias === undefined ? [] : alias.replace(/^!/, '').split(/\s+/).filter(Boolean);
-      const isPush = sub === 'push' || (alias !== undefined && aliasWords.includes('push'));
-      if (isPush) {
-        const bypass = override ?? envConfigOverride(env) ?? pushBypass([...aliasWords.filter((w) => w !== 'push' && w !== 'git'), ...rest]);
-        pushes.push({ bypass, dir: pushDirectory(cwdHere, null, dirs, env, local.home) });
-      } else if (alias?.startsWith('!') && !recurse(`${alias.slice(1)} ${rest.join(' ')}`, { cwd: cwdHere, env, home: local.home })) return null;
-    } else if (SHELLS.has(name)) {
-      const inner = { cwd: cwdHere, env, home: local.home };
-      const c = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
-      if (c !== -1 && args[c + 1] !== undefined) {
-        if (!recurse(args[c + 1], inner)) return null;
-      } else {
-        // heredoc — код только если оболочка читает stdin: нет файла-скрипта (`bash script.sh <<EOF` — данные для него)
-        const operands = args.filter((a, k) => !a.startsWith('-') && !a.startsWith('+') && !/^[-+]o$/.test(args[k - 1] ?? ''));
-        if (operands.length === 0 || args.includes('-s')) for (const body of heredocs) if (!recurse(body, inner)) return null;
+
+    if (name === 'git') {
+      let i = 1;
+      let pushDir = dir;
+      const otherGlobals = [];
+      while (i < words.length && words[i].startsWith('-')) {
+        if (words[i] === '-C' && i + 1 < words.length) {
+          pushDir = pushDir === null ? null : existingDir(pushDir, words[i + 1], home, { physical: true });
+          i += 2;
+        } else {
+          if (!GIT_HARMLESS_GLOBALS.has(words[i])) otherGlobals.push(words[i]);
+          i += 1;
+        }
       }
-    } else if (name === 'eval') {
-      if (!recurse(args.join(' '), { cwd: cwdHere, env, home: local.home })) return null;
+      const sub = words[i];
+      if (sub === 'push') {
+        if (otherGlobals.length) return { reject: `глобальные опции git (${otherGlobals.join(' ')}) перед push` };
+        if (pushDir === null) return { reject: 'не определить, в каком каталоге исполнится push' };
+        pushes.push({ bypass: pushBypass(words.slice(i + 1)), dir: pushDir });
+      } else if (words.some(mentionsPush) && (otherGlobals.length || !GIT_TEXT_SUBCOMMANDS.has(sub))) {
+        return { reject: `\`git ${[...otherGlobals, sub ?? ''].join(' ').trim()}\` рядом со словом push` };
+      }
+      continue;
     }
+
+    if (words.some(mentionsPush) && !MAY_MENTION_PUSH.has(name)) return { reject: `push внутри \`${name}\`` };
   }
-  return pushes;
+  return { pushes };
 }
 
 export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
@@ -266,20 +235,15 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
   const home = homeDir(env);
   const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : hostCwd;
 
-  let pushes;
   try {
-    pushes = findPushes(command, { cwd, env: {}, home });
-  } catch {
-    pushes = null;
-  }
-  if (pushes === null) {
-    const raw = PUSH_RE.test(command);
-    const bypass = raw ? BYPASS_RE.exec(command) : null;
-    pushes = raw ? [{ bypass: bypass ? bypass[1] : null, dir: cwd }] : [];
-  }
-  if (pushes.length === 0) return 0;
+    const result = analyzePushes(command, cwd, home);
+    if (result.reject) {
+      stderr(`push-gate: ${result.reject} — push заблокирован. ${SIMPLE_HINT}\n`);
+      return 2;
+    }
+    const pushes = result.pushes;
+    if (pushes.length === 0) return 0;
 
-  try {
     const violation = pushes.find((p) => p.bypass);
     if (violation) {
       stderr(
@@ -293,10 +257,8 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
     const left = () => budgetMs - (Date.now() - started);
     const limited = () => Math.min(5000, Math.max(left(), MIN_GATE_MS));
 
-    // Каталог push, которого нет на диске (или не определить), — каталог сессии: push оттуда всё равно упадёт сам.
-    const dirs = [...new Set(pushes.map((p) => (p.dir && existsSync(p.dir) ? p.dir : cwd)))];
     const ran = new Set();
-    for (const dir of dirs) {
+    for (const dir of new Set(pushes.map((p) => p.dir))) {
       const setting = projectSettingStrict(dir, home, 'gate', { timeoutMs: limited() });
       if (setting.state === 'none') continue;
       if (setting.state === 'broken') {

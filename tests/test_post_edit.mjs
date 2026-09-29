@@ -179,14 +179,14 @@ scenario('post_edit: битый project.json и неверный тип — со
   assert.match(broken.err, /не читаются/);
 });
 
-scenario('collab не нашёл проект из-за битого project.json — реестр всё равно опознаётся по codeRoot', RULES, (w) => {
+scenario('collab не нашёл проект из-за битого project.json — реестр всё равно опознаётся по roots', RULES, (w) => {
   const payload = join(w.home, '.agent-kit', 'current', 'bin', 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: null, registryDir: join(w.base, 'registry'), codeRoot: w.root }));
-  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "codeRoot": ${JSON.stringify(w.root)}, "post_edit": [`);
+  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "roots": [${JSON.stringify(w.root)}], "post_edit": [`);
   const r = w.edit(join(w.root, 'app/DTO/New.swift'));
   assert.equal(r.code, 2);
   assert.match(r.err, /не читаются/);
-  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "codeRoot": ${JSON.stringify(join(w.base, 'other'))}, "post_edit": [`);
+  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "roots": [${JSON.stringify(join(w.base, 'other'))}], "post_edit": [`);
   assert.equal(w.edit(join(w.root, 'app/DTO/New.swift')).code, 0, 'чужой проект с битым реестром не мешает');
 });
 
