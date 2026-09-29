@@ -209,11 +209,12 @@ test('Codex hooks: ours is added once and replaced in place; the person\'s hooks
   assert.deepEqual(lib.mergeCodexHooks(null, command).hooks.PreToolUse.length, 1, 'no file yet')
 })
 
-test('Claude settings: model-guard and plan-gate added once; an old python entry is replaced; other hooks stay', () => {
+test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-start added once; an old python entry is replaced; other hooks stay', () => {
   const node = '/opt/node/bin/node'
   const cur = '/Users/x/.agent-kit/current'
   const command = lib.claudeHookCommand(node, cur)
   const gate = lib.claudeHookCommand(node, cur, 'plan-gate')
+  const push = lib.claudeHookCommand(node, cur, 'push-gate')
   assert.equal(command, '"/opt/node/bin/node" "/Users/x/.agent-kit/current/bin/agent-kit-hook" model-guard')
   const theirs = { type: 'command', command: 'push-gate.py', timeout: 180 }
   const existing = {
@@ -229,19 +230,23 @@ test('Claude settings: model-guard and plan-gate added once; an old python entry
   const once = lib.mergeClaudeHooks(existing, node, cur)
   assert.deepEqual(lib.mergeClaudeHooks(once, node, cur), once, 'idempotent')
   assert.deepEqual(once.permissions, existing.permissions)
-  assert.deepEqual(once.hooks.SessionStart, existing.hooks.SessionStart)
+  const post = lib.claudeHookCommand(node, cur, 'post-edit')
+  const start = lib.claudeHookCommand(node, cur, 'session-start')
+  assert.deepEqual(once.hooks.SessionStart, [...existing.hooks.SessionStart, { hooks: [{ type: 'command', command: start, timeout: 15 }] }], 'no matcher on SessionStart; theirs stay')
+  assert.deepEqual(once.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: post, timeout: 60 }] }])
   assert.deepEqual(once.hooks.PreToolUse, [
     { matcher: 'Bash', hooks: [theirs] },
     { matcher: 'Agent', hooks: [{ type: 'command', command, timeout: 10 }] },
-    { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: gate, timeout: 15 }] }
+    { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: gate, timeout: 15 }] },
+    { matcher: 'Bash', hooks: [{ type: 'command', command: push, timeout: 180 }] }
   ])
-  assert.doesNotMatch(command + gate, /exit 2/, 'not a boundary: a broken launch must not block every call')
+  assert.doesNotMatch(command + gate + push, /exit 2/, 'not a boundary: a broken launch must not block every call')
   const project = { type: 'command', command: '"$(git rev-parse --show-toplevel)"/scripts/claude-hooks/plan-gate.py' }
   const kept = lib.mergeClaudeHooks({ hooks: { PreToolUse: [
     { matcher: 'x', hooks: [{ type: 'command', command: lib.codexHookCommand('/n', '/c') }] },
     { matcher: 'Edit|Write', hooks: [project] }
   ] } }, node, cur)
-  assert.equal(kept.hooks.PreToolUse.length, 4, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
+  assert.equal(kept.hooks.PreToolUse.length, 5, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
 })
 
 test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {
@@ -279,7 +284,7 @@ test('three layers: the Codex adapter only with Codex, the personal rule only wh
   }
   const rels = (ctx) => lib.linkSpecs(ctx).map((s) => s.rel)
   const ADAPTER = ['skills/codex-review', 'skills/ui-review', 'rules/vendor-codex.md']
-  const TEAM = ['rules/orchestration.md', 'skills/ux-guidance', 'skills/ux-critic-review', 'agents/verifier.md']
+  const TEAM = ['rules/orchestration.md', 'skills/ux-guidance', 'skills/ux-critic-review', 'skills/adversarial-audit', 'skills/handoff', 'agents/verifier.md']
 
   const withoutCodex = rels({ ...base, codexPresent: false })
   for (const rel of ADAPTER) assert.ok(!withoutCodex.includes(rel), `${rel} must not go to a machine without Codex`)

@@ -4,6 +4,7 @@
 // Сбой запуска самого хука — код 2 (блок): сломанная установка не должна молча снимать границу.
 // Хук, который сам граница, экспортирует `failClosed = true`: если stdin не закрылся за STDIN_SECONDS,
 // хост убил бы его по таймауту (= пропуск), поэтому блокируем сами. Остальные при таком сбое пропускают.
+import { writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -56,6 +57,7 @@ try {
     env: process.env,
     cwd: process.cwd(),
     stderr: (text) => process.stderr.write(text),
+    stdout: (text) => writeSync(1, text), // SessionStart: stdout хука попадает в контекст сессии
   });
 } catch (error) {
   fail(`хук ${name} упал: ${error?.stack ?? error}`);

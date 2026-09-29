@@ -49,11 +49,13 @@ test('installs into every config directory and registers each one separately', (
   assert.deepEqual(W.claudeStateIn('.claude-account-2').collab, expected, 'second directory registered')
   assert.match(r.stdout, /claude \(.*\.claude-account-2\): registered user-scope collab/)
 
-  // model-guard and plan-gate live in each directory's settings.json, not in any project.
+  // model-guard, plan-gate, push-gate, post-edit and session-start live in each directory's settings.json, not in any project.
   for (const dir of [join(W.home, '.claude'), second]) {
     const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
     const commands = settings.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command)
-    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate')], dir)
+    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
+    assert.deepEqual(settings.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'post-edit'), timeout: 60 }] }], dir)
+    assert.deepEqual(settings.hooks.SessionStart, [{ hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'session-start'), timeout: 15 }] }], dir)
   }
   const settingsBefore = readFileSync(join(second, 'settings.json'))
 
@@ -61,8 +63,8 @@ test('installs into every config directory and registers each one separately', (
   const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(again.status, 0, again.all)
   assert.doesNotMatch(again.stdout, /registered user-scope collab/)
-  assert.match(r.stdout, /model-guard and plan-gate hooks in/)
-  assert.doesNotMatch(again.stdout, /model-guard and plan-gate hooks in/)
+  assert.match(r.stdout, /model-guard, plan-gate, push-gate, post-edit and session-start hooks in/)
+  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, push-gate, post-edit and session-start hooks in/)
   assert.ok(readFileSync(join(second, 'settings.json')).equals(settingsBefore), 'settings.json unchanged on a second run')
 })
 

@@ -68,6 +68,8 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/ui-review/SKILL.md',
   'skills/ux-guidance/SKILL.md',
   'skills/ux-critic-review/SKILL.md',
+  'skills/adversarial-audit/SKILL.md',
+  'skills/handoff/SKILL.md',
   'rules/vendor-codex.md',
   'rules/vendor-claude.md',
   'hooks/codex-guard.mjs',
@@ -75,8 +77,12 @@ const REQUIRED_PATHS = Object.freeze([
   'hooks/readonly-guard.mjs',
   'hooks/model-guard.mjs',
   'hooks/plan-gate.mjs',
+  'hooks/push-gate.mjs',
+  'hooks/post-edit.mjs',
+  'hooks/session-start.mjs',
   'hooks/lib/paths.mjs',
   'hooks/lib/plan-gate.mjs',
+  'hooks/lib/project.mjs',
   'bin/agent-kit-hook',
   'bin/collab',
   'bin/apple-lock',
@@ -1146,6 +1152,10 @@ function linkSpecs(ctx) {
     // project-neutral, so they go to every account like the two above.
     { dest: path.join(dir, 'skills', 'ux-guidance'), rel: 'skills/ux-guidance', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'skills', 'ux-critic-review'), rel: 'skills/ux-critic-review', kind: 'dir', posixCopy: true },
+    // Project-neutral procedures of the lead session (29.09.2026): the audit
+    // with per-finding refutation and the session hand-off document.
+    { dest: path.join(dir, 'skills', 'adversarial-audit'), rel: 'skills/adversarial-audit', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'handoff'), rel: 'skills/handoff', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },
@@ -2013,14 +2023,14 @@ function hookCommand(nodePath, currentPath, name) {
 
 // Our PreToolUse entry, recognised by its command, is removed wherever it is and appended once;
 // every other hook in the file is the person's and stays as it was.
-function mergePreToolUseHook(existing, marks, group) {
+function mergePreToolUseHook(existing, marks, group, event = 'PreToolUse') {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
   const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
   const ours = (h) => typeof h?.command === 'string' && marks.some((mark) => mark.test(h.command))
-  const groups = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
+  const groups = (Array.isArray(hooks[event]) ? hooks[event] : [])
     .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
     .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
-  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, group] } }
+  return { ...base, hooks: { ...hooks, [event]: [...groups, group] } }
 }
 
 const codexHookCommand = (nodePath, currentPath) => hookCommand(nodePath, currentPath, 'codex-guard')
@@ -2037,18 +2047,26 @@ function mergeCodexHooks(existing, command) {
 // reads its plan_gate from the project's registry entry and lets everything through without one.
 const CLAUDE_HOOKS = Object.freeze([
   { name: 'model-guard', matcher: 'Agent', timeout: 10 },
-  { name: 'plan-gate', matcher: 'Edit|Write|MultiEdit|NotebookEdit', timeout: 15 }
+  { name: 'plan-gate', matcher: 'Edit|Write|MultiEdit|NotebookEdit', timeout: 15 },
+  { name: 'push-gate', matcher: 'Bash', timeout: 180 },
+  { name: 'post-edit', event: 'PostToolUse', matcher: 'Edit|Write|MultiEdit', timeout: 60 },
+  { name: 'session-start', event: 'SessionStart', timeout: 15 }
 ])
 
 const claudeHookCommand = (nodePath, currentPath, name = 'model-guard') => hookCommand(nodePath, currentPath, name)
 
 function mergeClaudeHooks(existing, nodePath, currentPath) {
   return CLAUDE_HOOKS.reduce(
-    (settings, { name, matcher, timeout }) =>
-      mergePreToolUseHook(settings, hookMarks(name), {
-        matcher,
-        hooks: [{ type: 'command', command: claudeHookCommand(nodePath, currentPath, name), timeout }]
-      }),
+    (settings, { name, event = 'PreToolUse', matcher, timeout }) =>
+      mergePreToolUseHook(
+        settings,
+        hookMarks(name),
+        {
+          ...(matcher ? { matcher } : {}),
+          hooks: [{ type: 'command', command: claudeHookCommand(nodePath, currentPath, name), timeout }]
+        },
+        event
+      ),
     existing
   )
 }
@@ -2096,14 +2114,14 @@ function planClaudeHooks(ctx) {
 function applyClaudeHooks(ctx, plan, journal, changes) {
   if (plan.skipped) return
   for (const file of plan.files) {
-    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard and plan-gate hooks in ${file.file} — a new session picks them up`)
+    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard, plan-gate, push-gate, post-edit and session-start hooks in ${file.file} — a new session picks them up`)
   }
 }
 
 function summarizeClaudeHooks(ctx, plan) {
   if (plan.skipped) return null
   const changed = plan.files.filter((f) => f.changed).map((f) => f.file)
-  return changed.length ? `claude: add the model-guard and plan-gate hooks to ${changed.join(', ')}` : null
+  return changed.length ? `claude: add the model-guard, plan-gate, push-gate, post-edit and session-start hooks to ${changed.join(', ')}` : null
 }
 
 function planCodexHooks(ctx) {
