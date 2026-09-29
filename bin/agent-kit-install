@@ -74,7 +74,9 @@ const REQUIRED_PATHS = Object.freeze([
   'hooks/scope-guard.mjs',
   'hooks/readonly-guard.mjs',
   'hooks/model-guard.mjs',
+  'hooks/plan-gate.mjs',
   'hooks/lib/paths.mjs',
+  'hooks/lib/plan-gate.mjs',
   'bin/agent-kit-hook',
   'bin/collab',
   'bin/apple-lock',
@@ -1999,33 +2001,59 @@ function summarizeCodexRules(ctx, plan) {
 // only after the person trusts it once with /hooks — the installer says so.
 // The command names node and the launcher by absolute path and quotes both: the same string runs under
 // sh and cmd, with no $HOME and no /usr/bin/python3. The older python entry is recognised and replaced.
-const CODEX_HOOK_MARKS = Object.freeze([/\.agent-kit[\\/]+current[\\/]+hooks[\\/]+codex-guard\.py/, /agent-kit-hook"?\s+codex-guard\b/])
+// Neither hook here is a boundary, so there is no `|| exit 2`: a broken launch lets the call through.
 
-function codexHookCommand(nodePath, currentPath) {
-  return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-kit-hook')}" codex-guard`
+function hookMarks(name) {
+  return [new RegExp(`\\.agent-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py`), new RegExp(`agent-kit-hook"?\\s+${name}\\b`)]
 }
 
-function codexHookGroup(command) {
-  return {
-    matcher: '^(Bash|apply_patch)$',
-    hooks: [{ type: 'command', command, timeout: 30, statusMessage: 'agent-kit: explicit model, plan before code' }]
-  }
+function hookCommand(nodePath, currentPath, name) {
+  return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-kit-hook')}" ${name}`
 }
 
-function mergeCodexHooks(existing, command) {
+// Our PreToolUse entry, recognised by its command, is removed wherever it is and appended once;
+// every other hook in the file is the person's and stays as it was.
+function mergePreToolUseHook(existing, marks, group) {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
   const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
-  const ours = (h) => typeof h?.command === 'string' && CODEX_HOOK_MARKS.some((mark) => mark.test(h.command))
+  const ours = (h) => typeof h?.command === 'string' && marks.some((mark) => mark.test(h.command))
   const groups = (Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
     .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
     .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
-  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, codexHookGroup(command)] } }
+  return { ...base, hooks: { ...hooks, PreToolUse: [...groups, group] } }
 }
 
-function planCodexHooks(ctx) {
-  if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
-  if (!codexAdapterWanted(ctx)) return { skipped: true, reason: 'codex is not installed' }
-  const file = path.join(path.dirname(ctx.codexConfig), 'hooks.json')
+const codexHookCommand = (nodePath, currentPath) => hookCommand(nodePath, currentPath, 'codex-guard')
+
+function mergeCodexHooks(existing, command) {
+  return mergePreToolUseHook(existing, hookMarks('codex-guard'), {
+    matcher: '^(Bash|apply_patch)$',
+    hooks: [{ type: 'command', command, timeout: 30, statusMessage: 'agent-kit: explicit model, plan before code' }]
+  })
+}
+
+// A Claude Code lead's hooks go in every config directory's settings.json, so they hold in every project
+// of the machine without a line in the project: model-guard reads nothing from the project, plan-gate
+// reads its plan_gate from the project's registry entry and lets everything through without one.
+const CLAUDE_HOOKS = Object.freeze([
+  { name: 'model-guard', matcher: 'Agent', timeout: 10 },
+  { name: 'plan-gate', matcher: 'Edit|Write|MultiEdit|NotebookEdit', timeout: 15 }
+])
+
+const claudeHookCommand = (nodePath, currentPath, name = 'model-guard') => hookCommand(nodePath, currentPath, name)
+
+function mergeClaudeHooks(existing, nodePath, currentPath) {
+  return CLAUDE_HOOKS.reduce(
+    (settings, { name, matcher, timeout }) =>
+      mergePreToolUseHook(settings, hookMarks(name), {
+        matcher,
+        hooks: [{ type: 'command', command: claudeHookCommand(nodePath, currentPath, name), timeout }]
+      }),
+    existing
+  )
+}
+
+function planJsonHooks(file, merge) {
   const st = lstatOrNull(file)
   if (st && !st.isFile()) throw new InstallError(`${file} exists and is not a regular file — move it away and install again`)
   let parsed = null
@@ -2037,12 +2065,12 @@ function planCodexHooks(ctx) {
       throw new InstallError(`cannot safely merge ${file}: it is not valid JSON (${error.message}). Fix it by hand.`)
     }
   }
-  const next = Buffer.from(`${JSON.stringify(mergeCodexHooks(parsed, codexHookCommand(ctx.node.path, ctx.currentPath)), null, 2)}\n`, 'utf8')
+  const next = Buffer.from(`${JSON.stringify(merge(parsed), null, 2)}\n`, 'utf8')
   return { file, exists: Boolean(st), original, next, changed: !original || !next.equals(original), mode: st ? st.mode & 0o777 : 0o644 }
 }
 
-function applyCodexHooks(ctx, plan, journal, changes) {
-  if (!plan.changed) return
+function applyJsonHooks(plan, journal) {
+  if (!plan.changed) return false
   if (plan.exists) {
     if (!fs.readFileSync(plan.file).equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
     writeFileAtomic(plan.file, plan.next, plan.mode)
@@ -2052,6 +2080,41 @@ function applyCodexHooks(ctx, plan, journal, changes) {
     writeFileAtomic(plan.file, plan.next, 0o644)
     journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
   }
+  return true
+}
+
+function planClaudeHooks(ctx) {
+  if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
+  if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
+  return {
+    files: ctx.claudeDirs.map((dir) =>
+      planJsonHooks(path.join(dir, 'settings.json'), (parsed) => mergeClaudeHooks(parsed, ctx.node.path, ctx.currentPath))
+    )
+  }
+}
+
+function applyClaudeHooks(ctx, plan, journal, changes) {
+  if (plan.skipped) return
+  for (const file of plan.files) {
+    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard and plan-gate hooks in ${file.file} — a new session picks them up`)
+  }
+}
+
+function summarizeClaudeHooks(ctx, plan) {
+  if (plan.skipped) return null
+  const changed = plan.files.filter((f) => f.changed).map((f) => f.file)
+  return changed.length ? `claude: add the model-guard and plan-gate hooks to ${changed.join(', ')}` : null
+}
+
+function planCodexHooks(ctx) {
+  if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
+  if (!codexAdapterWanted(ctx)) return { skipped: true, reason: 'codex is not installed' }
+  const command = codexHookCommand(ctx.node.path, ctx.currentPath)
+  return planJsonHooks(path.join(path.dirname(ctx.codexConfig), 'hooks.json'), (parsed) => mergeCodexHooks(parsed, command))
+}
+
+function applyCodexHooks(ctx, plan, journal, changes) {
+  if (plan.skipped || !applyJsonHooks(plan, journal)) return
   changes.push(`codex: codex-guard hook in ${plan.file} — trust it once in Codex with /hooks, it does not run until then`)
 }
 
@@ -2412,6 +2475,7 @@ const MCP_CLIENTS = [
   { id: 'codex-rules', plan: planCodexRules, apply: applyCodexRules, summary: summarizeCodexRules },
   { id: 'codex-hooks', plan: planCodexHooks, apply: applyCodexHooks, summary: summarizeCodexHooks },
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
+  { id: 'claude-hooks', plan: planClaudeHooks, apply: applyClaudeHooks, summary: summarizeClaudeHooks },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini }
 ]
 
@@ -2607,6 +2671,8 @@ async function main(argv) {
 module.exports = {
   mergeCodexHooks,
   codexHookCommand,
+  mergeClaudeHooks,
+  claudeHookCommand,
   replaceManagedBlock,
   CODEX_RULES_BEGIN,
   CODEX_RULES_END,

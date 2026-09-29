@@ -49,10 +49,21 @@ test('installs into every config directory and registers each one separately', (
   assert.deepEqual(W.claudeStateIn('.claude-account-2').collab, expected, 'second directory registered')
   assert.match(r.stdout, /claude \(.*\.claude-account-2\): registered user-scope collab/)
 
+  // model-guard and plan-gate live in each directory's settings.json, not in any project.
+  for (const dir of [join(W.home, '.claude'), second]) {
+    const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+    const commands = settings.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command)
+    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate')], dir)
+  }
+  const settingsBefore = readFileSync(join(second, 'settings.json'))
+
   // Running again changes nothing: both directories are already in step.
   const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(again.status, 0, again.all)
   assert.doesNotMatch(again.stdout, /registered user-scope collab/)
+  assert.match(r.stdout, /model-guard and plan-gate hooks in/)
+  assert.doesNotMatch(again.stdout, /model-guard and plan-gate hooks in/)
+  assert.ok(readFileSync(join(second, 'settings.json')).equals(settingsBefore), 'settings.json unchanged on a second run')
 })
 
 test('CLAUDE_CONFIG_DIR inside the home is picked up; outside it is ignored', () => {
