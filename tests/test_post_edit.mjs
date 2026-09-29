@@ -159,10 +159,35 @@ scenario('гейт не уложился в бюджет — красный с �
   assert.match(r.err, /не уложился во время/);
 });
 
-scenario('нет post_edit или нет файла гейта — проход', undefined, (w) => {
+scenario('нет post_edit — проход; объявленный гейт без файла — сообщение, а не молчание', undefined, (w) => {
   assert.equal(w.edit(join(w.root, 'app/DTO/New.swift')).code, 0);
   w.writeProject(RULES);
-  assert.equal(w.edit(join(w.root, 'app/DTO/New.swift')).code, 0, 'файла гейта нет');
+  const r = w.edit(join(w.root, 'app/DTO/New.swift'));
+  assert.equal(r.code, 2, 'файла гейта нет');
+  assert.match(r.err, /scripts\/contracts\.mjs — объявлен в реестре, но файла нет/);
+});
+
+scenario('post_edit: битый project.json и неверный тип — сообщение', RULES, (w) => {
+  w.writeProject({ post_edit: 'oops' });
+  const wrongType = w.edit(join(w.root, 'app/DTO/New.swift'));
+  assert.equal(wrongType.code, 2);
+  assert.match(wrongType.err, /не массив/);
+  const file = join(w.base, 'registry', 'demo', 'project.json');
+  writeFileSync(file, '{ "post_edit": [');
+  const broken = w.edit(join(w.root, 'app/DTO/New.swift'));
+  assert.equal(broken.code, 2);
+  assert.match(broken.err, /не читаются/);
+});
+
+scenario('collab не нашёл проект из-за битого project.json — реестр всё равно опознаётся по codeRoot', RULES, (w) => {
+  const payload = join(w.home, '.agent-kit', 'current', 'bin', 'collab.payload.json');
+  writeFileSync(payload, JSON.stringify({ projectId: null, registryDir: join(w.base, 'registry'), codeRoot: w.root }));
+  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "codeRoot": ${JSON.stringify(w.root)}, "post_edit": [`);
+  const r = w.edit(join(w.root, 'app/DTO/New.swift'));
+  assert.equal(r.code, 2);
+  assert.match(r.err, /не читаются/);
+  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "codeRoot": ${JSON.stringify(join(w.base, 'other'))}, "post_edit": [`);
+  assert.equal(w.edit(join(w.root, 'app/DTO/New.swift')).code, 0, 'чужой проект с битым реестром не мешает');
 });
 
 test('нештатный вход и хост без collab — проход, хук не падает', () => {
@@ -191,15 +216,17 @@ scenario('session-start включает каталог git-хуков один 
   assert.equal(second.out, '', 'stdout идёт в контекст сессии — печатать только при изменении');
 });
 
-scenario('session-start: нет каталога, нет настройки или каталог вне дерева — ничего не меняет', { githooks_dir: 'scripts/githooks' }, (w) => {
-  assert.equal(start(w).out, '');
+scenario('session-start: нет каталога, неверный путь — ничего не меняет, но говорит; нет настройки — молчит', { githooks_dir: 'scripts/githooks' }, (w) => {
+  assert.match(start(w).out, /объявлен в реестре, но не найден/);
   assert.equal(hooksPath(w), '', 'каталога нет');
   mkdirSync(join(w.base, 'outside'), { recursive: true });
   for (const dir of ['../outside', '..\\outside', join(w.base, 'outside')]) {
     w.writeProject({ githooks_dir: dir });
-    assert.equal(start(w).out, '', dir);
+    assert.match(start(w).out, /задан неверно/, dir);
     assert.equal(hooksPath(w), '', dir);
   }
+  writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), '{ broken');
+  assert.match(start(w).out, /настройки проекта не читаются/);
   mkdirSync(join(w.root, 'scripts', 'githooks'), { recursive: true });
   w.writeProject({});
   assert.equal(start(w).out, '', 'нет настройки');

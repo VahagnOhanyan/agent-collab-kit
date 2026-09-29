@@ -152,6 +152,42 @@ test('rollback to a release without a hook module drops that hook from settings.
   assert.deepEqual(commandsOf('SessionStart'), [])
 })
 
+// Two releases where the older one has no push-gate/post-edit/session-start modules; both config directories
+// carry our entries and one entry of the person's own.
+function twoReleasesWithSecondDir(name) {
+  const W = makeWorld(name)
+  const second = accountDir(W, '.claude-account-2')
+  const source = makeSource(name)
+  assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
+  const cur = join(W.home, '.agent-kit', 'current')
+  for (const hook of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${hook}.mjs`))
+  commitChange(source, 'rules/orchestration.md', 'rule v2\n')
+  assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
+  const commandsOf = (dir, event) => (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).hooks?.[event] ?? []).flatMap((g) => g.hooks).map((h) => h.command)
+  return { W, second, cur, commandsOf }
+}
+
+test('rollback finds the second config directory in the history, without the flag being repeated', () => {
+  const { W, second, cur, commandsOf } = twoReleasesWithSecondDir('rollback-history-dirs')
+  assert.ok(commandsOf(second, 'PreToolUse').includes(lib.claudeHookCommand(NODE, cur, 'push-gate')))
+  const back = W.run(['--rollback'])
+  assert.equal(back.status, 0, back.all)
+  for (const dir of [join(W.home, '.claude'), second]) {
+    assert.ok(!commandsOf(dir, 'PreToolUse').includes(lib.claudeHookCommand(NODE, cur, 'push-gate')), `${dir}: push-gate is gone`)
+    assert.deepEqual(commandsOf(dir, 'SessionStart'), [], dir)
+  }
+})
+
+test('rollback without the Claude CLI still cleans the settings.json files that exist', () => {
+  const { W, second, cur, commandsOf } = twoReleasesWithSecondDir('rollback-no-claude')
+  const back = W.run(['--rollback', '--claude-bin', join(W.root, 'no-such-claude')])
+  assert.equal(back.status, 0, back.all)
+  for (const dir of [join(W.home, '.claude'), second]) {
+    assert.ok(!commandsOf(dir, 'PreToolUse').includes(lib.claudeHookCommand(NODE, cur, 'push-gate')), `${dir}: push-gate is gone`)
+    assert.deepEqual(commandsOf(dir, 'PostToolUse'), [], dir)
+  }
+})
+
 test('a config directory whose Claude cannot run is reported, and the install still completes', () => {
   const W = makeWorld('disabled-account')
   const second = accountDir(W, '.claude-account-2')

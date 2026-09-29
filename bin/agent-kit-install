@@ -2014,25 +2014,47 @@ function summarizeCodexRules(ctx, plan) {
 // sh and cmd, with no $HOME and no /usr/bin/python3. The older python entry is recognised and replaced.
 // Neither hook here is a boundary, so there is no `|| exit 2`: a broken launch lets the call through.
 
+// Ours means the WHOLE command has one of the two shapes the installer ever wrote — never a substring:
+// a person's wrapper that merely calls our launcher is theirs and stays.
 function hookMarks(name) {
-  return [new RegExp(`\\.agent-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py`), new RegExp(`agent-kit-hook"?\\s+${name}\\b`)]
+  return [
+    new RegExp(`^(?:\\S*python3?(?:\\.exe)?"?\\s+)?"?[^"\\s]*\\.agent-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py"?(?:\\s*\\|\\|\\s*exit\\s+2)?\\s*$`),
+    new RegExp(`^"[^"]+"\\s+"[^"]*[\\\\/]bin[\\\\/]agent-kit-hook"\\s+${name}\\s*$`)
+  ]
 }
 
 function hookCommand(nodePath, currentPath, name) {
   return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-kit-hook')}" ${name}`
 }
 
-// Our PreToolUse entry, recognised by its command, is removed wherever it is and appended once;
-// every other hook in the file is the person's and stays as it was.
+// Our PreToolUse entry, recognised by its whole command, is replaced where it stands (a person's hooks
+// around it keep their order) or appended once if it is new; every other hook in the file is the
+// person's and stays as it was.
 function mergePreToolUseHook(existing, marks, group, event = 'PreToolUse') {
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
   const hooks = base.hooks && typeof base.hooks === 'object' && !Array.isArray(base.hooks) ? { ...base.hooks } : {}
   const ours = (h) => typeof h?.command === 'string' && marks.some((mark) => mark.test(h.command))
-  const groups = (Array.isArray(hooks[event]) ? hooks[event] : [])
-    .map((g) => (Array.isArray(g?.hooks) ? { ...g, hooks: g.hooks.filter((h) => !ours(h)) } : g))
-    .filter((g) => !Array.isArray(g?.hooks) || g.hooks.length > 0)
+  const groups = []
+  let at = -1
+  for (const g of Array.isArray(hooks[event]) ? hooks[event] : []) {
+    if (!Array.isArray(g?.hooks)) {
+      groups.push(g)
+      continue
+    }
+    const kept = g.hooks.filter((h) => !ours(h))
+    if (kept.length === g.hooks.length) {
+      groups.push(g)
+      continue
+    }
+    if (at === -1) at = groups.length
+    if (kept.length) groups.push({ ...g, hooks: kept })
+  }
   // group === null: only remove ours (a hook whose module the release does not have).
-  return { ...base, hooks: { ...hooks, [event]: group ? [...groups, group] : groups } }
+  if (group) {
+    if (at === -1) groups.push(group)
+    else groups.splice(at, 0, group)
+  }
+  return { ...base, hooks: { ...hooks, [event]: groups } }
 }
 
 const codexHookCommand = (nodePath, currentPath) => hookCommand(nodePath, currentPath, 'codex-guard')
@@ -2107,11 +2129,15 @@ function applyJsonHooks(plan, journal) {
   return true
 }
 
-function planClaudeHooks(ctx, available) {
+// `cleanOnly` (a rollback): the settings.json files that already exist are cleaned even when the Claude CLI is
+// not on PATH — our entries in them call a launcher whose release may have just lost the module.
+function planClaudeHooks(ctx, available, { cleanOnly = false } = {}) {
   if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
-  if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
+  const noCli = !commandExists(ctx.claudeBin)
+  if (noCli && !cleanOnly) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
+  const dirs = noCli ? ctx.claudeDirs.filter((dir) => lstatOrNull(path.join(dir, 'settings.json'))) : ctx.claudeDirs
   return {
-    files: ctx.claudeDirs.map((dir) =>
+    files: dirs.map((dir) =>
       planJsonHooks(path.join(dir, 'settings.json'), (parsed) => mergeClaudeHooks(parsed, ctx.node.path, ctx.currentPath, available))
     )
   }
@@ -2581,7 +2607,7 @@ async function install(ctx) {
     }
     if (previous !== source.sha) {
       switchCurrent(ctx, source.sha, journal, plan.current?.raw || null)
-      appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
+      appendHistory(ctx, { at: new Date().toISOString(), sha: source.sha, previous, commit: source.commit, action: 'install', claude_dirs: ctx.claudeDirs.slice(1), kit_tests: built.counts ? 'passed' : 'skipped' }, journal)
       changes.push(`current -> releases/${source.sha} (was ${previous || 'none'})`)
     }
     assertConfigDirsInside(ctx)
@@ -2620,10 +2646,26 @@ async function install(ctx) {
 
 // ── rollback ───────────────────────────────────────────────────────────────
 
-function rollback(ctx) {
-  const current = readCurrent(ctx)
-  if (!current) throw new InstallError(`nothing is installed: ${ctx.currentPath} does not exist`)
-  const history = readHistory(ctx)
+// Config directories an earlier install wrote to (recorded in history): a rollback started without the
+// same --claude-config-dir flags still has to clean them.
+function claudeDirsFromHistory(ctx, history) {
+  let dirs = ctx.claudeDirs
+  for (const raw of new Set(history.flatMap((e) => (Array.isArray(e.claude_dirs) ? e.claude_dirs : [])))) {
+    if (typeof raw !== 'string' || !raw) continue
+    try {
+      dirs = resolveClaudeConfigDirs({ claudeConfigDirs: [...dirs.slice(1), raw] }, ctx.home)
+    } catch {
+      // a recorded directory outside this home (a different home was installed into): not ours to touch
+    }
+  }
+  return dirs
+}
+
+function rollback(baseCtx) {
+  const current = readCurrent(baseCtx)
+  if (!current) throw new InstallError(`nothing is installed: ${baseCtx.currentPath} does not exist`)
+  const history = readHistory(baseCtx)
+  const ctx = { ...baseCtx, claudeDirs: claudeDirsFromHistory(baseCtx, history) }
   const target = rollbackTarget(ctx, history, current.sha)
   if (!target) throw new InstallError(`no earlier release to roll back to from ${current.sha} (history: ${ctx.historyPath})`)
   const links = planLinks(ctx)
@@ -2672,7 +2714,7 @@ function rollback(ctx) {
         out('warning: Node was not found; hooks that stay in settings.json are written with a bare `node`')
       }
     }
-    const hooksPlan = planClaudeHooks({ ...ctx, node }, hasHook)
+    const hooksPlan = planClaudeHooks({ ...ctx, node }, hasHook, { cleanOnly: true })
     applyClaudeHooks(ctx, hooksPlan, journal, changes)
   } catch (error) {
     const undone = journal.rollback()

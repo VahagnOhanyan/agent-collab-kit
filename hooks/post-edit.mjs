@@ -8,13 +8,14 @@
 // значением под одним из `keys` (на любой глубине; к значению дописывается префикс). Так карта «файл → гейт»
 // читается из тех же реестров, что и сами гейты, а новый файл вне реестра ловится по `paths`.
 //
-// Ведущая сессия, не граница: нет collab, настройки, гейта, непонятный вход — правка проходит.
+// Ведущая сессия, не граница: нет collab, настройки, непонятный вход — правка проходит. Но объявленная защита
+// молча не теряется: битый реестр, гейт без файла, гейт, не запустившийся, — сообщение агенту (код 2; правка уже записана).
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { CapTimeout, cleanEnv, homeDir, isInside, realpathLoose, relativeSlashed, runCapped } from './lib/paths.mjs';
-import { gateArgv, gitRoot, projectSetting } from './lib/project.mjs';
+import { gateArgv, gitRoot, projectSettingStrict } from './lib/project.mjs';
 
-const BUDGET_SECONDS_DEFAULT = 55; // таймаут хоста в settings.json — 60; POST_EDIT_SECONDS — только для тестов
+const BUDGET_SECONDS_DEFAULT = 50; // таймаут хоста в settings.json — 60, лаунчер ждёт stdin до 4 с; POST_EDIT_SECONDS — только для тестов
 
 function registryValues(data, keys) {
   const found = new Set();
@@ -65,8 +66,16 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
     if (typeof target !== 'string' || !target) return 0;
     const home = homeDir(env);
     const cwd = typeof event.cwd === 'string' && event.cwd ? event.cwd : hostCwd;
-    const setting = projectSetting(cwd, home, 'post_edit');
-    if (!setting || !Array.isArray(setting.value)) return 0;
+    const setting = projectSettingStrict(cwd, home, 'post_edit');
+    if (setting.state === 'broken') {
+      stderr(`post-edit: настройки проекта не читаются (${setting.reason}) — гейты после правки не запущены. Почини реестр проекта.\n`);
+      return 2;
+    }
+    if (setting.state !== 'ok') return 0;
+    if (!Array.isArray(setting.value)) {
+      stderr('post-edit: `post_edit` в реестре проекта — не массив; гейты после правки не запущены.\n');
+      return 2;
+    }
 
     const root = realpathLoose(gitRoot(cwd, cleanEnv(home)));
     const abs = realpathLoose(path.isAbsolute(target) ? target : path.join(cwd, target));
@@ -84,7 +93,10 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
     const failed = [];
     for (const gate of gates) {
       const file = path.resolve(root, gate);
-      if (!existsSync(file)) continue;
+      if (!existsSync(file)) {
+        failed.push(`${gate} — объявлен в реестре, но файла нет (${file}); проверка после правки ${rel} не выполнена.`);
+        continue;
+      }
       const left = deadline - Date.now();
       if (left <= 0) {
         failed.push(`${gate} — не запущен: бюджет времени хука исчерпан. Прогони его сам.`);
@@ -94,7 +106,11 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
       try {
         run = await runCapped(gateArgv(file), { cwd: root, env: cleanEnv(home), timeoutMs: left });
       } catch (error) {
-        if (error instanceof CapTimeout) failed.push(`${gate} — не уложился во время после правки ${rel}. Прогони его сам.`);
+        failed.push(
+          error instanceof CapTimeout
+            ? `${gate} — не уложился во время после правки ${rel}. Прогони его сам.`
+            : `${gate} — не запустился (${error?.message ?? error}); проверка после правки ${rel} не выполнена.`
+        );
         continue;
       }
       if (run.status === 0) continue;
@@ -107,7 +123,8 @@ export async function main({ stdinText, env, cwd: hostCwd, stderr }) {
         'Baseline рэтчета (--update-baseline) не перезамораживать ради зелёного.\n'
     );
     return 2;
-  } catch {
-    return 0;
+  } catch (error) {
+    stderr(`post-edit: неожиданная ошибка (${error?.message ?? error}) — гейты после правки могли не запуститься.\n`);
+    return 2;
   }
 }

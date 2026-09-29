@@ -45,13 +45,23 @@ function world({ gate = 'gate.mjs', gateExit = 0 } = {}) {
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: 'demo', registryDir: registry, codeRoot: root }));
-  writeFileSync(join(binDir, 'collab'), `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(payload)}, 'utf8'))\n`);
-  const bash = (command, extraEnv) => run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: root }, home, extraEnv);
+  // Как настоящий collab: проект отвечает только каталогу внутри него, из чужого каталога — «не зарегистрирован».
+  writeFileSync(
+    join(binDir, 'collab'),
+    `const fs = require('node:fs');\nconst p = JSON.parse(fs.readFileSync(${JSON.stringify(payload)}, 'utf8'));\n` +
+      `const inside = process.cwd() === p.codeRoot || process.cwd().startsWith(p.codeRoot + require('node:path').sep);\n` +
+      `process.stdout.write(JSON.stringify(inside ? p : { projectId: null, registryDir: p.registryDir, codeRoot: null }));\n`
+  );
+  const bashAt = (command, cwd, extraEnv) => run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd }, home, extraEnv);
+  const bash = (command, extraEnv) => bashAt(command, root, extraEnv);
   return {
     root,
     writeProject,
     writeRaw,
     bash,
+    bashAt,
+    setCollabAnswer: (obj) => writeFileSync(payload, JSON.stringify(obj)),
+    registry,
     gateRan: () => existsSync(ran),
     gateArgs: () => readFileSync(ran, 'utf8'),
     cleanup: () => rmSync(base, { recursive: true, force: true }),
@@ -196,6 +206,61 @@ scenario('текст, в котором встречается push, — не pu
 scenario('незакрытая кавычка — запасной путь: push всё равно ловится', { gateExit: 1 }, (w) => {
   assert.equal(w.bash(`echo "oops; ${P}`).code, 2);
   assert.equal(w.bash(`echo "oops; git status`).code, 0);
+});
+
+scenario('проект выбирается по каталогу цели push, а не по cwd сессии', { gateExit: 1 }, (w) => {
+  const away = dirname(w.root);
+  const blocked = [
+    `git -C "${w.root}" push`,
+    `cd "${w.root}" && ${P}`,
+    `env -C "${w.root}" ${P}`,
+    `env --chdir="${w.root}" ${P}`,
+    `git --git-dir="${w.root}/.git" push`,
+    `GIT_DIR="${w.root}/.git" ${P}`,
+    `git -C /somewhere/else push; git -C "${w.root}" push`,
+  ];
+  for (const command of blocked) assert.equal(w.bashAt(command, away).code, 2, command);
+  assert.equal(w.bashAt(P, away).code, 0, 'push из чужого каталога — не наш проект');
+  assert.equal(w.bashAt(`git -C /somewhere/else push`, away).code, 0);
+});
+
+scenario('--mirror, --delete, :ref и подмена конфигурации — обходы', {}, (w) => {
+  const blocked = [
+    `${P} --mirror`,
+    `${P} --delete origin main`,
+    `${P} origin :main`,
+    `${P} -d origin main`,
+    `git -c remote.origin.mirror=true push`,
+    `git -c remote.origin.push=+HEAD:main push`,
+    `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null ${P}`,
+    `GIT_CONFIG_PARAMETERS="'core.hooksPath=/dev/null'" ${P}`,
+  ];
+  for (const command of blocked) assert.equal(w.bash(command).code, 2, command);
+  assert.equal(w.gateRan(), false);
+});
+
+scenario('комментарий, редиректы, here-string и heredoc с цитированным разделителем', { gateExit: 1 }, (w) => {
+  const passed = [
+    `ls # ${P} ${FORCE}`,
+    `echo '$(${P} -f)'`,
+    `cat <<< "${P}"`,
+    `cat <<\\EOF\n$(${P})\nEOF`,
+    `bash script.sh <<EOF\n${P}\nEOF`,
+  ];
+  for (const command of passed) assert.equal(w.bash(command).code, 0, command);
+  assert.equal(w.gateRan(), false);
+  const blocked = [`${P} 2>&1`, `${P} > out.txt`, `${P} &> out.txt`, `cat <<EOF\n$(${P})\nEOF`, `echo "$(${P})"`];
+  for (const command of blocked) assert.equal(w.bash(command).code, 2, command);
+});
+
+scenario('collab не узнал проект из-за битого project.json — запись находится по codeRoot', {}, (w) => {
+  w.setCollabAnswer({ projectId: null, registryDir: w.registry, codeRoot: null });
+  w.writeRaw(`{"id": "demo", "codeRoot": ${JSON.stringify(w.root)}, oops`);
+  const r = w.bash(P);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /не JSON/);
+  w.writeRaw(`{"id": "demo", "codeRoot": "/somewhere/else", oops`);
+  assert.equal(w.bash(P).code, 0, 'чужой проект с битым файлом не мешает');
 });
 
 test('нештатный вход и хост без collab — проход, хук не падает', () => {

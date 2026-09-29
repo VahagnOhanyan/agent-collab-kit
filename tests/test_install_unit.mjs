@@ -249,6 +249,26 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
   assert.equal(kept.hooks.PreToolUse.length, 5, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
 })
 
+test('Claude settings: a wrapper that merely mentions the launcher is not ours; our entry is replaced in place, keeping the order', () => {
+  const cur = '/Users/x/.agent-kit/current'
+  const wrapper = { type: 'command', command: `my-wrapper "${cur}/bin/agent-kit-hook" push-gate --extra` }
+  const oldPush = { type: 'command', command: lib.claudeHookCommand('/old/node', cur, 'push-gate'), timeout: 180 }
+  const theirs = { type: 'command', command: 'other.sh' }
+  const existing = { hooks: { PreToolUse: [
+    { matcher: 'Bash', hooks: [oldPush] },
+    { matcher: 'Bash', hooks: [theirs] },
+    { matcher: 'Bash', hooks: [wrapper] }
+  ] } }
+  const merged = lib.mergeClaudeHooks(existing, '/new/node', cur)
+  const bash = merged.hooks.PreToolUse.filter((g) => g.matcher === 'Bash')
+  assert.deepEqual(bash.map((g) => g.hooks[0].command), [
+    lib.claudeHookCommand('/new/node', cur, 'push-gate'),
+    theirs.command,
+    wrapper.command
+  ], 'ours stays first where it was; the wrapper survives untouched')
+  assert.equal(merged.hooks.PreToolUse.findIndex((g) => g.hooks[0].command === wrapper.command), 2)
+})
+
 test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {
   const command = lib.codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.agent-kit\\current')
   assert.match(command, /^"C:\\Program Files\\nodejs\\node\.exe" ".*agent-kit-hook" codex-guard$/)
