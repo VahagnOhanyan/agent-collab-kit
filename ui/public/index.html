@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Agent Kit</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<a class="skip" href="#main">К содержимому</a>
+<div class="shell">
+  <nav class="side" aria-label="Разделы">
+    <div class="brand">Agent Kit</div>
+    <div class="nav-group">
+      <a href="#/overview" data-route="overview">Обзор</a>
+      <a href="#/tasks" data-route="tasks">Задачи</a>
+      <a href="#/waiting" data-route="waiting">Ждёт вас <span class="count" id="waiting-count" hidden></span></a>
+      <a href="#/events" data-route="events">Лента</a>
+    </div>
+    <div class="nav-title">Система</div>
+    <div class="nav-group">
+      <a href="#/roster" data-route="roster">Состав</a>
+      <a href="#/kit" data-route="kit">Скиллы и агенты</a>
+    </div>
+    <div class="nav-title">Настройка</div>
+    <div class="nav-group">
+      <a href="#/setup" data-route="setup">Мастер настройки</a>
+    </div>
+    <div class="side-foot"><span class="dot" id="conn-dot"></span><span id="conn-text">панель только для чтения</span></div>
+  </nav>
+  <main id="main" tabindex="-1" aria-live="polite"></main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -14,8 +14,8 @@
 // Roots (journal, working tree, state dir) are resolved once here and handed to
 // the domain through ctx.roots; nothing below this file decides where it is.
 
-import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { CODES, CollabError } from './errors.mjs'
 import { systemClock } from './ids.mjs'
 import { defaultRegistryDir, INSTALL_ROOT, ignoredEnv, journalState, resolveRoots, runGit, safeRealpath } from './paths.mjs'
@@ -35,6 +35,73 @@ import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
+
+const WRITING_METHODS = Object.freeze([
+  'createTask',
+  'claimTask',
+  'assignTask',
+  'updateTask',
+  'completeTask',
+  'blockTask',
+  'releaseTask',
+  'claimFiles',
+  'addDelegation',
+  'completeDelegation',
+  'sweep',
+  'sendMessage',
+  'ackMessage',
+  'replyMessage',
+  'requestReview',
+  'submitReview',
+  'releaseReview',
+  'createDecision',
+  'addPosition',
+  'resolveDecision',
+  'escalateDecision',
+  'requestUserApproval',
+  'startRun',
+  'setStatus'
+])
+
+function executableOnPath(binary) {
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : ['']
+  for (const dir of (process.env.PATH || process.env.Path || '').split(delimiter)) {
+    if (!dir) continue
+    for (const extension of extensions) {
+      const candidate = join(dir, process.platform === 'win32' && !binary.toLowerCase().endsWith(extension.toLowerCase()) ? `${binary}${extension}` : binary)
+      try {
+        const stat = statSync(candidate)
+        if (stat.isFile() && (process.platform === 'win32' || (stat.mode & 0o111) !== 0)) return candidate
+      } catch {
+        // PATH entries routinely disappear; an absent candidate is not a diagnostic.
+      }
+    }
+  }
+  return null
+}
+
+function readOnlyProbe(view, adapter) {
+  const description = adapter.describe()
+  if (description.kind !== 'cli') return adapter.probe()
+  const binaryPath = executableOnPath(description.binary)
+  if (!binaryPath) {
+    return {
+      reachable: false,
+      how: 'inbox only',
+      missing: description.binary,
+      note: `\`${description.binary}\` is not on PATH, so this agent cannot be started from here`,
+      fix: `install ${description.binary} and re-run: collab doctor`
+    }
+  }
+  return {
+    reachable: true,
+    how: description.autostart ? 'cli' : 'inbox (autostart off)',
+    binary_path: binaryPath,
+    note: description.autostart ? 'the layer may start this agent' : 'installed, but autostart is off: owner decision'
+  }
+}
 
 export const isUninitialised = (error) =>
   error instanceof CollabError && [CODES.NOT_INITIALIZED, CODES.ROOT_REFUSED, CODES.JOURNAL_INVALID].includes(error.code)
@@ -78,6 +145,7 @@ export const legacyJournalLookup =
 //   projectRoot  explicit journal root (tests)
 //   configDir    explicit config directory (tests); otherwise registry/defaults
 //   registryDir  the trusted registry (default defaultRegistryDir())
+//   readOnly     disable lease recovery and every public write method
 export function createApi({
   agentId,
   root = null,
@@ -88,7 +156,8 @@ export function createApi({
   configDir = undefined,
   registryDir = defaultRegistryDir(),
   machineDir = undefined,
-  projectRoot = null
+  projectRoot = null,
+  readOnly = false
 } = {}) {
   if (!agentId) {
     throw new CollabError(
@@ -149,6 +218,7 @@ export function createApi({
 
   let lastSweep = 0
   const maybeSweep = async () => {
+    if (readOnly) return
     const now = clock.now()
     if (now - lastSweep < SWEEP_INTERVAL_MS) return
     lastSweep = now
@@ -355,12 +425,20 @@ export function createApi({
             roles: agent.roles,
             runtime_status: view.runtime.effective_status,
             last_seen_at: view.runtime.last_seen_at,
-            ...adapter.probe()
+            ...(readOnly ? readOnlyProbe(view, adapter) : adapter.probe())
           }
         }),
         runners: runs.listRunners(ctx),
         models: catalogDrift(config),
         unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0)
+      }
+    }
+  }
+
+  if (readOnly) {
+    for (const method of WRITING_METHODS) {
+      api[method] = () => {
+        throw new CollabError(CODES.READ_ONLY, `${method} is unavailable through a read-only collab API`, { method })
       }
     }
   }
@@ -448,7 +526,10 @@ function gitSnapshot(worktree, allTasks) {
   // is the one question this snapshot exists to answer.
   const porcelain = (() => {
     try {
-      return runGit(worktree, ['status', '--porcelain'])
+      // --no-optional-locks: this is a look, and git status would otherwise
+      // refresh .git/index, which can make another session's git command fail
+      // on the lock. (GIT_* variables are stripped from the environment.)
+      return runGit(worktree, ['--no-optional-locks', 'status', '--porcelain'])
     } catch {
       return ''
     }

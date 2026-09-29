@@ -13,20 +13,24 @@
 // action belongs in the harness: see the header of domain/approvals.mjs.
 
 import { createInterface } from 'node:readline/promises'
+import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
-import { DEFAULT_CONFIG_DIR, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, defaultRegistryDir, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
 import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
-import { findProject } from './projects.mjs'
+import { findProject, listProjects } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
 import { loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
 import { detectBinary, planComposition, writeComposition } from './composition.mjs'
+
+const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const C = process.stdout.isTTY
   ? { dim: '\x1b[2m', off: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', bold: '\x1b[1m' }
@@ -83,6 +87,26 @@ function defaultIdentity(options) {
     const roots = resolveRoots({ projectRoot: options.projectRoot })
     const config = loadConfig({
       journalRoot: roots.journalRoot,
+      configDir: options.configDir,
+      registryDir: options.registryDir,
+      ...(options.machineDir ? { machineDir: options.machineDir } : {})
+    })
+    return config.agents?.lead || config.agents?.agents?.[0]?.id || null
+  } catch {
+    return null
+  }
+}
+
+function panelIdentity(options) {
+  try {
+    let journalRoot = null
+    try {
+      journalRoot = resolveRoots({ projectRoot: options.projectRoot }).journalRoot
+    } catch {
+      // The setup wizard must open before a project has a journal.
+    }
+    const config = loadConfig({
+      journalRoot,
       configDir: options.configDir,
       registryDir: options.registryDir,
       ...(options.machineDir ? { machineDir: options.machineDir } : {})
@@ -191,6 +215,85 @@ function rootHere(options) {
 }
 
 const STANDALONE = {
+  async ui({ args, flags }, options) {
+    const refuse = (message) => {
+      printError(new CollabError('INVALID_INPUT', message))
+      process.exit(1)
+    }
+    const allowed = new Set(['port', 'project', 'no-open'])
+    const unknown = Object.keys(flags).filter((flag) => !allowed.has(flag))
+    if (args.length || unknown.length) {
+      return refuse('usage: collab ui [--port N] [--project <id>] [--no-open]')
+    }
+    if (flags['no-open'] !== undefined && flags['no-open'] !== true) {
+      return refuse('--no-open does not take a value')
+    }
+    const rawPort = flags.port === undefined ? '0' : String(flags.port)
+    if (!/^\d+$/.test(rawPort) || Number(rawPort) > 65535) {
+      return refuse('--port must be an integer from 0 to 65535')
+    }
+
+    const registryDir = options.registryDir || defaultRegistryDir()
+    let cwd = options.projectRoot || process.cwd()
+    let projectRoot = options.projectRoot
+    if (flags.project !== undefined) {
+      if (typeof flags.project !== 'string') return refuse('--project needs a project id')
+      const entry = listProjects(registryDir).find((project) => project.id === flags.project && project.problems.length === 0)
+      if (!entry) return refuse(`no usable registry project "${flags.project}"`)
+      const index = entry.realRoots.findIndex((root) => existsSync(root))
+      if (index === -1) return refuse(`registry project "${flags.project}" has no root on this machine`)
+      cwd = entry.realRoots[index]
+      projectRoot = entry.roots[index]
+    }
+
+    const apiOptions = {
+      ...options,
+      registryDir,
+      cwd,
+      ...(projectRoot ? { projectRoot } : {}),
+      readOnly: true
+    }
+    const apiFactory = () => createApi({ agentId: panelIdentity(apiOptions), ...apiOptions })
+    let panel
+    try {
+      // Loaded here, not at the top: every other command must keep working
+      // whatever state the panel's files are in.
+      const { startPanel } = await import('../../ui/server.mjs')
+      panel = await startPanel({
+        port: Number(rawPort),
+        token: randomBytes(24).toString('hex'),
+        apiFactory,
+        kitRoot: KIT_ROOT,
+        registryDir,
+        machineDir: options.machineDir || MACHINE_CONFIG_DIR,
+        cwd
+      })
+    } catch (error) {
+      if (error instanceof CollabError) {
+        printError(error)
+        process.exit(1)
+      }
+      throw error
+    }
+    out(panel.url)
+    if (!flags['no-open'] && process.platform === 'darwin') {
+      const child = spawn('/usr/bin/open', [panel.url], { stdio: 'ignore', detached: true, shell: false })
+      child.on('error', (error) => process.stderr.write(`could not open the browser: ${error.message}\n`))
+      child.unref()
+    }
+
+    await new Promise((resolveStop, rejectStop) => {
+      let stopping = false
+      const stop = () => {
+        if (stopping) return
+        stopping = true
+        panel.close().then(resolveStop, rejectStop)
+      }
+      process.once('SIGINT', stop)
+      process.once('SIGTERM', stop)
+    })
+  },
+
   async connect({ flags }, options) {
     const registryDir = options.registryDir || PERSISTENT_REGISTRY_DIR
     let proposal
@@ -913,6 +1016,7 @@ const COMMANDS = {
       '  setup [--agents a,b] [--lead a] [--single-vendor] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role, review mode; owner only',
       '  setup --project        narrow the composition for this project (which agents take part here)',
       '  project [--json]       journal root, worktree, registry project and config source for this directory',
+      '  ui [--port N] [--project <id>] [--no-open]  open the local read-only panel',
       '  status                 who is doing what, what is waiting, what the tree looks like',
       '  tasks [--all]          list tasks',
       '  task <id>              one task with its reviews and messages',
