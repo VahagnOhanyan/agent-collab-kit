@@ -32,17 +32,13 @@ function sameSecret(left, right) {
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
-function cookieToken(header = '') {
-  for (const part of header.split(';')) {
-    const [name, ...value] = part.trim().split('=')
-    if (name === 'panel_token') {
-      try {
-        return decodeURIComponent(value.join('='))
-      } catch {
-        return null
-      }
-    }
-  }
+// A request from another origin (a page on another local port, a site the owner has open) is refused before it
+// reaches any data, whatever token it carries: the panel is only ever driven by its own page.
+function foreignOrigin(req) {
+  const site = req.headers['sec-fetch-site']
+  if (site !== undefined && site !== 'same-origin' && site !== 'none') return `Sec-Fetch-Site: ${site}`
+  const origin = req.headers.origin
+  if (origin !== undefined && origin !== `http://${req.headers.host}`) return `Origin: ${origin}`
   return null
 }
 
@@ -203,10 +199,25 @@ export async function startPanel({
     } catch {
       return fail(res, 400, 'INVALID_URL', 'The request URL is invalid', options)
     }
-    const queryToken = url.searchParams.get('t')
-    const supplied = queryToken || req.headers['x-panel-token'] || cookieToken(req.headers.cookie)
+    // The page and its script carry no journal data, so they are served to any navigation (a link clicked in
+    // another site arrives as Sec-Fetch-Site: cross-site). Everything under /api/ needs the same origin and the
+    // token as a header (or ?t= for the event stream, which cannot send headers). No cookie: every port shares it.
+    const authHeaders = {}
+    if (!url.pathname.startsWith('/api/')) {
+      const file = staticFile(req.url.split('?')[0])
+      if (!file) return fail(res, 404, 'NOT_FOUND', 'No such panel resource', options)
+      let content
+      try {
+        content = await import('node:fs/promises').then(({ readFile }) => readFile(file))
+      } catch {
+        return fail(res, 404, 'NOT_FOUND', 'No such panel resource', options)
+      }
+      return send(res, 200, content, { ...options, headers: { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' } })
+    }
+    const foreign = foreignOrigin(req)
+    if (foreign) return fail(res, 403, 'FORBIDDEN_ORIGIN', `Cross-origin requests are refused (${foreign})`, options)
+    const supplied = req.headers['x-panel-token'] || (url.pathname === '/api/stream' ? url.searchParams.get('t') : null)
     if (!sameSecret(supplied, token)) return fail(res, 403, 'FORBIDDEN', 'A valid panel token is required', options)
-    const authHeaders = queryToken ? { 'Set-Cookie': `panel_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/` } : {}
 
     try {
       if (url.pathname === '/api/setup/detect') {
@@ -233,12 +244,6 @@ export async function startPanel({
         return sendJson(res, 200, answer, { ...options, headers: authHeaders })
       }
       if (url.pathname === '/api/kit') return sendJson(res, 200, readKitFiles(kitRoot), { ...options, headers: authHeaders })
-      if (!url.pathname.startsWith('/api/')) {
-        const file = staticFile(req.url.split('?')[0])
-        if (!file) return fail(res, 404, 'NOT_FOUND', 'No such panel resource', options)
-        const content = await import('node:fs/promises').then(({ readFile }) => readFile(file))
-        return send(res, 200, content, { ...options, headers: { ...authHeaders, 'Content-Type': MIME[extname(file)] || 'application/octet-stream' } })
-      }
 
       let api
       try {

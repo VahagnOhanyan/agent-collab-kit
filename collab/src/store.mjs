@@ -32,11 +32,12 @@ import { withLock } from './lock.mjs'
 
 const IN_TRANSACTION = Symbol('collab.inTransaction')
 
-export function createStore({ root, agentId = 'unknown', clock = systemClock, lockOptions = {}, legacyJournal = false } = {}) {
+export function createStore({ root, agentId = 'unknown', clock = systemClock, lockOptions = {}, legacyJournal = false, readOnly = false } = {}) {
   // Refuses anything that is not an initialised journal: creating one is `collab
   // init`'s job alone, so a store opened in the wrong place fails instead of
   // littering. `legacyJournal` — the registry vouches for a markerless journal.
-  const paths = ensureLayout(root, { legacyJournal })
+  // `readOnly` — not even the missing layout directories of a legacy journal are created.
+  const paths = ensureLayout(root, { legacyJournal, readOnly })
   const state = { [IN_TRANSACTION]: false }
 
   const recordPath = (collection, id) => paths.record(collection, id)

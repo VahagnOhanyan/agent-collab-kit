@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
@@ -44,6 +44,21 @@ test('readOnly createApi disables sweeping and every listed write method', async
     assert.throws(() => api[method]({}), (error) => error?.code === 'READ_ONLY', method)
   }
   assert.equal(digest(sbx.stateDir), before)
+})
+
+test('readOnly createApi does not create missing layout directories', async (t) => {
+  const sbx = sandbox()
+  t.after(sbx.cleanup)
+  const missing = readdirSync(sbx.stateDir).filter((name) => statSync(join(sbx.stateDir, name)).isDirectory())
+  assert.ok(missing.length > 0, 'the sandbox journal has layout directories')
+  for (const name of missing) rmSync(join(sbx.stateDir, name), { recursive: true, force: true })
+  const before = digest(sbx.stateDir)
+  const api = createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir, readOnly: true })
+  await api.status()
+  await api.listTasks()
+  assert.equal(digest(sbx.stateDir), before, 'a viewer leaves the journal exactly as it found it')
+  createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir })
+  assert.notEqual(digest(sbx.stateDir), before, 'control: a writer does fill the layout in')
 })
 
 test('createApi without readOnly retains write behaviour', async (t) => {

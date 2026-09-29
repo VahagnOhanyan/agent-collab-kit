@@ -54,13 +54,37 @@ test('M2 listens only on 127.0.0.1', async (t) => {
   assert.equal(started.server.address().address, '127.0.0.1')
 })
 
-test('M3 rejects a request without a token and establishes a strict cookie with one', async (t) => {
+test('M3 data needs the token as a header, never a cookie; the page itself carries no data', async (t) => {
   const started = await panel(t)
   if (!started) return
-  assert.equal((await get(started, '/')).status, 403)
-  const response = await get(started, `/?t=${TOKEN}`)
-  assert.equal(response.status, 200)
-  assert.match(response.headers['set-cookie'][0], /HttpOnly; SameSite=Strict; Path=\/$/)
+  assert.equal((await get(started, '/api/overview')).status, 403)
+  assert.equal((await get(started, `/api/overview?t=${TOKEN}`)).status, 403, 'query token only for the stream')
+  assert.equal((await get(started, '/api/overview', { headers: { cookie: `panel_token=${TOKEN}` } })).status, 403, 'a cookie is not a token')
+  assert.equal((await get(started, '/api/overview', { token: TOKEN })).status, 200)
+  const page = await get(started, `/?t=${TOKEN}`)
+  assert.equal(page.status, 200)
+  assert.equal(page.headers['set-cookie'], undefined, 'no cookie: every port of 127.0.0.1 would receive it')
+  assert.equal((await get(started, '/app.js')).status, 200, 'static code without a token')
+})
+
+test('M3b a request from another origin is refused whatever token it carries', async (t) => {
+  const started = await panel(t)
+  if (!started) return
+  const port = started.server.address().port
+  for (const headers of [
+    { origin: 'http://127.0.0.1:9999' },
+    { origin: 'http://evil.example' },
+    { 'sec-fetch-site': 'same-site' },
+    { 'sec-fetch-site': 'cross-site' },
+  ]) {
+    const response = await get(started, '/api/overview', { token: TOKEN, headers })
+    assert.equal(response.status, 403, JSON.stringify(headers))
+    assert.equal(response.json().error.code, 'FORBIDDEN_ORIGIN')
+  }
+  const own = await get(started, '/api/overview', { token: TOKEN, headers: { origin: `http://127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin' } })
+  assert.equal(own.status, 200)
+  assert.equal((await get(started, `/?t=${TOKEN}`, { headers: { 'sec-fetch-site': 'none' } })).status, 200, 'typed or opened from a terminal')
+  assert.equal((await get(started, `/?t=${TOKEN}`, { headers: { 'sec-fetch-site': 'cross-site' } })).status, 200, 'a link clicked in another site opens the page')
 })
 
 test('M4 rejects literal and encoded static traversal', async (t) => {

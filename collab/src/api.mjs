@@ -213,7 +213,7 @@ export function createApi({
   }
   if (!state?.initialized) throw notInitialised(roots, state)
 
-  const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy' })
+  const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy', readOnly })
   const ctx = { store, registry, config, clock, agentId, roots }
 
   let lastSweep = 0

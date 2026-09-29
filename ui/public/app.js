@@ -26,8 +26,20 @@ function el(tag, props, ...children) {
   return node
 }
 
+// The first visit carries ?t=<token>. It lives in this tab's sessionStorage and goes out as a header, never as a
+// cookie: a browser sends cookies to every port of 127.0.0.1, so any other local service would receive it.
+const PANEL_TOKEN = (() => {
+  const fromUrl = new URL(location.href).searchParams.get('t')
+  try {
+    if (fromUrl) sessionStorage.setItem('panel_token', fromUrl)
+    return fromUrl || sessionStorage.getItem('panel_token') || ''
+  } catch {
+    return fromUrl || ''
+  }
+})()
+
 async function api(path) {
-  const response = await fetch(path, { credentials: 'same-origin', headers: { accept: 'application/json' } })
+  const response = await fetch(path, { credentials: 'omit', headers: { accept: 'application/json', 'x-panel-token': PANEL_TOKEN } })
   let body = null
   try {
     body = await response.json()
@@ -113,7 +125,8 @@ async function overview() {
   const waitingNow = await api('/api/waiting').catch(() => null)
   const known = Boolean(waitingNow) // if it failed the split is unknown; say so, do not guess zero
   const expired = (waitingNow?.approvals || []).filter((a) => a.expired).length
-  const live = s.approvals_pending - expired
+  // Both numbers from one snapshot: status() and /api/waiting are read at different moments.
+  const live = known ? (waitingNow.approvals || []).length - expired : s.approvals_pending
   // A tile that has a screen behind it is a link to it: the numbers the owner
   // must act on (approvals, decisions) should not need a second hunt in the menu.
   const tile = (n, label, hot, href) =>
@@ -224,6 +237,26 @@ function reviewCard(r) {
       el('div', { class: 'muted', text: plain(f.note || f.summary || f.title || '') }))))
 }
 
+// Ids in a copyable command come from the journal, and agents write the journal: an option id `ok; rm -rf ~`
+// would run when the owner pastes the line. A plain id stays as is, anything else is single-quoted; an id with a
+// control character (a newline would end the command) gets no command at all.
+function shellArg(value) {
+  const text = String(value ?? '')
+  if (/^[A-Za-z0-9._:@%+=,/-]+$/.test(text)) return text
+  return `'${text.replace(/'/g, `'\\''`)}'`
+}
+
+function commandLine(parts) {
+  return parts.some((p) => /[\u0000-\u001f\u007f]/.test(String(p ?? ''))) ? null : parts.join(' ')
+}
+
+function labelledCommand(title, parts, what) {
+  const line = commandLine(parts)
+  return line === null
+    ? el('div', { class: 'note bad', text: `${title}: идентификатор содержит управляющие символы — команду не предлагаем, проверьте запись в журнале.` })
+    : labelled(title, line, what)
+}
+
 // What the owner needs to judge a request: the action, what it costs, why it is
 // asked, until when it holds, and both ways to answer it.
 function approvalCard(x) {
@@ -241,8 +274,8 @@ function approvalCard(x) {
     // owner to a terminal failure, so it gets none.
     ...(x.expired
       ? []
-      : [labelled('Одобрить (в терминале)', `collab approve ${x.id}`, 'команду одобрения'),
-         labelled('Отклонить (в терминале, причина обязательна)', `collab reject ${x.id} --note "причина"`, 'команду отклонения')]))
+      : [labelledCommand('Одобрить (в терминале)', ['collab', 'approve', shellArg(x.id)], 'команду одобрения'),
+         labelledCommand('Отклонить (в терминале, причина обязательна)', ['collab', 'reject', shellArg(x.id), '--note', '"причина"'], 'команду отклонения')]))
 }
 
 // A dispute is decided by reading the question, the options and what each agent
@@ -258,9 +291,9 @@ function decisionCard(x) {
     ...options.map((o) => el('div', { class: 'option' },
       el('div', {}, el('strong', { text: o.label || o.id })),
       o.summary ? el('div', { class: 'muted', text: o.summary }) : null,
-      labelled('Выбрать (в терминале)', `collab decide ${x.id} ${o.id}`, `команду выбора варианта «${o.label || o.id}»`))),
+      labelledCommand('Выбрать (в терминале)', ['collab', 'decide', shellArg(x.id), shellArg(o.id)], `команду выбора варианта «${o.label || o.id}»`))),
     // A dispute without predefined options is answered in the owner's own words.
-    ...(options.length ? [] : [labelled('Ответить своими словами (в терминале)', `collab decide ${x.id} <ваше решение>`, 'команду ответа на спор')]),
+    ...(options.length ? [] : [labelledCommand('Ответить своими словами (в терминале)', ['collab', 'decide', shellArg(x.id), '<ваше решение>'], 'команду ответа на спор')]),
     (x.positions || []).length ? el('h3', { text: 'Позиции агентов' }) : null,
     ...(x.positions || []).map((p) => el('div', { class: 'position' },
       el('span', { class: 'mono', text: `${p.agent || '?'} → ${label.get(p.option) || p.option || '—'}` }),
@@ -299,25 +332,26 @@ async function events() {
   let follow = true
   let filter = ''
   const rows = []
+  // Recomputed on every change — a filter typed earlier and an event arriving later both move it.
+  const updateNoMatch = () => {
+    noMatch.hidden = !filter || rows.length === 0 || rows.some((row) => !row.node.hidden)
+  }
   const render = (event) => {
     const node = el('details', { class: 'ev' },
       el('summary', {}, el('span', { class: 't', text: when(event.ts) }), el('span', { class: 'ty', text: event.type }), el('span', { text: `${event.actor || ''} ${event.subject?.id || ''}` })),
       el('pre', { text: JSON.stringify(event.data ?? {}, null, 2) }))
     rows.push({ node, text: `${event.type} ${event.actor} ${event.subject?.id} ${JSON.stringify(event.data ?? {})}`.toLowerCase() })
-    node.hidden = filter && !rows[rows.length - 1].text.includes(filter)
+    node.hidden = Boolean(filter) && !rows[rows.length - 1].text.includes(filter)
     box.append(node)
     emptyNote.hidden = true
+    updateNoMatch()
     if (follow) box.scrollTop = box.scrollHeight
   }
   initial.forEach(render)
   const search = el('input', { type: 'search', placeholder: 'Фильтр', 'aria-label': 'Фильтр событий', oninput: (e) => {
     filter = e.target.value.trim().toLowerCase()
-    let shown = 0
-    for (const row of rows) {
-      row.node.hidden = Boolean(filter) && !row.text.includes(filter)
-      if (!row.node.hidden) shown += 1
-    }
-    noMatch.hidden = shown > 0 || rows.length === 0
+    for (const row of rows) row.node.hidden = Boolean(filter) && !row.text.includes(filter)
+    updateNoMatch()
   } })
   const followBtn = el('button', { type: 'button', 'aria-pressed': 'true', text: 'Автопрокрутка: вкл', onclick: () => {
     follow = !follow
@@ -325,7 +359,7 @@ async function events() {
     followBtn.textContent = `Автопрокрутка: ${follow ? 'вкл' : 'выкл'}`
   } })
   closeStream()
-  stream = new EventSource('/api/stream')
+  stream = new EventSource(`/api/stream?t=${encodeURIComponent(PANEL_TOKEN)}`) // EventSource cannot send headers
   stream.onmessage = (message) => {
     try { render(JSON.parse(message.data)) } catch { /* a malformed line is skipped, the stream goes on */ }
   }
@@ -519,9 +553,13 @@ function setConn(tone, text) {
   document.getElementById('conn-text').textContent = text
 }
 
+let badgeSeq = 0 // an older answer that arrives late must not overwrite a newer count
+
 async function refreshBadge() {
+  const mine = ++badgeSeq
   try {
     const w = await api('/api/waiting')
+    if (mine !== badgeSeq) return
     // An expired approval cannot be granted any more; it is not "waiting for you".
     const n = (w.approvals || []).filter((a) => !a.expired).length + (w.decisions?.length || 0)
     const badge = document.getElementById('waiting-count')
@@ -556,8 +594,7 @@ async function route() {
   refreshBadge()
 }
 
-// The first visit carries ?t=<token>; the server turns it into a cookie, and the
-// token is then removed from the address bar so it is not left in history.
+// The token is kept out of the address bar (history) once read; see PANEL_TOKEN.
 if (location.search.includes('t=')) history.replaceState(null, '', location.pathname + location.hash)
 window.addEventListener('hashchange', route)
 route()

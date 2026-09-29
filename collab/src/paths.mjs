@@ -400,7 +400,8 @@ export const layout = (root) => ({
 // Opens the layout of an INITIALISED journal (filling in a missing tmp/ or
 // locks/ of a legacy one). Without `create` — which only `collab init` passes —
 // anything that is not a journal is refused before a single mkdir.
-export function ensureLayout(root, { create = false, legacyJournal = false } = {}) {
+// `readOnly` — a viewer (the panel): the journal is opened as it is, a missing directory reads as empty.
+export function ensureLayout(root, { create = false, legacyJournal = false, readOnly = false } = {}) {
   if (!create) {
     const state = journalState(root, { legacyJournal })
     if (!state.initialized) {
@@ -408,8 +409,10 @@ export function ensureLayout(root, { create = false, legacyJournal = false } = {
       throw new CollabError(state.code, `${state.reason}${hint}`, { state_dir: root, reason: state.reason, command: 'collab init' })
     }
   }
-  for (const dir of [root, ...LAYOUT_DIRS.map((d) => join(root, d))]) {
-    if (!existsSync(dir)) mkdirSync(dir)
+  if (!readOnly) {
+    for (const dir of [root, ...LAYOUT_DIRS.map((d) => join(root, d))]) {
+      if (!existsSync(dir)) mkdirSync(dir)
+    }
   }
   return layout(root)
 }
