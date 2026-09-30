@@ -497,9 +497,15 @@ async function setup() {
       el('h2', { id: 'step-5', text: '5. Проект' }),
       projectCard(detect.project),
       el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Панель записывает только ведущего и режим ревью, и только после вашего подтверждения. Состав агентов и роли меняются командами ниже в вашем терминале (в этой сессии — через приставку «!»).' }),
+      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — только ведущего и режим ревью, и всегда после вашего подтверждения. Смена агентов и ролей — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
       applyBlock(preview.apply),
-      ...preview.commands.map((c) => el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)),
+      ...preview.commands.map((c) => {
+        const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
+        // The panel can write this composition itself: the terminal command is then only the fallback, folded away.
+        // It stays open whenever the button is not available (no right to write, a different set of agents, ...).
+        if (!c.command.startsWith('collab setup') || !detect.writable || !preview.apply?.available) return body
+        return el('details', {}, el('summary', { class: 'muted', text: 'То же самое из терминала (запасной путь)' }), body)
+      }),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck })))
   }
 
@@ -688,7 +694,7 @@ const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждё
 async function route() {
   const seq = ++routeSeq
   closeStream()
-  setConn('', 'пишет только ведущего и режим ревью')
+  setConn('', 'пишет состав, ведущего и режим ревью')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
   const screen = ROUTES[name] || overview
   for (const link of document.querySelectorAll('[data-route]')) {
