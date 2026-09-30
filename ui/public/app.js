@@ -96,7 +96,7 @@ const STANDSTILL_TONE = {
   ready_to_complete: 'ok', in_work: 'muted'
 }
 const standstillPill = (s) => el('span', { class: `pill ${STANDSTILL_TONE[s.code] || ''}`, title: s.code, text: STANDSTILL_RU[s.code] || s.code })
-const REVIEW_MODE_RU ={ cross_vendor: 'ревью другой модельной семьёй', single_vendor: 'ревью той же модельной семьёй' }
+const REVIEW_MODE_RU ={ cross_vendor: 'ревью другим вендором', single_vendor: 'ревью тем же вендором' }
 const statusText = (status) => (status === undefined || status === null ? '—' : STATUS_RU[status] || status)
 const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, title: status ?? '', text: statusText(status) })
 const when = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—')
@@ -249,7 +249,8 @@ function reviewCard(r) {
   return el('div', { class: 'card' },
     el('div', {}, pill(r.verdict || 'pending'), ' ', el('span', { class: 'mono', text: `${r.slot || r.requested_role || ''}${r.round ? ` · раунд ${r.round}` : ''}` }),
       r.reviewer ? el('span', { class: 'muted', text: ` · ${r.reviewer}` }) : null,
-      r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'та же модельная семья' }) : null),
+      r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'тот же вендор' }) : null,
+      r.reviewer_model ? el('span', { class: 'pill', text: `ревьюер: ${r.reviewer_model}${r.reviewer_model_level ? ` (${r.reviewer_model_level})` : ''}${r.author_model ? `, автор: ${r.author_model}` : ''}` }) : null),
     r.summary ? el('div', { class: 'detail', text: plain(r.summary) }) : null,
     ...findings.map((f) => el('div', { class: 'position' },
       el('span', { class: `pill ${f.severity === 'blocker' || f.severity === 'major' ? 'bad' : ''}`, text: f.severity || 'нет оценки' }),
@@ -415,12 +416,12 @@ async function kit() {
   let tab = 'skills'
   let query = ''
   const holder = el('div', {})
-  const labels = { skills: 'Скиллы', agents: 'Агенты', rules: 'Правила' }
+  const labels = { skills: 'Скиллы', agents: 'Агенты', rules: 'Правила', mcp: 'MCP-серверы' }
   const draw = () => {
     holder.replaceChildren()
-    const items = (data[tab] || []).filter((x) => `${x.name} ${x.description || ''}`.toLowerCase().includes(query))
+    const items = (data[tab] || []).filter((x) => `${x.name} ${x.description || ''} ${x.target || ''}`.toLowerCase().includes(query))
     holder.append(items.length ? el('div', { class: 'list' }, items.map((x) =>
-      el('div', { class: 'row' }, el('strong', { class: 'mono', text: x.name }), el('span', { class: 'grow', text: x.description || (x.problem ? `проблема: ${x.problem}` : '') }),
+      el('div', { class: 'row' }, el('strong', { class: 'mono', text: x.name }), el('span', { class: 'grow', text: x.description || (x.agents ? `${x.transport}: ${x.target || '—'} · ${x.agents.join(', ')}` : x.problem ? `проблема: ${x.problem}` : '') }),
         x.model ? el('span', { class: 'pill', text: x.model }) : null))) : empty('Ничего не найдено'))
   }
   const tabs = el('div', { class: 'tabs' }, Object.keys(labels).map((key) =>
@@ -431,7 +432,7 @@ async function kit() {
     } })))
   const search = el('input', { type: 'search', placeholder: 'Поиск', 'aria-label': 'Поиск по набору', oninput: (e) => { query = e.target.value.trim().toLowerCase(); draw() } })
   draw()
-  return page('Скиллы и агенты', 'Читается из файлов набора: список нигде не ведётся вручную.', el('div', { class: 'toolbar' }, tabs, search), holder)
+  return page('Скиллы и агенты', 'Читается из файлов набора и пользовательских конфигов агентов (MCP — только общие, без серверов конкретных проектов): список нигде не ведётся вручную.', el('div', { class: 'toolbar' }, tabs, search), holder)
 }
 
 // ── setup wizard ──────────────────────────────────────────────────────────
@@ -466,8 +467,8 @@ async function setup() {
       out.append(el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` }))
     }
     reviewNote.textContent = preview.plan.review_mode === 'single_vendor'
-      ? 'Одна модельная семья: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
-      : 'Разные модельные семьи: ревью никогда не достаётся автору.'
+      ? 'Один вендор: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
+      : 'Разные вендоры: ревью никогда не достаётся автору.'
     out.append(
       el('h2', { id: 'step-4', text: '4. Роли (задаются реестром, здесь только справка)' }),
       el('div', { class: 'list' }, preview.plan.agents.map((a) => el('div', { class: 'row' }, el('strong', { text: a.id }), a.id === lead ? el('span', { class: 'pill', text: 'ведущий' }) : null, el('span', { class: 'grow' }, chips(a.roles))))),
@@ -540,7 +541,7 @@ async function setup() {
       leadBox.append(el('label', { class: 'choice', for: `ld-${id}` }, radio, el('span', {}, el('strong', { text: id }), el('span', { class: 'muted', text: agent ? ` · ${agent.provider || ''}` : '' }))))
     }
   }
-  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', { text: 'Принудительно считать одной модельной семьёй (--single-vendor)' }))
+  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же агент в отдельной сессии. Сами агенты остаются разными, меняется только режим ревью.' })))
   const jump = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' })
   drawLead(); drawPreview()
   return page('Мастер настройки', 'Соберите состав коллаборации и получите готовые команды. Пока вы не выполнили команду в терминале, на машине ничего не меняется.',

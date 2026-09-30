@@ -1,5 +1,8 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join, relative } from 'node:path'
+
+import { readMcpServers } from './mcp-servers.mjs'
 
 function scalar(value) {
   const clean = value.trim()
@@ -40,7 +43,7 @@ function record(file, kitRoot, fields) {
   }
 }
 
-export function readKitFiles(kitRoot) {
+export function readKitFiles(kitRoot, { home = homedir() } = {}) {
   const skills = filesAt(join(kitRoot, 'skills'), (entry) => entry.isDirectory()).map((entry) => {
     const file = join(kitRoot, 'skills', entry.name, 'SKILL.md')
     return record(file, kitRoot, (meta) => ({ name: meta.name || entry.name, description: meta.description || '' }))
@@ -58,5 +61,5 @@ export function readKitFiles(kitRoot) {
     name: basename(entry.name, '.md'),
     path: relative(kitRoot, join(kitRoot, 'rules', entry.name))
   }))
-  return { skills, agents, rules }
+  return { skills, agents, rules, mcp: readMcpServers(home) }
 }

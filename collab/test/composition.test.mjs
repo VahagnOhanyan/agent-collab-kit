@@ -152,12 +152,13 @@ test('single_vendor: the same agent reviews in a separate session, recorded as s
     const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
     const task = await codex.createTask({ title: 'Solo work', action: 'edit a file', spec: { ux_impact: 'HIGH' } })
     await codex.claimTask({ task_id: task.id })
-    const review = await codex.requestReview({ task_id: task.id })
+    const review = await codex.requestReview({ task_id: task.id, author_model: 'terra', reviewer_model: 'sol' })
     assert.equal(review.routed_to, 'codex')
+    assert.equal(review.review.reviewer_model, 'sol')
     assert.equal(review.review.independence, 'same_agent_separate_session')
     await codex.submitReview({ review_id: review.review.id, verdict: 'approved', summary: 'Separate session: re-read the diff and ran the tests.' })
     await assert.rejects(codex.completeTask({ task_id: task.id }), /ux_reviewer/, 'the UX gate still applies')
-    const ux = await codex.requestReview({ task_id: task.id, reviewer_role: 'ux_reviewer', slot: 'ui', blocking: false })
+    const ux = await codex.requestReview({ task_id: task.id, reviewer_role: 'ux_reviewer', slot: 'ui', blocking: false, author_model: 'terra', reviewer_model: 'sol' })
     assert.equal(ux.routed_to, 'codex')
     await codex.submitReview({ review_id: ux.review.id, verdict: 'approved', summary: 'Separate session: flows checked.' })
     assert.equal((await codex.completeTask({ task_id: task.id })).status, 'completed')
@@ -199,5 +200,46 @@ test('check-config checks the machine composition', () => {
     assert.match(r.stdout, /machine composition[\s\S]*lead "nobody"/)
   } finally {
     m.cleanup()
+  }
+})
+
+test('single_vendor: the reviewer model must be named, differ from the author\'s and not be weaker', async () => {
+  const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
+  const sbx = sandbox()
+  try {
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const task = await codex.createTask({ title: 'Solo work', action: 'edit a file' })
+    await codex.claimTask({ task_id: task.id })
+    const refused = (input, pattern) => assert.rejects(codex.requestReview({ task_id: task.id, ...input }), (e) => e.code === 'INVALID_INPUT' && pattern.test(e.message))
+    await refused({ author_model: 'terra' }, /name the reviewer model/)
+    await refused({ reviewer_model: 'sol' }, /author's model is not on record/)
+    await refused({ author_model: 'terra', reviewer_model: 'terra' }, /same model/)
+    await refused({ author_model: 'sol', reviewer_model: 'terra' }, /weaker/)
+    await refused({ author_model: 'terra', reviewer_model: 'no-such-model' }, /cannot compare/)
+    const ok = await codex.requestReview({ task_id: task.id, author_model: 'sol', reviewer_model: 'astra' })
+    assert.deepEqual(
+      [ok.review.reviewer_model, ok.review.reviewer_model_level, ok.review.author_model, ok.review.author_model_level],
+      ['astra', 'L3', 'sol', 'L2']
+    )
+  } finally {
+    m.cleanup()
+    sbx.cleanup()
+  }
+})
+
+test('single_vendor: the author\'s model comes from the latest delegation when not passed', async () => {
+  const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
+  const sbx = sandbox()
+  try {
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const task = await codex.createTask({ title: 'Delegated', action: 'edit a file' })
+    await codex.claimTask({ task_id: task.id })
+    await codex.addDelegation({ task_id: task.id, to: 'helper', model: 'sol' })
+    await assert.rejects(codex.requestReview({ task_id: task.id, reviewer_model: 'terra' }), /weaker/)
+    const ok = await codex.requestReview({ task_id: task.id, reviewer_model: 'astra' })
+    assert.equal(ok.review.author_model, 'sol')
+  } finally {
+    m.cleanup()
+    sbx.cleanup()
   }
 })

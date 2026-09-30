@@ -469,6 +469,13 @@ export const TOOLS = [
             'implementation, tests, ui, consistency, security or challenger. How many a task deserves is judgement.',
           { enum: SLOTS }
         ),
+        reviewer_model: str(
+          'The model the reviewer will run on (a ref from `collab models`). REQUIRED when the same agent reviews its own ' +
+            'task (single_vendor): it must differ from the author\'s model and not be weaker.'
+        ),
+        author_model: str(
+          'The model the author worked on, when the task has no delegation that says so. Only compared in a same-vendor review.'
+        ),
         blocking: bool(
           'Whether this is the review that gates the task. Defaults to true, which is the old behaviour. Ask for extra ' +
             'slots with false: they record a verdict beside the task without moving it, so a reviewer that never answers ' +

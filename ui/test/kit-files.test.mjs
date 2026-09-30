@@ -23,3 +23,28 @@ test('kit file discovery reads frontmatter and reports malformed entries', () =>
   assert.deepEqual(kit.agents[0].tools, ['Read', 'Grep'])
   assert.deepEqual(kit.rules, [{ name: 'neutral', path: 'rules/neutral.md' }])
 })
+
+test('mcp discovery lists user-level servers of both agents, skips project files and never leaks secrets', () => {
+  const home = tempDir('panel-home-')
+  mkdirSync(join(home, '.codex'))
+  mkdirSync(join(home, '.claude-two'))
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({
+    mcpServers: {
+      collab: { command: '/bin/node', args: ['--token=SECRET'], env: { KEY: 'SECRET' } },
+      docs: { type: 'http', url: 'https://docs.example/mcp?key=SECRET', headers: { Authorization: 'SECRET' } }
+    },
+    projects: { '/p': { mcpServers: { only_here: { command: 'x' } } } }
+  }))
+  writeFileSync(join(home, '.claude-two', '.claude.json'), JSON.stringify({ mcpServers: { collab: { command: '/bin/node' } } }))
+  writeFileSync(join(home, '.codex', 'config.toml'), '[mcp_servers.collab]\ncommand = "/bin/node"\n[mcp_servers.collab.env]\nKEY = "SECRET"\n[mcp_servers.linear]\nurl = "https://linear.example/mcp"\n')
+  mkdirSync(join(home, 'work'))
+  writeFileSync(join(home, 'work', '.mcp.json'), JSON.stringify({ mcpServers: { project_only: { command: 'node' } } }))
+
+  const kit = readKitFiles(tempDir('panel-empty-'), { home })
+  assert.deepEqual(kit.mcp, [
+    { name: 'collab', transport: 'stdio', target: 'node', agents: ['claude', 'codex'] },
+    { name: 'docs', transport: 'http', target: 'https://docs.example/mcp', agents: ['claude'] },
+    { name: 'linear', transport: 'http', target: 'https://linear.example/mcp', agents: ['codex'] }
+  ])
+  assert.doesNotMatch(JSON.stringify(kit), /SECRET/)
+})

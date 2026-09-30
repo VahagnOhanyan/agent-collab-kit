@@ -16,6 +16,7 @@
 // split-brain this layer exists to prevent.
 
 import { CODES, CollabError } from '../errors.mjs'
+import { levelRank, modelByRef, resolveModel } from '../models.mjs'
 import { assertNoSecret } from '../policy.mjs'
 import { TASK_STATUS, TERMINAL, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
@@ -74,6 +75,64 @@ const runsFor = (tx, taskId) =>
 //
 // What comes first instead is what the reviewer is supposed to check against:
 // the acceptance criteria, and the checks that actually ran with their counters.
+// What one side of a same-vendor review ran on, read from the registry. `rank`
+// is null when the name is not a registered model: an unknown model cannot be
+// compared, and the caller treats that as "not proven", not as "fine".
+function modelReading(config, named) {
+  const resolved = resolveModel(config, named)
+  const entry = resolved.ref ? modelByRef(config, resolved.ref) : null
+  return {
+    named: resolved.named,
+    ref: resolved.ref,
+    level: entry?.level || null,
+    rank: entry ? levelRank(config, entry.level) : null
+  }
+}
+
+// ⛔ The same agent reviewing its own task (single_vendor) has no second model
+// family to lean on, so the only independence left is a DIFFERENT model that is
+// NOT WEAKER. The rule is refused here, on the request, rather than printed in
+// a briefing: a weaker or identical reviewer records a green verdict that means
+// less than it looks. The author's model is what the caller says it is, else
+// what the task's latest delegation ran on — the journal never observes it.
+function assertReviewerModelFitsAuthor(config, task, { reviewer_model, author_model }) {
+  if (!reviewer_model) {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      'the same agent reviews its own task here (single_vendor), so name the reviewer model: pass reviewer_model, a ref from `collab models` that is not the author\'s and not weaker',
+      { field: 'reviewer_model' }
+    )
+  }
+  const authorNamed = author_model || task.delegations?.at(-1)?.model || null
+  if (!authorNamed) {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      'a same-vendor review compares models, and the author\'s model is not on record: pass author_model, or delegate the work with add_delegation first',
+      { field: 'author_model' }
+    )
+  }
+  const reviewer = modelReading(config, reviewer_model)
+  const author = modelReading(config, authorNamed)
+  if (reviewer.rank === null || author.rank === null) {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      `cannot compare "${reviewer.named}" with "${author.named}": a same-vendor review needs both to be models from \`collab models\``,
+      { reviewer_model: reviewer.named, author_model: author.named }
+    )
+  }
+  if (reviewer.ref === author.ref) {
+    throw new CollabError(CODES.INVALID_INPUT, `the reviewer runs on ${reviewer.ref}, the same model as the author — a same-vendor review needs a different one`, { reviewer_model: reviewer.ref, author_model: author.ref })
+  }
+  if (reviewer.rank < author.rank) {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      `the reviewer model ${reviewer.ref} (${reviewer.level}) is weaker than the author's ${author.ref} (${author.level}) — a same-vendor review must not be weaker`,
+      { reviewer_model: reviewer.ref, author_model: author.ref }
+    )
+  }
+  return { reviewer, author }
+}
+
 function reviewRequestBody({ task, review, scope, instructions, runs = [] }) {
   const criteria = task.spec?.acceptance_criteria || []
   const lines = [
@@ -170,7 +229,9 @@ export function requestReview(ctx, {
   instructions = '',
   scope = [],
   slot = null,
-  blocking = true
+  blocking = true,
+  reviewer_model = null,
+  author_model = null
 }) {
   const checking = slotOf(slot)
   const gates = blocking !== false
@@ -239,6 +300,16 @@ export function requestReview(ctx, {
       reviewer = (live[0] || candidates[0]).id
     }
 
+    // Models are recorded whenever they are given; they are REQUIRED, and
+    // compared, only when the author reviews itself.
+    const sameAgent = reviewer === author
+    let models = null
+    if (sameAgent) {
+      models = assertReviewerModelFitsAuthor(ctx.config, task, { reviewer_model, author_model })
+    } else if (reviewer_model) {
+      models = { reviewer: modelReading(ctx.config, reviewer_model), author: null }
+    }
+
     // Only the gating review moves the task. A slot asked for alongside it is
     // an extra opinion, and a task is not "in review" because of one.
     if (gates) assertTransition(task, TASK_STATUS.REVIEW, {})
@@ -259,7 +330,11 @@ export function requestReview(ctx, {
       scope: scope.length ? scope : task.files || [],
       slot: checking,
       blocking: gates,
-      independence: reviewer === author ? 'same_agent_separate_session' : 'independent',
+      independence: sameAgent ? 'same_agent_separate_session' : 'independent',
+      reviewer_model: models?.reviewer.ref || models?.reviewer.named || null,
+      reviewer_model_level: models?.reviewer.level || null,
+      author_model: models?.author ? models.author.ref : null,
+      author_model_level: models?.author ? models.author.level : null,
       verdict: 'pending',
       summary: null,
       findings: [],
