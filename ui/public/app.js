@@ -85,7 +85,18 @@ const STATUS_RU = {
   pending: 'ожидает', available: 'доступен', offline: 'не в сети', busy: 'занят', waiting: 'ждёт', failed: 'упало', granted: 'выдано',
   rejected: 'отклонено', open: 'открыто', disputed: 'спор', escalated: 'передано владельцу', decided: 'решено', resolved: 'решено'
 }
-const REVIEW_MODE_RU = { cross_vendor: 'ревью другой модельной семьёй', single_vendor: 'ревью той же модельной семьёй' }
+// Why an unfinished task is still unfinished (computed by the panel server, never stored).
+const STANDSTILL_RU = {
+  not_started: 'не начата', blocked: 'заблокирована', review_changes: 'правки по ревью', awaiting_approval: 'ждёт одобрения',
+  approval_expired: 'одобрение просрочено', ready_to_complete: 'можно закрывать', ux_gate: 'нужно UX-ревью',
+  in_review: 'ждёт ревью', in_work: 'в работе', waiting_agent: 'ждёт агента'
+}
+const STANDSTILL_TONE = {
+  blocked: 'bad', approval_expired: 'bad', review_changes: 'warn', awaiting_approval: 'warn', ux_gate: 'warn',
+  ready_to_complete: 'ok', in_work: 'muted'
+}
+const standstillPill = (s) => el('span', { class: `pill ${STANDSTILL_TONE[s.code] || ''}`, title: s.code, text: STANDSTILL_RU[s.code] || s.code })
+const REVIEW_MODE_RU ={ cross_vendor: 'ревью другой модельной семьёй', single_vendor: 'ревью той же модельной семьёй' }
 const statusText = (status) => (status === undefined || status === null ? '—' : STATUS_RU[status] || status)
 const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, title: status ?? '', text: statusText(status) })
 const when = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—')
@@ -178,8 +189,11 @@ async function tasks(param) {
   // A long list is searched, not scrolled: id, title, owner and the status word
   // (raw or Russian) are all matched.
   const rows = list.map((t) => ({
-    text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)}`.toLowerCase(),
-    node: el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status), el('span', { class: 'grow', text: t.title }), el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
+    text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
+    node: el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status),
+      el('span', { class: 'grow' }, t.title,
+        t.standstill ? el('div', { class: 'muted small' }, standstillPill(t.standstill), ` ${t.standstill.detail}`) : null),
+      el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
   }))
   const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
   const count = el('span', { class: 'muted small', text: `${list.length}` })
@@ -206,6 +220,12 @@ async function taskDetail(id) {
   return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'} · ${t.role || 'роль не указана'}`,
     // Back goes to the list the task can be found in: a closed task is not in the open-only list.
     el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: TERMINAL.has(t.status) ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' })),
+    data.standstill
+      ? el('div', { class: `note ${STANDSTILL_TONE[data.standstill.code] === 'bad' ? 'bad' : 'warn'}` },
+          el('strong', { text: `Почему не завершена: ${STANDSTILL_RU[data.standstill.code] || data.standstill.code}` }), el('br'),
+          data.standstill.detail,
+          ...(data.standstill.obstacles || []).filter((o) => o !== data.standstill.detail).flatMap((o) => [el('br'), `Мешает закрытию: ${o}`]))
+      : null,
     t.blocked_reason ? el('div', { class: 'note bad', text: `Заблокирована: ${plain(t.blocked_reason)}` }) : null,
     t.waiting_on && !TERMINAL.has(t.status) ? el('div', { class: 'note warn', text: `Ждёт: ${plain(t.waiting_on)}` }) : null,
     t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'detail', text: plain(t.completion_summary) })] : null,

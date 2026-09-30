@@ -1,6 +1,8 @@
 // Screen-shaped projections stay separate from HTTP so the same contract can
 // be tested without a listening socket.
 
+import { standstillOf } from './standstill.mjs'
+
 const LIVE_DECISIONS = new Set(['open', 'disputed', 'escalated'])
 
 export async function overviewView(api) {
@@ -19,13 +21,20 @@ export async function overviewView(api) {
   }
 }
 
-export const tasksView = (api, filters) => api.listTasks(filters)
+export async function tasksView(api, filters) {
+  const tasks = await api.listTasks(filters)
+  const reviews = api.listReviews({})
+  const approvals = api.listApprovals({ pending_only: true })
+  return tasks.map((task) => ({ ...task, standstill: standstillOf(task, { reviews, approvals }) }))
+}
 
 export async function taskView(api, taskId) {
   const task = api.getTask({ task_id: taskId })
+  const reviews = api.listReviews({ task_id: taskId })
   return {
     task,
-    reviews: api.listReviews({ task_id: taskId }),
+    standstill: standstillOf(task, { reviews, approvals: api.listApprovals({ pending_only: true, task_id: taskId }) }),
+    reviews,
     // getMessages() also filters by who a message is addressed to, and the panel
     // reads as the lead: that would hide every message between other agents.
     // The task's page is the whole conversation about it.

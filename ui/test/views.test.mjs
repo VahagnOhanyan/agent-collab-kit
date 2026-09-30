@@ -33,7 +33,10 @@ test('view projections preserve the endpoint contract without writing', async ()
   }
 
   assert.equal((await overviewView(api)).initialized, true)
-  assert.deepEqual(await taskView(api, task.id), {
+  const shown = await taskView(api, task.id)
+  assert.equal(shown.standstill.code, 'in_work')
+  delete shown.standstill
+  assert.deepEqual(shown, {
     task,
     reviews: [{ id: 'rev_one' }],
     messages: [
