@@ -7,9 +7,18 @@ import { detectBinary, planComposition, rolesItCanHold, writeComposition } from 
 import { independenceReport } from '../collab/src/independence.mjs'
 import { factsFor, fitToFacts } from '../collab/src/probe.mjs'
 import { DEFAULT_CONFIG_DIR } from '../collab/src/paths.mjs'
-import { catalogFor, loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../collab/src/registry.mjs'
+import { catalogFor, loadBuiltinAgents, loadConfigFrom, OWNER_LANGUAGE, validateRegistry } from '../collab/src/registry.mjs'
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+// The owner's language from the page: undefined keeps what is written, '' removes it, a code sets it. Anything else
+// is refused (null).
+function settleLanguage(ownerLanguage, written) {
+  if (ownerLanguage === undefined || ownerLanguage === null) return { ok: true, value: written || null }
+  if (ownerLanguage === '') return { ok: true, value: null }
+  if (typeof ownerLanguage !== 'string' || !OWNER_LANGUAGE.test(ownerLanguage)) return { ok: false, reason: 'Язык передан в неверном виде: нужен код вроде ru или en.' }
+  return { ok: true, value: ownerLanguage }
+}
 
 function executableOnPath(binary) {
   if (!binary) return null
@@ -41,6 +50,7 @@ function machineComposition(machineDir) {
     return {
       lead: content.lead || null,
       review_mode: content.review_mode || null,
+      owner_language: content.owner_language || null,
       agents: (content.agents || []).map((agent) => ({ id: agent.id, roles: agent.roles || [] })),
       expect: fingerprint(readFileSync(file))
     }
@@ -92,7 +102,7 @@ function command(tokens) {
   return tokens.join(' ')
 }
 
-export function previewSetup({ agents, lead, singleVendor, roles = null, confirmed = null, registryDir, machineDir, cwd, env = undefined }) {
+export function previewSetup({ agents, lead, singleVendor, roles = null, confirmed = null, ownerLanguage = undefined, registryDir, machineDir, cwd, env = undefined }) {
   if (!Array.isArray(agents) || !agents.length) return { ok: false, reason: 'choose at least one agent' }
   if (!agents.every((id) => ID.test(id)) || !ID.test(lead || '')) return { ok: false, reason: 'agent ids must use lowercase letters, digits, _ or -' }
   if (singleVendor !== '0' && singleVendor !== '1') return { ok: false, reason: 'single_vendor must be 0 or 1' }
@@ -125,7 +135,7 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, confirm
       agents: planned.content.agents.map((agent) => ({ id: agent.id, roles: agent.roles || [] }))
     },
     commands,
-    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, confirmed, machineDir, env }))
+    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, confirmed, ownerLanguage, machineDir, env }))
   }
 }
 
@@ -277,8 +287,10 @@ const present = (file) => {
 // written", and a file that appeared meanwhile makes the request stale instead of being overwritten.
 const NOTHING_WRITTEN = 'none'
 
-function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, machineDir, env }) {
+function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, ownerLanguage, machineDir, env }) {
   if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id))) return { available: false, reason: 'Отметьте хотя бы одного агента.' }
+  const language = settleLanguage(ownerLanguage, null)
+  if (!language.ok) return { available: false, reason: language.reason }
   if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
   const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
@@ -293,11 +305,12 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, mach
   const settled = settleRoles({ agents: fitToFacts(withConfirmed.agents, facts), roles, roleDefs, facts })
   if (!settled.ok) return { available: false, reason: settled.reason }
   const gate = independenceGate(settled.agents, roleDefs)
-  const content = { ...planned.content, agents: settled.agents }
+  const content = { ...planned.content, ...(language.value ? { owner_language: language.value } : {}), agents: settled.agents }
   const changes = [
     { field: 'agents', from: null, to: content.agents.map((agent) => agent.id).join(', ') },
     { field: 'lead', from: null, to: content.lead },
     { field: 'review_mode', from: null, to: content.review_mode },
+    ...(language.value ? [{ field: 'owner_language', from: null, to: language.value }] : []),
     ...content.agents.map((agent) => ({ field: 'roles', agent: agent.id, from: [], to: agent.roles })),
     ...confirmedChanges([], content.agents)
   ]
@@ -309,7 +322,7 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, mach
     independence: gate.report
   }
   if (!gate.ok) return { available: false, reason: gate.reason, ...shown }
-  return { available: true, first_setup: true, changes, expect: NOTHING_WRITTEN, ...shown, _init: { content, machineDir } }
+  return { available: true, first_setup: true, changes, expect: NOTHING_WRITTEN, owner_language: language.value, ...shown, _init: { content, machineDir } }
 }
 
 function commitFirstSetup({ content, machineDir }) {
@@ -337,9 +350,9 @@ function commitFirstSetup({ content, machineDir }) {
   }
 }
 
-export function evaluateApply({ agents, lead, singleVendor, roles = null, confirmed = null, machineDir, env = undefined }) {
+export function evaluateApply({ agents, lead, singleVendor, roles = null, confirmed = null, ownerLanguage = undefined, machineDir, env = undefined }) {
   const file = machineDir ? compositionFile(machineDir) : null
-  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, machineDir, env })
+  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, ownerLanguage, machineDir, env })
   if (!file) return { available: false, reason: 'Каталог настроек машины не задан.' }
   if (lstatSync(file).isSymbolicLink()) return { available: false, reason: 'agents.json — символическая ссылка: панель такой файл не переписывает.' }
   const raw = readFileSync(file)
@@ -355,6 +368,8 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
     return { available: false, reason: 'Выбранный набор агентов отличается от записанного. Панель меняет только ведущего и режим ревью; состав агентов меняется командой в терминале.' }
   }
   if (!ID.test(lead || '') || !ids.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из записанных агентов.' }
+  const language = settleLanguage(ownerLanguage, current.owner_language)
+  if (!language.ok) return { available: false, reason: language.reason }
   const roleDefs = machineRoleDefs(machineDir)
   const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
@@ -384,14 +399,16 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
   const changes = []
   if ((current.lead || null) !== planned.content.lead) changes.push({ field: 'lead', from: current.lead || null, to: planned.content.lead })
   if ((current.review_mode || null) !== planned.content.review_mode) changes.push({ field: 'review_mode', from: current.review_mode || null, to: planned.content.review_mode })
+  if ((current.owner_language || null) !== language.value) changes.push({ field: 'owner_language', from: current.owner_language || null, to: language.value })
   changes.push(...roleChanges(written, settled.agents), ...confirmedChanges(written, settled.agents))
   return {
     available: true,
     changes,
     expect: fingerprint(raw),
     revert: evaluateRevert(machineDir, env),
+    owner_language: language.value,
     ...shown,
-    _next: { current, raw, lead: planned.content.lead, review_mode: planned.content.review_mode, agents: settled.agents }
+    _next: { current, raw, lead: planned.content.lead, review_mode: planned.content.review_mode, owner_language: language.value, agents: settled.agents }
   }
 }
 
@@ -451,20 +468,21 @@ function evaluateRevert(machineDir, env = undefined) {
   const changes = []
   if ((current.lead || null) !== (before.lead || null)) changes.push({ field: 'lead', from: current.lead || null, to: before.lead || null })
   if ((current.review_mode || null) !== (before.review_mode || null)) changes.push({ field: 'review_mode', from: current.review_mode || null, to: before.review_mode || null })
+  if ((current.owner_language || null) !== (before.owner_language || null)) changes.push({ field: 'owner_language', from: current.owner_language || null, to: before.owner_language || null })
   changes.push(...roleChanges(current.agents || [], restored), ...confirmedChanges(current.agents || [], restored))
   if (!changes.length) return { available: false, reason: 'Прежний состав не отличается от текущего: возвращать нечего.' }
   return {
     available: true,
     changes,
     expect: fingerprint(raw),
-    _next: { current, raw, lead: before.lead, review_mode: before.review_mode, agents: restored, savedFingerprint: lastSaved }
+    _next: { current, raw, lead: before.lead, review_mode: before.review_mode, owner_language: before.owner_language || null, agents: restored, savedFingerprint: lastSaved }
   }
 }
 
 // One write path for apply and revert. The current file becomes the saved one, the new one is checked by the
 // registry, and ANY failure — a rejected registry, a file that cannot be read or replaced — puts both files back as
 // they were, so a half-done write is never left behind.
-function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agents = null, savedFingerprint = null }) {
+function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner_language: ownerLanguage = null, agents = null, savedFingerprint = null }) {
   const file = compositionFile(machineDir)
   const previous = previousFile(machineDir)
   const keptPrevious = existsSync(previous) ? readFileSync(previous) : null
@@ -485,7 +503,10 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agent
       return next
     })
     : current.agents
-  const next = Buffer.from(`${JSON.stringify({ ...current, lead, review_mode: reviewMode, agents: nextAgents }, null, indent)}\n`)
+  // The language is a key of its own: set when chosen, removed when "не задан", kept in place otherwise.
+  const { owner_language: _written, ...rest } = current
+  const withLanguage = ownerLanguage ? { ...current, owner_language: ownerLanguage } : rest
+  const next = Buffer.from(`${JSON.stringify({ ...withLanguage, lead, review_mode: reviewMode, agents: nextAgents }, null, indent)}\n`)
   const restore = () => {
     try { writeAtomically(file, raw) } catch { /* the original bytes could not be written back; the caller says so */ }
     try {
@@ -533,10 +554,10 @@ export const publicApply = ({ _next, _init, revert, ...visible }) => ({
   ...(revert ? { revert: (({ _next: inner, ...shown }) => shown)(revert) } : {})
 })
 
-export function applySetup({ agents, lead, singleVendor, roles = null, confirmed = null, expect, machineDir, env = undefined }) {
+export function applySetup({ agents, lead, singleVendor, roles = null, confirmed = null, ownerLanguage = undefined, expect, machineDir, env = undefined }) {
   let evaluated
   try {
-    evaluated = evaluateApply({ agents, lead, singleVendor, roles, confirmed, machineDir, env })
+    evaluated = evaluateApply({ agents, lead, singleVendor, roles, confirmed, ownerLanguage, machineDir, env })
   } catch (error) {
     return { ok: false, reason: `Файл состава не читается: ${error.message}` }
   }

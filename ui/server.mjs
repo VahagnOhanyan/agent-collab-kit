@@ -20,8 +20,8 @@ const SAFE_METHODS = new Set(['GET', 'HEAD'])
 // The panel writes exactly two things, both about the lead and the review mode of the machine composition.
 const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert', '/api/backlog/cleanup'])
 const WRITE_BODY_MAX = 4096
-const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'expect'])
-const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 't'])
+const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 'expect'])
+const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 't'])
 const ROLES_PARAM_MAX = 2048
 
 const panelHeaders = () => ({
@@ -315,7 +315,8 @@ export async function startPanel({
           const undone = revertSetup({ expect: body.expect, machineDir, env: probeEnv })
           return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
         }
-        if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles, confirmed and expect are accepted', options)
+        if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles, confirmed, owner_language and expect are accepted', options)
+        if (body.owner_language !== undefined && typeof body.owner_language !== 'string') return fail(res, 400, 'INVALID_INPUT', 'owner_language, when given, is a language code or an empty string', options)
         if (!Array.isArray(body.agents) || typeof body.lead !== 'string' || typeof body.single_vendor !== 'boolean' || typeof body.expect !== 'string') {
           return fail(res, 400, 'INVALID_INPUT', 'agents (list), lead, single_vendor (boolean) and expect are each required', options)
         }
@@ -324,7 +325,7 @@ export async function startPanel({
             return fail(res, 400, 'INVALID_INPUT', `${field}, when given, is an object of agent id to a list`, options)
           }
         }
-        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, confirmed: body.confirmed ?? null, expect: body.expect, machineDir, env: probeEnv })
+        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, confirmed: body.confirmed ?? null, ownerLanguage: body.owner_language, expect: body.expect, machineDir, env: probeEnv })
         return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
       } catch (error) {
         return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
@@ -337,7 +338,7 @@ export async function startPanel({
       }
       if (url.pathname === '/api/setup/preview') {
         if ([...url.searchParams.keys()].some((key) => !PREVIEW_KEYS.has(key))) {
-          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles and confirmed are accepted', options)
+          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles, confirmed and owner_language are accepted', options)
         }
         // roles and confirmed: each at most once, short, a JSON object of agent id to a list.
         const objectParam = (name) => {
@@ -364,6 +365,8 @@ export async function startPanel({
         if (agentsValues.length !== 1 || leadValues.length !== 1 || vendorValues.length !== 1) {
           return fail(res, 400, 'INVALID_INPUT', 'agents, lead and single_vendor are each required once', options)
         }
+        const languageValues = url.searchParams.getAll('owner_language')
+        if (languageValues.length > 1 || (languageValues[0] || '').length > 16) return fail(res, 400, 'INVALID_INPUT', 'owner_language is given at most once and is short', options)
         const answer = previewSetup({
           agents: agentsValues[0].split(',').filter(Boolean),
           lead: leadValues[0],
@@ -371,6 +374,7 @@ export async function startPanel({
           env: probeEnv,
           roles,
           confirmed: confirmedParam.value,
+          ownerLanguage: languageValues.length ? languageValues[0] : undefined,
           registryDir,
           machineDir,
           cwd

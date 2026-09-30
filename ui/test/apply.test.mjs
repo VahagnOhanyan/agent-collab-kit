@@ -663,3 +663,50 @@ test('a composition the registry rejects after the write is put back as it was',
   assert.equal(res.status, 409, res.text)
   assert.equal(readFileSync(file, 'utf8'), before)
 })
+
+// ── the owner's language (owner_language) ────────────────────────────────────
+
+test('language: apply sets the owner\'s language and nothing else, shown first; "" takes it away; revert gives it back', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&owner_language=ru')).json.apply
+  assert.deepEqual(preview.changes, [{ field: 'owner_language', from: null, to: 'ru' }])
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before, 'a preview writes nothing')
+  const set = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, owner_language: 'ru', expect: await expectOf(started) })
+  assert.equal(set.status, 200, set.text)
+  const after = read(dir)
+  assert.equal(after.owner_language, 'ru')
+  const { owner_language: _ru, ...rest } = after
+  assert.deepEqual(rest, JSON.parse(before), 'nothing but the language moved')
+  // Not sent = kept: a lead change does not drop the language.
+  const lead = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: set.json.expect })
+  assert.equal(lead.status, 200, lead.text)
+  assert.equal(read(dir).owner_language, 'ru')
+  // "" = not set: the key goes away.
+  const cleared = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, owner_language: '', expect: lead.json.expect })
+  assert.equal(cleared.status, 200, cleared.text)
+  assert.deepEqual(cleared.json.changes, [{ field: 'owner_language', from: 'ru', to: null }])
+  assert.equal(Object.hasOwn(read(dir), 'owner_language'), false)
+  const revert = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply.revert
+  assert.deepEqual(revert.changes, [{ field: 'owner_language', from: null, to: 'ru' }])
+  const undone = await send(started, 'POST', '/api/setup/revert', { expect: revert.expect })
+  assert.equal(undone.status, 200, undone.text)
+  assert.equal(read(dir).owner_language, 'ru')
+})
+
+test('language: the first setup records it; a code that is not a language is refused and writes nothing', async (t) => {
+  const dir = emptyMachine()
+  const started = await panel(t, dir)
+  if (!started) return
+  const bad = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, owner_language: 'russian', expect: 'none' })
+  assert.equal(bad.status, 409, bad.text)
+  const notText = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, owner_language: 7, expect: 'none' })
+  assert.equal(notText.status, 400, notText.text)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, owner_language: 'ru', expect: 'none' })
+  assert.equal(done.status, 200, done.text)
+  assert.ok(done.json.changes.some((c) => c.field === 'owner_language' && c.to === 'ru'))
+  assert.equal(read(dir).owner_language, 'ru')
+})

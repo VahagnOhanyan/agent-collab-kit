@@ -34,6 +34,11 @@ export const AGENT_STATUSES = Object.freeze(['available', 'busy', 'waiting', 'of
 
 export const REVIEW_MODES = Object.freeze(['cross_vendor', 'single_vendor'])
 
+// The language the owner reads the journal in (agents.json `owner_language`): a language code, `ru`, `en`, `pt-BR`.
+// Absent means no rule — agents write as they always did.
+export const OWNER_LANGUAGE = /^[a-z]{2,3}(-[A-Z]{2})?$/
+export const OWNER_LANGUAGE_NAMES = Object.freeze({ ru: 'Russian', en: 'English' })
+
 export const CONFIG_FILES = Object.freeze({
   capabilities: 'capabilities.json',
   roles: 'roles.json',
@@ -167,6 +172,9 @@ export function validateRegistry(config) {
   // agent in a separate session — recorded as lower independence, not hidden.
   if (agents?.review_mode !== undefined && !REVIEW_MODES.includes(agents.review_mode)) {
     problems.push(`agents.json: review_mode "${agents.review_mode}" must be one of ${REVIEW_MODES.join(', ')}`)
+  }
+  if (agents?.owner_language !== undefined && (typeof agents.owner_language !== 'string' || !OWNER_LANGUAGE.test(agents.owner_language))) {
+    problems.push(`agents.json: owner_language "${agents.owner_language}" must be a language code such as ru, en or pt-BR`)
   }
 
   // An independent review needs somebody other than the author to exist.

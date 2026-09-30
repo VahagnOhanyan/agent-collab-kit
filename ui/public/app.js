@@ -116,6 +116,7 @@ const STANDSTILL_TONE = {
 }
 const standstillPill = (s) => el('span', { class: `pill ${STANDSTILL_TONE[s.code] || ''}`, title: s.code, text: STANDSTILL_RU[s.code] || s.code })
 const REVIEW_MODE_RU ={ cross_vendor: 'ревью другим вендором', single_vendor: 'ревью тем же вендором' }
+const LANGUAGE_RU = { ru: 'русский', en: 'английский' }
 const statusText = (status) => (status === undefined || status === null ? '—' : STATUS_RU[status] || status)
 const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, title: status ?? '', text: statusText(status) })
 const when = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—')
@@ -609,6 +610,8 @@ async function setup() {
   const chosen = new Set(written ? written.agents.map((a) => a.id) : detect.installed)
   let lead = written?.lead && chosen.has(written.lead) ? written.lead : detect.installed[0] || null
   let forceSingle = written?.review_mode === 'single_vendor'
+  // The language agents write the owner's texts in; '' = not set (agents write as they always did).
+  let ownerLanguage = written?.owner_language || ''
   let lastPlan = null // the composition the user has chosen right now, for the check
   // The roles ticked in step 4, { agentId: [role] }. null until the server has said what is written (or proposed):
   // the page never invents roles, it only changes the ones it was shown.
@@ -635,7 +638,7 @@ async function setup() {
       return show(el('div', { class: 'note warn', text: 'Отметьте хотя бы одного агента.' }))
     }
     if (!lead || !chosen.has(lead)) lead = [...chosen][0]
-    const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0' })
+    const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0', owner_language: ownerLanguage })
     if (!sameKeys(chosenRoles, [...chosen])) chosenRoles = null
     if (chosenRoles) query.set('roles', JSON.stringify(chosenRoles))
     if (!sameKeys(chosenConfirmed, [...chosen])) chosenConfirmed = null
@@ -666,12 +669,12 @@ async function setup() {
       : 'Разные вендоры: ревью никогда не достаётся автору.'
     show(
       ...(missingNote ? [missingNote] : []),
-      el('h2', { id: 'step-4', text: '4. Роли' }),
+      el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
-      el('h2', { id: 'step-5', text: '5. Проект' }),
+      el('h2', { id: 'step-6', text: '6. Проект' }),
       projectCard(detect.project),
-      el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — ведущего, режим ревью и роли агентов, всегда после вашего подтверждения. Смена набора агентов — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
+      el('h2', { id: 'step-7', text: '7. Команды для терминала' }),
+      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — ведущего, режим ревью, язык текстов и роли агентов, всегда после вашего подтверждения. Смена набора агентов — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
       applyBlock(preview.apply),
       ...preview.commands.map((c) => {
         const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
@@ -742,9 +745,10 @@ async function setup() {
     return box
   }
 
-  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты', roles: 'роли', confirmed: 'подтверждено вами' }
+  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', owner_language: 'язык текстов для вас', agents: 'агенты', roles: 'роли', confirmed: 'подтверждено вами' }
   const valueRu = (field, value) => (field === 'review_mode'
     ? REVIEW_MODE_RU[value] || value || 'не записано'
+    : field === 'owner_language' ? LANGUAGE_RU[value] || value || 'не задан'
     : Array.isArray(value) ? value.join(', ') || 'ничего' : value || 'не записано')
   // A list change (roles, confirmations) reads as what is added and taken away, not as two long lists.
   const isListDiff = (c) => (c.field === 'roles' || c.field === 'confirmed') && c.from?.length
@@ -802,7 +806,7 @@ async function setup() {
     const apply = async () => {
       confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = true })
       try {
-        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, ...(chosenRoles ? { roles: chosenRoles } : {}), ...(chosenConfirmed ? { confirmed: chosenConfirmed } : {}), expect: info.expect })
+        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, owner_language: ownerLanguage,...(chosenRoles ? { roles: chosenRoles } : {}), ...(chosenConfirmed ? { confirmed: chosenConfirmed } : {}), expect: info.expect })
         await finish('Записано. Перезапустите открытые сессии агентов.')
       } catch (error) {
         confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = false })
@@ -830,13 +834,14 @@ async function setup() {
   // chosen above, then the general health of the kit.
   const compareBlock = (machine) => {
     if (!lastPlan) return [el('div', { class: 'note warn', text: 'Выбор выше неполный, сравнивать не с чем.' })]
-    if (!machine) return [el('div', { class: 'note warn', text: 'Не применено: на этой машине состав ещё не записан. Выполните команду из шага 6 в терминале и нажмите «Проверить» снова.' })]
+    if (!machine) return [el('div', { class: 'note warn', text: 'Не применено: на этой машине состав ещё не записан. Выполните команду из шага 7 в терминале и нажмите «Проверить» снова.' })]
     if (machine.problem) return [el('div', { class: 'note bad', text: `Файл состава на машине не читается: ${machine.problem}` })]
     const want = new Set(lastPlan.agents.map((a) => a.id))
     const have = new Set(machine.agents.map((a) => a.id))
     const mismatches = []
     if (machine.lead !== lastPlan.lead) mismatches.push(`ведущий: записан ${machine.lead || 'никто'}, выбран ${lastPlan.lead}`)
     if (machine.review_mode !== lastPlan.review_mode) mismatches.push(`режим ревью: записан «${REVIEW_MODE_RU[machine.review_mode] || machine.review_mode || '—'}», выбран «${REVIEW_MODE_RU[lastPlan.review_mode] || lastPlan.review_mode}»`)
+    if ((machine.owner_language || '') !== ownerLanguage) mismatches.push(`язык текстов: записан «${LANGUAGE_RU[machine.owner_language] || machine.owner_language || 'не задан'}», выбран «${LANGUAGE_RU[ownerLanguage] || ownerLanguage || 'не задан'}»`)
     const missing = [...want].filter((id) => !have.has(id))
     const extra = [...have].filter((id) => !want.has(id))
     if (missing.length) mismatches.push(`нет на машине: ${missing.join(', ')}`)
@@ -889,15 +894,25 @@ async function setup() {
     }
   }
   const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же агент в отдельной сессии. Сами агенты остаются разными, меняется только режим ревью.' })))
+  // Step 4: which language the agents write the owner's texts in. A language written by hand that is not offered
+  // here is still shown and kept, never silently dropped.
+  const languageOptions = [['', 'Не задан — агенты пишут как привыкли'], ['ru', 'Русский'], ['en', 'Английский']]
+  if (ownerLanguage && !languageOptions.some(([code]) => code === ownerLanguage)) languageOptions.push([ownerLanguage, ownerLanguage])
+  const languageBox = el('div', { class: 'list' }, languageOptions.map(([code, label]) => el('label', { class: 'choice', for: `lang-${code || 'none'}` },
+    el('input', { type: 'radio', name: 'owner-language', id: `lang-${code || 'none'}`, checked: code === ownerLanguage, onchange: () => { ownerLanguage = code; drawPreview() } }),
+    el('span', { text: label }))))
   const jump = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' })
   drawLead(); drawPreview()
   return page('Мастер настройки', 'Соберите состав коллаборации и получите готовые команды. Ведущего и режим ревью можно применить кнопкой; остальное запишется, когда вы выполните команду в терминале.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
-    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Роли', 'Проект', 'Команды'].map((s, i) =>
+    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Проект', 'Команды'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
     el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,
     el('h2', { id: 'step-3', text: '3. Режим ревью' }), reviewNote, single,
+    el('h2', { id: 'step-4', text: '4. Язык текстов для вас' }),
+    el('p', { class: 'sub', text: 'На этом языке агенты пишут то, что читаете вы: заголовки и описания задач, итоги, сообщения, ревью и находки. Код, пути, команды и цитаты остаются как есть. Уже записанные тексты не переводятся.' }),
+    languageBox,
     out, el('h2', { text: 'Проверка' }), checkOut)
 }
 

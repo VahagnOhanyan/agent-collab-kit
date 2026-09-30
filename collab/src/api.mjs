@@ -22,7 +22,16 @@ import { defaultRegistryDir, INSTALL_ROOT, ignoredEnv, journalState, resolveRoot
 import { findProject } from './projects.mjs'
 import { classifyAction } from './policy.mjs'
 import { catalogDrift, listModels } from './models.mjs'
-import { createRegistry, loadConfig } from './registry.mjs'
+import { createRegistry, loadConfig, OWNER_LANGUAGE, OWNER_LANGUAGE_NAMES } from './registry.mjs'
+
+// What an agent writes for the owner, in the owner's language (agents.json `owner_language`); null without one.
+export function ownerLanguageRule(code) {
+  if (typeof code !== 'string' || !OWNER_LANGUAGE.test(code)) return null
+  const name = OWNER_LANGUAGE_NAMES[code] ? `${OWNER_LANGUAGE_NAMES[code]} (${code})` : code
+  return `Write everything the owner reads in ${name}: task titles, descriptions, completion summaries, messages, ` +
+    'review summaries and findings, decision positions, approval requests. Keep code, identifiers, file paths, ' +
+    'commands, log lines and quotations exactly as they are — do not translate them.'
+}
 import { createStore } from './store.mjs'
 import * as agents from './domain/agents.mjs'
 import * as approvals from './domain/approvals.mjs'
@@ -270,6 +279,9 @@ export function createApi({
         // other agent takes work and reviews through the ledger.
         lead: lead === agentId,
         lead_agent: lead,
+        // The owner reads the journal in the panel: what is written for them is in their language.
+        owner_language: ownerLanguageRule(config.agents?.owner_language) ? config.agents.owner_language : null,
+        write_for_owner: ownerLanguageRule(config.agents?.owner_language),
         roles: declared.roles,
         capabilities: declared.capabilities,
         // Capabilities nothing on this machine could confirm (probe.mjs). Evidence that rests on one of these —

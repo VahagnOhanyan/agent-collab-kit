@@ -33,7 +33,9 @@ export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03
 
 export const INSTRUCTIONS =
   'Shared task, message, review, decision and approval ledger for the agents working on this project. ' +
-  'Start with whoami. Discover collaborators by ROLE or CAPABILITY (find_agents), never by name. ' +
+  'Start with whoami. When whoami names an owner_language, write everything the owner reads (titles, descriptions, ' +
+  'summaries, messages, reviews and findings) in that language, as its write_for_owner says. ' +
+  'Discover collaborators by ROLE or CAPABILITY (find_agents), never by name. ' +
   'Claim work before doing it and claim_files before editing, because the working tree is shared. ' +
   'Ask for an independent review with request_review — you may not review your own task. ' +
   'Anything that costs money, touches production, destroys data or handles credentials goes through ' +
