@@ -38,6 +38,14 @@ test('an agent whose program is not here is unknown on everything, never missing
   assert.ok(Object.values(probe.capabilities).every((c) => c.status === 'unknown'))
 })
 
+test('what the vendor\'s program cannot have (adapter.cannot) is missing on any machine, with the reason', () => {
+  const agent = { ...agentOf('codex'), adapter: { ...agentOf('codex').adapter, cannot: ['run_application'] } }
+  const probe = probeAgent(agent, CAPS, machine())
+  assert.equal(probe.capabilities.run_application.status, 'missing')
+  assert.match(probe.capabilities.run_application.reason, /adapter\.cannot/)
+  assert.equal(probe.capabilities.read_code.status, 'confirmed')
+})
+
 test('a read-only session rules out writing and running, and nothing else', () => {
   const probe = probeAgent(agentOf('codex'), CAPS, machine({ files: readOnlyCodex() }))
   assert.equal(probe.sandbox, 'read-only')

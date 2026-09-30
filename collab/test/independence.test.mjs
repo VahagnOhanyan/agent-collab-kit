@@ -5,14 +5,14 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
 import { independenceReport } from '../src/independence.mjs'
 import { planComposition, writeComposition } from '../src/composition.mjs'
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
-import { loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
+import { expandCatalogAgents, loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
 import { runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
 
 const roleDefs = {
@@ -49,7 +49,9 @@ test('one vendor — one agent, or two of the same provider: the gap is a note, 
   const alone = independenceReport({ agents: [agent('a', 'one', ['software_engineer', 'code_reviewer'])], roleDefs })
   assert.deepEqual([alone.single_vendor, alone.problems.length, alone.notes.length], [true, 0, 1])
   const sameVendor = independenceReport({ agents: [agent('a', 'one', ['software_engineer', 'code_reviewer']), agent('b', 'one', ['software_engineer'])], roleDefs })
-  assert.deepEqual([sameVendor.single_vendor, sameVendor.problems.length, sameVendor.notes.length], [true, 0, 1])
+  assert.deepEqual([sameVendor.single_vendor, sameVendor.problems.length], [true, 0])
+  // a reviews only itself; b is reviewed by a — another agent, but of the same vendor: both are notes.
+  assert.deepEqual(sameVendor.notes.map((n) => [n.author, Boolean(n.same_vendor)]).sort(), [['a', false], ['b', true]])
 })
 
 test('reviewed_by with several roles asks another holder for EACH of them', () => {
@@ -74,14 +76,19 @@ test('collab setup refuses a composition where the author is the only reviewer',
   const base = tempDir('collab-independence-setup-')
   try {
     const dir = join(base, 'machine')
-    // The machine's own roles: ux_reviewer work must be checked by a security_reviewer — nobody holds that role.
+    const home = join(base, 'home')
+    // Codex's sessions are read-only here, so only claude can hold software_engineer. On this machine architect work
+    // is reviewed by a software_engineer: claude's architect work could then be reviewed only by claude.
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'config.toml'), 'sandbox_mode = "read-only"\n')
     const roles = structuredClone(loadConfigFrom().roles)
-    roles.roles.ux_reviewer.reviewed_by = ['security_reviewer']
+    roles.roles.architect.reviewed_by = ['software_engineer']
     writeJson(join(dir, 'roles.json'), roles)
-    const refused = runCli(['setup', '--agents', 'claude,codex', '--lead', 'claude', '--dry-run'], { cwd: base, options: { machineDir: dir } })
+    const refused = runCli(['setup', '--agents', 'claude,codex', '--lead', 'claude', '--dry-run'], { cwd: base, options: { machineDir: dir, probeHome: home } })
     assert.equal(refused.status, 1, refused.stdout + refused.stderr)
-    assert.match(refused.stdout, /refusing\s+ux_reviewer work done by codex/)
-    const alone = runCli(['setup', '--agents', 'codex', '--lead', 'codex', '--dry-run'], { cwd: base, options: { machineDir: dir } })
+    assert.match(refused.stdout, /refusing\s+architect work done by claude can only be reviewed as software_engineer by claude itself/)
+    // One vendor where the author holds the reviewing role itself: the accepted same-agent answer, a note.
+    const alone = runCli(['setup', '--agents', 'claude', '--lead', 'claude', '--dry-run'], { cwd: base, options: { machineDir: dir, probeHome: home } })
     assert.equal(alone.status, 0, alone.stdout + alone.stderr)
     assert.match(alone.stdout, /note/)
   } finally {
@@ -105,27 +112,62 @@ test('a provider string can never stand in for a missing provider', () => {
   assert.equal(report.problems.length, 1)
 })
 
-test('with several agents, a catalog default the agent cannot hold on this machine is not proposed', () => {
-  const config = loadConfigFrom()
-  const defs = structuredClone(config.roles.roles)
-  defs.software_engineer.requires = [...defs.software_engineer.requires, 'run_application']
-  const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs: defs, include: ['claude', 'codex'], lead: 'claude' })
-  const roles = Object.fromEntries(planned.content.agents.map((a) => [a.id, a.roles]))
-  assert.ok(!roles.codex.includes('software_engineer'), 'codex has no run_application')
-  assert.ok(roles.claude.includes('software_engineer'))
+test('every agent is proposed exactly the roles its capabilities satisfy, nothing the catalog says by vendor', () => {
+  const defs = { writer: { summary: 'w', requires: ['modify_code'] }, runner: { summary: 'r', requires: ['run_application'] }, reader: { summary: 'x', requires: ['read_code'] } }
+  const catalog = {
+    agents: [
+      { id: 'a', provider: 'one', capabilities: ['read_code', 'modify_code', 'run_application'], roles: ['reader'] },
+      { id: 'b', provider: 'two', capabilities: ['read_code'] }
+    ]
+  }
+  const planned = planComposition({ catalog, roleDefs: defs, include: ['a', 'b'], lead: 'a' })
+  const roles = Object.fromEntries(planned.content.agents.map((agent) => [agent.id, agent.roles]))
+  assert.deepEqual(roles, { a: ['writer', 'runner', 'reader'], b: ['reader'] }, 'a role list in the catalog is ignored; capabilities decide')
 })
 
-test('collab setup writes only what the registry accepts, with the machine\'s own roles', () => {
+test('expanding a catalog agent leaves out what its program cannot have, and the roles that need it', () => {
+  const defs = { writer: { summary: 'w', requires: ['modify_code'] }, runner: { summary: 'r', requires: ['run_application'] } }
+  const expanded = expandCatalogAgents(
+    { agents: [{ id: 'a', provider: 'one', adapter: { kind: 'manual', cannot: ['run_application'] } }] },
+    { capabilityIds: ['modify_code', 'run_application'], roleDefs: defs }
+  )
+  assert.deepEqual([expanded.agents[0].capabilities, expanded.agents[0].roles], [['modify_code'], ['writer']])
+})
+
+test('the catalog binds no role or capability to a vendor; each agent may have all but what its program cannot', () => {
+  const file = JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'utf8'))
+  for (const agent of file.agents) {
+    assert.equal(agent.roles, undefined, `${agent.id} has no roles in the catalog`)
+    assert.equal(agent.capabilities, undefined, `${agent.id} has no capabilities in the catalog`)
+    assert.ok(Array.isArray(agent.adapter.cannot), `${agent.id} states what its program cannot have`)
+  }
+  const expanded = loadBuiltinAgents()
+  const allCaps = Object.keys(loadConfigFrom().capabilities.capabilities)
+  for (const agent of expanded.agents) {
+    assert.deepEqual(agent.capabilities, allCaps.filter((c) => !agent.adapter.cannot.includes(c)))
+    assert.ok(agent.roles.length > 0)
+  }
+  assert.deepEqual(validateRegistry(loadConfigFrom()).problems, [], 'the catalog alone is still a working registry')
+})
+
+test('collab setup writes what the configuration in force already gives, with the machine\'s own capabilities and roles', () => {
   const base = tempDir('collab-independence-setup-write-')
   try {
     const dir = join(base, 'machine')
+    // This machine declares one more capability and a role on it: "all, then cut by facts" gives both to everyone —
+    // before anything is written (the catalog in force) and in what setup writes. One configuration, one answer.
+    const capabilities = structuredClone(loadConfigFrom().capabilities)
+    capabilities.capabilities.sign_releases = 'Sign a release with the owner key.'
+    writeJson(join(dir, 'capabilities.json'), capabilities)
     const roles = structuredClone(loadConfigFrom().roles)
-    roles.roles.software_engineer.requires = [...roles.roles.software_engineer.requires, 'run_application']
+    roles.roles.release_signer = { summary: 'Signs releases.', requires: ['sign_releases'] }
     writeJson(join(dir, 'roles.json'), roles)
+    const inForce = Object.fromEntries(loadConfigFrom([dir], { kind: 'machine', dir }).agents.agents.map((a) => [a.id, [...a.roles].sort()]))
     const r = runCli(['setup', '--agents', 'claude,codex', '--lead', 'claude'], { cwd: base, options: { machineDir: dir, assumeHuman: true } })
     assert.equal(r.status, 0, r.stdout + r.stderr)
     const written = JSON.parse(readFileSync(join(dir, 'agents.json'), 'utf8'))
-    assert.ok(!written.agents.find((a) => a.id === 'codex').roles.includes('software_engineer'))
+    assert.deepEqual(Object.fromEntries(written.agents.map((a) => [a.id, [...a.roles].sort()])), inForce)
+    assert.ok(written.agents.every((a) => a.roles.includes('release_signer')))
     assert.deepEqual(validateRegistry(loadConfigFrom([dir], { kind: 'machine', dir })).problems, [])
   } finally {
     rmSync(base, { recursive: true, force: true })

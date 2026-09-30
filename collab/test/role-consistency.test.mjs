@@ -18,8 +18,10 @@ function machine(include = ['claude', 'codex']) {
   const base = tempDir('collab-role-consistency-')
   const dir = join(base, 'machine')
   const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs: loadConfigFrom().roles.roles, include, lead: include[0] })
-  writeComposition(dir, planned.content, { catalogDir: DEFAULT_CONFIG_DIR })
-  return { base, dir, content: planned.content }
+  // Every agent is proposed every role now; this owner took security_reviewer away from everybody, so it is vacant.
+  const content = { ...planned.content, agents: planned.content.agents.map((a) => ({ ...a, roles: a.roles.filter((r) => r !== 'security_reviewer') })) }
+  writeComposition(dir, content, { catalogDir: DEFAULT_CONFIG_DIR })
+  return { base, dir, content }
 }
 
 const apiFor = (m, sbx, agentId = 'claude') => createApi({ agentId, roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })

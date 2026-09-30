@@ -23,7 +23,16 @@ function machineWith({ lead = 'claude', singleVendor = false } = {}) {
     singleVendor
   })
   assert.ok(planned.ok, planned.reason)
-  writeComposition(dir, planned.content, { catalogDir: DEFAULT_CONFIG_DIR })
+  // Every agent is proposed every role; this owner took two away — backend_engineer from codex, and
+  // security_reviewer from everybody (so it is a vacant role) — which the tests below add back or rely on.
+  const content = {
+    ...planned.content,
+    agents: planned.content.agents.map((agent) => ({
+      ...agent,
+      roles: agent.roles.filter((role) => role !== 'security_reviewer' && !(agent.id === 'codex' && role === 'backend_engineer'))
+    }))
+  }
+  writeComposition(dir, content, { catalogDir: DEFAULT_CONFIG_DIR })
   return dir
 }
 
@@ -296,7 +305,9 @@ test('roles: an unknown role, a role beyond the agent\'s capabilities, and roles
   const dir = machineWith()
   // This machine's codex cannot record decisions: architect needs that.
   const content = read(dir)
-  content.agents = content.agents.map((a) => (a.id === 'codex' ? { ...a, capabilities: a.capabilities.filter((c) => c !== 'record_decision') } : a))
+  content.agents = content.agents.map((a) => (a.id === 'codex'
+    ? { ...a, capabilities: a.capabilities.filter((c) => c !== 'record_decision'), roles: a.roles.filter((r) => r !== 'architect') }
+    : a))
   writeFileSync(join(dir, 'agents.json'), `${JSON.stringify(content, null, 2)}\n`)
   const started = await panel(t, dir)
   if (!started) return
@@ -446,8 +457,15 @@ test('facts: the first setup leaves out what the machine rules out and marks wha
   assert.equal(done.status, 200, done.text)
   const written = read(dir)
   const codex = written.agents.find((a) => a.id === 'codex')
-  assert.ok(!codex.roles.includes('software_engineer') && !codex.roles.includes('ux_reviewer'), 'codex has no run_application declared: ux_reviewer is blocked')
-  assert.equal(agents.agents.find((a) => a.id === 'codex').roles.includes('ux_reviewer'), true, 'the catalog would have given it')
+  const claude = written.agents.find((a) => a.id === 'claude')
+  assert.ok(!codex.roles.includes('software_engineer'), 'a read-only session is not given writing roles')
+  assert.ok(codex.roles.includes('code_reviewer'), 'reviewing needs no writing')
+  assert.ok(claude.roles.includes('software_engineer'), 'claude is not read-only')
+  // ux_reviewer needs running the application here: claude may, as far as anything can tell — given, marked;
+  // read-only codex cannot run anything — not given at all.
+  assert.deepEqual(claude.unverified_roles, ['ux_reviewer'])
+  assert.ok(!codex.roles.includes('ux_reviewer') && codex.unverified_roles === undefined)
+  assert.equal(agents.agents.every((a) => a.roles === undefined), true, 'the catalog names no roles')
 })
 
 test('facts: a role kept on an unconfirmed capability is written with its mark', async (t) => {
@@ -458,8 +476,8 @@ test('facts: a role kept on an unconfirmed capability is written with its mark',
   const started = await panel(t, dir)
   if (!started) return
   const current = rolesOf(dir)
-  // Codex declares no run_application: its ux_reviewer is blocked here, and moves to claude with a mark.
-  const next = { claude: [...current.claude, 'ux_reviewer'], codex: current.codex.filter((r) => r !== 'ux_reviewer') }
+  // The owner leaves usability reviews to claude alone; claude keeps ux_reviewer, now on an unconfirmed capability.
+  const next = { claude: current.claude, codex: current.codex.filter((r) => r !== 'ux_reviewer') }
   const preview = (await send(started, 'GET', `/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&roles=${encodeURIComponent(JSON.stringify(next))}`)).json.apply
   assert.ok(preview.facts.claude.unverified.includes('ux_reviewer'))
   const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles: next, expect: await expectOf(started) })
@@ -486,12 +504,25 @@ test('facts: revert does not bring back a role this machine now rules out', asyn
   assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), now)
 })
 
+test('migration: roles an agent may hold but does not are offered, and nothing is added without a write', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply
+  assert.deepEqual(preview.suggested.codex.sort(), ['backend_engineer', 'security_reviewer'])
+  assert.deepEqual(preview.suggested.claude, ['security_reviewer'])
+  assert.deepEqual(preview.changes, [], 'offering is not writing')
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
 test('roles: the first setup takes the roles the owner ticked', async (t) => {
   const dir = join(tempDir('panel-first-roles-'), 'machine')
   const started = await panel(t, dir)
   if (!started) return
   const planned = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply.roles
-  const roles = { ...planned, codex: [...planned.codex, 'backend_engineer'] }
+  // Everything is proposed to everyone; the owner keeps iOS with claude.
+  const roles = { ...planned, codex: planned.codex.filter((r) => r !== 'ios_engineer') }
   const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: 'none' })
   assert.equal(done.status, 200, done.text)
   assert.deepEqual(rolesOf(dir), roles)

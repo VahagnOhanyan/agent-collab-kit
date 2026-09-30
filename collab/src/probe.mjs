@@ -84,7 +84,12 @@ export function probeAgent(agent, capabilityIds, env = machineEnv()) {
   const capabilities = {}
   for (const capability of capabilityIds) {
     let answer
-    if (!installed) {
+    // The vendor's program cannot have it at all (the adapter ceiling, from the catalog): a fact about the program.
+    // A registry applies catalog adapters to every agent it loads; an agent passed without one is looked up.
+    const adapter = agent.adapter || (loadBuiltinAgents().agents || []).find((known) => known.id === agent.id)?.adapter
+    if ((adapter?.cannot || []).includes(capability)) {
+      answer = { status: 'missing', reason: `программа ${agent.name || agent.id} этого не умеет (adapter.cannot в каталоге)` }
+    } else if (!installed) {
       answer = { status: 'unknown', reason: binary ? `программа ${binary} не найдена на этой машине` : 'у агента нет программы, которую можно найти' }
     } else if (readOnly && NEEDS_WRITE_OR_RUN.has(capability)) {
       answer = { status: 'missing', reason: 'сессия агента настроена только на чтение (sandbox_mode = "read-only")' }
@@ -129,6 +134,34 @@ export function fitToFacts(agents, facts) {
     const { unverified_roles: _old, ...rest } = agent
     return unverified.length ? { ...rest, roles, unverified_roles: unverified } : { ...rest, roles }
   })
+}
+
+// The configuration IN FORCE for a running session, fitted to the facts on this machine: a capability the facts rule
+// out is not routable (find by capability), a role they rule out is not held, and roles on an unconfirmed capability
+// are marked. Nothing is written — the owner's file stays as they confirmed it, and doctor names the difference
+// (meta.writtenAgents is what the file says). This is what makes "all, then cut by facts" true at run time too,
+// including before any composition is written (the catalog in force).
+export function fitConfigToFacts(config, env = machineEnv()) {
+  const written = config.agents?.agents || []
+  const facts = factsFor(written, { roleDefs: config.roles?.roles || {}, capabilityIds: Object.keys(config.capabilities?.capabilities || {}), env })
+  const agents = written.map((agent) => {
+    const known = facts[agent.id]
+    const capabilities = (agent.capabilities || []).filter((capability) => known.capabilities[capability]?.status !== 'missing')
+    const roles = (agent.roles || []).filter((role) => known.allowed.includes(role))
+    const unverified = [...new Set([...(agent.unverified_roles || []), ...roles.filter((role) => known.unverified.includes(role))])].filter((role) => roles.includes(role))
+    const unconfirmedCapabilities = capabilities.filter((capability) => known.capabilities[capability]?.status === 'unknown')
+    const { unverified_roles: _old, ...rest } = agent
+    return {
+      ...rest,
+      capabilities,
+      roles,
+      ...(unverified.length ? { unverified_roles: unverified } : {}),
+      unverified_capabilities: unconfirmedCapabilities
+    }
+  })
+  const fitted = { ...config, agents: { ...config.agents, agents } }
+  Object.defineProperty(fitted, 'meta', { value: { ...config.meta, facts, writtenAgents: written }, enumerable: false })
+  return fitted
 }
 
 // Held roles the facts now block: the composition promises work this agent cannot do here.

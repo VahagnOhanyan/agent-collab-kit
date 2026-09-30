@@ -25,7 +25,14 @@ export function independenceReport({ agents = [], roleDefs = {} }) {
   for (const [role, definition] of Object.entries(roleDefs)) {
     for (const author of holders(agents, role)) {
       for (const reviewerRole of definition.reviewed_by || []) {
-        if (holders(agents, reviewerRole).some((other) => other.id !== author.id)) continue
+        if (holders(agents, reviewerRole).some((other) => other.id !== author.id)) {
+          // Another agent will review — but of the same vendor, it is no second model family: a note, and the review
+          // itself asks for a different, not weaker model (reviews.mjs).
+          if (singleVendor) {
+            notes.push({ role, author: author.id, reviewer_role: reviewerRole, only_the_author: false, same_vendor: true, message: `${role} work done by ${author.id} is reviewed as ${reviewerRole} by another agent of the same vendor` })
+          }
+          continue
+        }
         const gap = {
           role,
           author: author.id,

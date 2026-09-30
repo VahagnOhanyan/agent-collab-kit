@@ -99,7 +99,7 @@ function assertReviewerModelFitsAuthor(config, task, { reviewer_model, author_mo
   if (!reviewer_model) {
     throw new CollabError(
       CODES.INVALID_INPUT,
-      'the same agent reviews its own task here (single_vendor), so name the reviewer model: pass reviewer_model, a ref from `collab models` that is not the author\'s and not weaker',
+      'the reviewer is the author itself or an agent of the same vendor, so name the reviewer model: pass reviewer_model, a ref from `collab models` that is not the author\'s and not weaker',
       { field: 'reviewer_model' }
     )
   }
@@ -293,18 +293,27 @@ export function requestReview(ctx, {
       // not running. Queueing for an absent agent is the normal case here.
       const staleAfterMs = (ctx.registry.defaults().heartbeat_stale_seconds || 900) * 1000
       const now = tx.now()
-      const live = candidates.filter((c) => {
+      const isLive = (c) => {
         const runtime = tx.get('agents', c.id)
         return runtime && projectAgent(runtime, { now, staleAfterMs }).effective_status !== 'offline'
-      })
-      reviewer = (live[0] || candidates[0]).id
+      }
+      // A holder whose hold on the role is unconfirmed on this machine (unverified_roles, probe.mjs) comes last
+      // whether or not it is running: a confirmed holder is preferred even when the review has to wait for it.
+      const role = reviewer_capability ? null : reviewer_role
+      const confirmed = candidates.filter((c) => !(role && (c.unverified_roles || []).includes(role)))
+      const pick = confirmed.find(isLive) || confirmed[0] || candidates.find(isLive) || candidates[0]
+      reviewer = pick.id
     }
 
     // Models are recorded whenever they are given; they are REQUIRED, and
     // compared, only when the author reviews itself.
     const sameAgent = reviewer === author
+    // Another agent of the SAME vendor is no second model family either: like the author reviewing itself, it must
+    // name a different, not weaker model. An agent with no provider on record is taken as its own family.
+    const providerOf = (id) => (ctx.registry.has(id) ? ctx.registry.agent(id).provider || null : null)
+    const sameVendor = !sameAgent && providerOf(reviewer) !== null && providerOf(reviewer) === providerOf(author)
     let models = null
-    if (sameAgent) {
+    if (sameAgent || sameVendor) {
       models = assertReviewerModelFitsAuthor(ctx.config, task, { reviewer_model, author_model })
     } else if (reviewer_model) {
       models = { reviewer: modelReading(ctx.config, reviewer_model), author: null }
@@ -330,7 +339,7 @@ export function requestReview(ctx, {
       scope: scope.length ? scope : task.files || [],
       slot: checking,
       blocking: gates,
-      independence: sameAgent ? 'same_agent_separate_session' : 'independent',
+      independence: sameAgent ? 'same_agent_separate_session' : sameVendor ? 'same_vendor' : 'independent',
       reviewer_model: models?.reviewer.ref || models?.reviewer.named || null,
       reviewer_model_level: models?.reviewer.level || null,
       author_model: models?.author ? models.author.ref : null,

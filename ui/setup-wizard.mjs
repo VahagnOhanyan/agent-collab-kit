@@ -7,7 +7,7 @@ import { detectBinary, planComposition, rolesItCanHold, writeComposition } from 
 import { independenceReport } from '../collab/src/independence.mjs'
 import { factsFor, fitToFacts } from '../collab/src/probe.mjs'
 import { DEFAULT_CONFIG_DIR } from '../collab/src/paths.mjs'
-import { loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../collab/src/registry.mjs'
+import { catalogFor, loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../collab/src/registry.mjs'
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -97,10 +97,11 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, registr
   if (!agents.every((id) => ID.test(id)) || !ID.test(lead || '')) return { ok: false, reason: 'agent ids must use lowercase letters, digits, _ or -' }
   if (singleVendor !== '0' && singleVendor !== '1') return { ok: false, reason: 'single_vendor must be 0 or 1' }
 
-  const catalog = loadBuiltinAgents()
   let roleDefs
+  let catalog
   try {
     roleDefs = machineRoleDefs(machineDir)
+    catalog = catalogFor(machineConfig(machineDir))
   } catch (error) {
     return { ok: false, reason: `Настройки ролей на машине не читаются: ${error.message}` }
   }
@@ -238,7 +239,7 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env
   if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id))) return { available: false, reason: 'Отметьте хотя бы одного агента.' }
   if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
-  const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
+  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   // The proposal is fitted to this machine first: a role the facts block is not proposed, an unconfirmed one is marked.
   const facts = machineFacts(planned.content.agents, machineDir, env)
@@ -306,7 +307,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   }
   if (!ID.test(lead || '') || !ids.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из записанных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
-  const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
+  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const written = current.agents || []
   const facts = machineFacts(written, machineDir, env)
@@ -319,6 +320,9 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   const shown = {
     roles: Object.fromEntries(settled.agents.map((agent) => [agent.id, agent.roles || []])),
     holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])),
+    // Moving a composition written before "all, then cut by facts" (ADR-0026, stage 3): the roles each agent may hold
+    // here but does not. Nothing is added by itself — the page offers them, the owner ticks and confirms.
+    suggested: Object.fromEntries(settled.agents.map((agent) => [agent.id, facts[agent.id].allowed.filter((role) => !(agent.roles || []).includes(role))])),
     facts: factsView(facts),
     independence: gate.report
   }

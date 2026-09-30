@@ -132,6 +132,14 @@ export function validateRegistry(config) {
     }
 
     const adapter = agent.adapter || {}
+    // The vendor ceiling is the only thing that says a program cannot have a capability. A typo there would quietly
+    // GRANT the capability (nothing would be subtracted), so it is refused, not skipped.
+    if (adapter.cannot !== undefined) {
+      if (!Array.isArray(adapter.cannot)) problems.push(`${where} adapter.cannot must be a list of capabilities`)
+      else for (const capability of adapter.cannot) {
+        if (!capIds.has(capability)) problems.push(`${where} adapter.cannot names unknown capability "${capability}"`)
+      }
+    }
     if (!['manual', 'cli'].includes(adapter.kind)) {
       problems.push(`${where} has adapter.kind "${adapter.kind}" — expected "manual" or "cli"`)
     }
@@ -534,7 +542,7 @@ export function validateModels(models, { agentIds = new Set(), policyClasses = n
 // come from the built-in config only. A replacement agents.json that declares one
 // has it ignored (and is told so); an agent unknown to the built-in config is
 // inbox-only.
-function applyBuiltinAdapters(agentsConfig, builtinAgents, warnings) {
+export function applyBuiltinAdapters(agentsConfig, builtinAgents, warnings) {
   if (!Array.isArray(agentsConfig?.agents)) return agentsConfig
   const builtin = new Map((builtinAgents?.agents || []).map((a) => [a.id, a]))
   return {
@@ -580,6 +588,10 @@ export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }
   }
   if (meta.overridden.agents) {
     config.agents = applyBuiltinAdapters(config.agents, readConfig(join(builtinDir, 'agents.json'), 'agents.json'), meta.warnings)
+  } else {
+    // The catalog itself is in force (no composition written yet): its agents get everything they may have, against
+    // the roles and capabilities this configuration actually uses.
+    config.agents = expandCatalogAgents(config.agents, { capabilityIds: Object.keys(config.capabilities?.capabilities || {}), roleDefs: config.roles?.roles || {} })
   }
   if (meta.overridden.policy) meta.builtinPolicy = readConfig(join(builtinDir, 'policy.json'), 'policy.json')
   // Which model a level means is machine-level, like an adapter: a project
@@ -637,8 +649,38 @@ export function loadRegistryConfig(dir = null) {
 // separate so the interesting part (what to offer, what a "yes" produces) is
 // testable without touching PATH or a real project registry.
 
+// The catalog names no roles or capabilities for an agent (ADR-0026, stage 3). What an agent MAY have is every
+// declared capability but the ones its program cannot have (`adapter.cannot`), and every role those satisfy — "all,
+// then cut by facts". Filled here so everything that reads the catalog sees a complete agent.
+export function expandCatalogAgents(agentsConfig, { capabilityIds, roleDefs }) {
+  if (!Array.isArray(agentsConfig?.agents)) return agentsConfig
+  return {
+    ...agentsConfig,
+    agents: agentsConfig.agents.map((agent) => {
+      const cannot = new Set(Array.isArray(agent.adapter?.cannot) ? agent.adapter.cannot : [])
+      const capabilities = agent.capabilities || capabilityIds.filter((capability) => !cannot.has(capability))
+      const held = new Set(capabilities)
+      const roles = agent.roles || Object.entries(roleDefs).filter(([, role]) => (role.requires || []).every((c) => held.has(c))).map(([id]) => id)
+      return { ...agent, capabilities, roles }
+    })
+  }
+}
+
+// The catalog as a given configuration sees it: every capability THAT configuration declares (a machine's or a
+// project's capabilities.json included) minus the ceiling, and every role of THAT configuration they satisfy. What
+// setup proposes and what runs before anything is written are then one answer, not two.
+export function catalogFor(config) {
+  return expandCatalogAgents(readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json'), {
+    capabilityIds: Object.keys(config.capabilities?.capabilities || {}),
+    roleDefs: config.roles?.roles || {}
+  })
+}
+
 export function loadBuiltinAgents() {
-  return readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json')
+  return expandCatalogAgents(readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json'), {
+    capabilityIds: Object.keys(readConfig(join(DEFAULT_CONFIG_DIR, 'capabilities.json'), 'capabilities.json').capabilities || {}),
+    roleDefs: readConfig(join(DEFAULT_CONFIG_DIR, 'roles.json'), 'roles.json').roles || {}
+  })
 }
 
 // What `collab setup` would ask about: for every agent the BUILT-IN catalog

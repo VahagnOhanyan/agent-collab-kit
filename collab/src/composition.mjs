@@ -23,9 +23,8 @@ export function rolesItCanHold(agent, roleDefs) {
     .map(([id]) => id)
 }
 
-// The proposal. With one agent it holds every role it can — there is nobody
-// else. With several, each keeps the catalog's default roles, and any role the
-// catalog gave only to an agent left out goes to whoever can hold it.
+// The proposal: every chosen agent with every role it can hold. The owner then
+// takes roles away (panel) and the machine's facts cut what the agent cannot do.
 export function planComposition({ catalog, roleDefs, include, lead, singleVendor = false }) {
   const byId = new Map((catalog.agents || []).map((a) => [a.id, a]))
   const unknown = include.filter((id) => !byId.has(id))
@@ -34,19 +33,9 @@ export function planComposition({ catalog, roleDefs, include, lead, singleVendor
   if (!include.includes(lead)) return { ok: false, reason: `the lead "${lead}" is not among the chosen agents` }
 
   const chosen = include.map((id) => byId.get(id))
-  // A catalog default the agent cannot hold here (the machine's roles.json may ask more of a role) is not proposed.
-  const roles = new Map(chosen.map((a) => {
-    const holdable = rolesItCanHold(a, roleDefs)
-    return [a.id, chosen.length === 1 ? holdable : (a.roles || []).filter((role) => holdable.includes(role))]
-  }))
-  if (chosen.length > 1) {
-    const held = new Set([...roles.values()].flat())
-    const orphaned = [...new Set((catalog.agents || []).flatMap((a) => a.roles || []))].filter((r) => !held.has(r))
-    for (const role of orphaned) {
-      const holder = chosen.find((a) => rolesItCanHold(a, roleDefs).includes(role))
-      if (holder) roles.get(holder.id).push(role)
-    }
-  }
+  // Every agent is proposed every role its capabilities satisfy ("all, then cut by facts", ADR-0026): the catalog no
+  // longer says which vendor does what. The facts on the machine (probe.mjs fitToFacts) cut the proposal after this.
+  const roles = new Map(chosen.map((a) => [a.id, rolesItCanHold(a, roleDefs)]))
   const agents = chosen.map((a) => {
     const { adapter, detect, ...rest } = a
     return { ...rest, roles: roles.get(a.id) }

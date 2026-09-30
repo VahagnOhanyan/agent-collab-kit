@@ -27,7 +27,7 @@ import { resolveApproval } from './domain/approvals.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
-import { loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
+import { catalogFor, loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
 import { detectBinary, planComposition, writeComposition } from './composition.mjs'
 import { independenceReport } from './independence.mjs'
 import { factsFor, fitToFacts, machineEnv } from './probe.mjs'
@@ -160,10 +160,12 @@ async function confirmTyped(options, prompt, expected) {
 // are asked at the terminal. Writing is the owner's, like connect.
 async function machineSetup(flags, options) {
   if (!flags['dry-run']) refuseUnlessHuman(options, 'collab setup')
-  const catalog = loadBuiltinAgents()
   const machineDir = options.machineDir || MACHINE_CONFIG_DIR
-  // The roles as the registry will read them after the write: the machine's roles.json when it has one.
-  const roleDefs = loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir }).roles.roles
+  // The roles and capabilities as the registry will read them after the write: the machine's own files when it
+  // has them — and the catalog expanded against those, the same answer the configuration in force gives.
+  const machineConfig = loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir })
+  const roleDefs = machineConfig.roles.roles
+  const catalog = catalogFor(machineConfig)
   const detected = (catalog.agents || []).filter((a) => detectBinary(a) && which(detectBinary(a))).map((a) => a.id)
   out(
     `${C.bold}collab setup${C.off} — this machine's composition ${dim(join(machineDir, 'agents.json'))}`,
@@ -202,7 +204,8 @@ async function machineSetup(flags, options) {
   const facts = factsFor(plan.content.agents, { roleDefs, capabilityIds: machineCaps, env: probeEnvFrom(options) })
   plan.content.agents = fitToFacts(plan.content.agents, facts)
   for (const [id, known] of Object.entries(facts)) {
-    for (const blocked of known.blocked.filter((b) => (catalog.agents || []).find((a) => a.id === id)?.roles?.includes(b.role))) {
+    // Every role this agent does not get, with the reason — the facts on this machine or its program's ceiling.
+    for (const blocked of known.blocked) {
       out(dim(`  not given    ${id} ${blocked.role}: ${blocked.reasons.join('; ')}`))
     }
   }
@@ -568,7 +571,17 @@ const STANDALONE = {
       process.exit(1)
     }
 
-    const builtinAgents = loadBuiltinAgents()
+    // The catalog as THIS project's configuration sees it, fitted to the facts on this machine: an agent added here
+    // gets every role it may hold and nothing the facts rule out — never the catalog expanded blind.
+    const projectConfigDir = join(project.registryDir, project.projectId, 'collab')
+    const projectConfig = loadConfigFrom([projectConfigDir], { kind: 'project', id: project.projectId, dir: join(project.registryDir, project.projectId) })
+    const expanded = catalogFor(projectConfig)
+    const projectFacts = factsFor(expanded.agents, {
+      roleDefs: projectConfig.roles.roles,
+      capabilityIds: Object.keys(projectConfig.capabilities.capabilities),
+      env: probeEnvFrom(options)
+    })
+    const builtinAgents = { ...expanded, agents: fitToFacts(expanded.agents, projectFacts) }
     const projectAgentsPath = join(project.registryDir, project.projectId, 'collab', 'agents.json')
     const projectAgents = existsSync(projectAgentsPath) ? JSON.parse(readFileSync(projectAgentsPath, 'utf8')) : null
 
@@ -590,9 +603,14 @@ const STANDALONE = {
     const accepted = []
     try {
       for (const offer of offers) {
+        if (offer.action === 'add') {
+          const proposed = builtinAgents.agents.find((a) => a.id === offer.id)
+          out(dim(`  ${offer.id} получит роли: ${(proposed?.roles || []).join(', ') || 'никаких'}`))
+          for (const blocked of projectFacts[offer.id]?.blocked || []) out(dim(`  ${offer.id} не получит ${blocked.role}: ${blocked.reasons.join('; ')}`))
+        }
         const question =
           offer.action === 'add'
-            ? `${offer.name} (${offer.id}) обнаружен на машине, в проекте не участвует — добавить? [y/N] `
+            ? `${offer.name} (${offer.id}) обнаружен на машине, в проекте не участвует — добавить с этими ролями? [y/N] `
             : `${offer.name} (${offer.id}) участвует в проекте, но не обнаружен на машине — убрать? [y/N] `
         const answer = await rl.question(question)
         if (/^y(es)?$/i.test(answer.trim())) accepted.push(offer)
@@ -607,6 +625,13 @@ const STANDALONE = {
     }
 
     const updated = applyAgentSetup(builtinAgents, projectAgents, accepted)
+    // The project's composition replaces the machine's: it must leave every kind of work a reviewer, like any other.
+    const projectIndependence = independenceReport({ agents: updated.agents, roleDefs: projectConfig.roles.roles })
+    if (projectIndependence.problems.length) {
+      for (const problem of projectIndependence.problems) out(`${C.red}отказ${C.off}  ${problem.message}`)
+      out(dim('ничего не записано — дай проверяющую роль другому агенту в agents.json проекта и повтори'))
+      process.exit(1)
+    }
     writeProjectAgentsFile(projectAgentsPath, updated)
     out('', `${C.green}записано${C.off} ${projectAgentsPath}`)
     for (const offer of accepted) out(dim(`  ${offer.action === 'add' ? '+ добавлен' : '- убран'} ${offer.id}`))
@@ -614,8 +639,8 @@ const STANDALONE = {
       out(
         '',
         dim(
-          'роли и briefing для добавленных агентов скопированы из встроенного шаблона как есть — ' +
-            'поправь их под проект (agents.json), это не сделано за тебя.'
+          'добавленные агенты получили все роли, которые им позволяют способности и факты этой машины, и briefing из ' +
+            'встроенного шаблона — сними лишние роли в agents.json проекта, это не сделано за тебя.'
         )
       )
     }

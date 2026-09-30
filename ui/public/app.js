@@ -271,7 +271,8 @@ function reviewCard(r) {
   return el('div', { class: 'card' },
     el('div', {}, pill(r.verdict || 'pending'), ' ', el('span', { class: 'mono', text: `${r.slot || r.requested_role || ''}${r.round ? ` · раунд ${r.round}` : ''}` }),
       r.reviewer ? el('span', { class: 'muted', text: ` · ${r.reviewer}` }) : null,
-      r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'тот же вендор' }) : null,
+      r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'тот же агент' }) : null,
+      r.independence === 'same_vendor' ? el('span', { class: 'pill warn', text: 'тот же вендор' }) : null,
       r.reviewer_model ? el('span', { class: 'pill', text: `ревьюер: ${r.reviewer_model}${r.reviewer_model_level ? ` (${r.reviewer_model_level})` : ''}${r.author_model ? `, автор: ${r.author_model}` : ''}` }) : null),
     r.summary ? el('div', { class: 'detail', text: plain(r.summary) }) : null,
     ...findings.map((f) => el('div', { class: 'position' },
@@ -555,6 +556,17 @@ async function setup() {
       return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, el('span', { class: 'chips' }, boxes), ...blocked))
     })))
     if (editable) box.append(el('div', { class: 'muted', text: 'Показаны только роли, для которых у агента есть нужные способности. Изменения записываются кнопкой «Применить» ниже.' }))
+    // Roles an agent may hold here but does not (a composition written before "all, then cut by facts"): offered in
+    // one click, still shown in "Что изменится" and written only after the confirmation.
+    const missingRoles = editable ? Object.entries(apply.suggested || {}).filter(([id, list]) => list.some((r) => !(chosenRoles[id] || []).includes(r))) : []
+    if (missingRoles.length) {
+      box.append(el('div', { class: 'note' },
+        el('span', { text: `Не выданы допустимые роли: ${missingRoles.map(([id, list]) => `${id} — ${list.join(', ')}`).join('; ')}. ` }),
+        el('button', { type: 'button', text: 'Отметить все допустимые', onclick: () => {
+          chosenRoles = Object.fromEntries(Object.entries(chosenRoles).map(([id, list]) => [id, (apply.holdable[id] || []).filter((r) => list.includes(r) || (apply.suggested[id] || []).includes(r))]))
+          drawPreview()
+        } })))
+    }
     for (const p of apply.independence?.problems || []) {
       box.append(el('div', { class: 'note bad', text: `Работу роли ${p.role} у ${p.author} некому проверить, кроме автора: дайте роль ${p.reviewer_role} другому агенту.` }))
     }

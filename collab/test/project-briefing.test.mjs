@@ -11,7 +11,7 @@ import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
-import { checkBriefings, loadConfig, PROJECT_BRIEFING_MAX } from '../src/registry.mjs'
+import { checkBriefings, loadBuiltinAgents, loadConfig, PROJECT_BRIEFING_MAX } from '../src/registry.mjs'
 import { gitRepo, initialisedJournal, tempDir, writeJson } from './helpers.mjs'
 
 function fixture() {
@@ -79,7 +79,7 @@ test('the repository cannot supply project rules, and neither can the machine co
     const machine = join(f.base, 'machine')
     mkdirSync(join(machine, 'collab', 'briefings'), { recursive: true })
     writeFileSync(join(machine, 'collab', 'briefings', 'claude.project.md'), 'FROM THE MACHINE')
-    writeJson(join(machine, 'agents.json'), JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'utf8')))
+    writeJson(join(machine, 'agents.json'), loadBuiltinAgents())
     const unregistered = createApi({ agentId: 'claude', cwd: f.repo, registryDir: join(f.base, 'empty-registry'), machineDir: machine })
     assert.equal(unregistered.config.meta.source.kind, 'machine')
     assert.equal(unregistered.whoami().project_briefing, null)

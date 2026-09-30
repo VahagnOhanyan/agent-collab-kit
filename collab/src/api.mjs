@@ -34,7 +34,7 @@ import * as delegations from './domain/delegations.mjs'
 import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
 import { independenceReport } from './independence.mjs'
-import { factConflicts, factsFor, machineEnv } from './probe.mjs'
+import { factConflicts, factsFor, fitConfigToFacts, machineEnv } from './probe.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
 
@@ -193,7 +193,11 @@ export function createApi({
 
   // Identity and config are checked before the journal, so a misregistered
   // agent fails loudly even in a folder that has no journal.
-  const config = loadConfig({ journalRoot: roots.journalRoot, configDir, registryDir, home, ...(machineDir !== undefined ? { machineDir } : {}) })
+  const loaded = loadConfig({ journalRoot: roots.journalRoot, configDir, registryDir, home, ...(machineDir !== undefined ? { machineDir } : {}) })
+  // What is in force for this session is fitted to the facts on this machine (probe.mjs): a role or capability the
+  // facts rule out is not routed to, whatever a file says. An explicit configDir is a test's whole configuration and
+  // is taken as it is.
+  const config = loaded.meta?.source?.kind === 'config-dir' ? loaded : fitConfigToFacts(loaded, probeEnv || { ...machineEnv(), ...(home ? { home } : {}) })
   const registry = createRegistry(config)
   registry.agent(agentId) // fails fast if the caller is not a registered agent
 
@@ -265,6 +269,10 @@ export function createApi({
         lead_agent: lead,
         roles: declared.roles,
         capabilities: declared.capabilities,
+        // Capabilities nothing on this machine could confirm (probe.mjs). Evidence that rests on one of these —
+        // "the UI was verified" on run_application — is not claimed: say what would have to be checked instead.
+        unverified_capabilities: declared.unverified_capabilities || [],
+        unverified_roles: declared.unverified_roles || [],
         briefing: declared.briefing,
         briefing_file: registry.briefingPath(agentId),
         // The project's own rules for this agent, from the trusted registry (not the repository): boundaries the
@@ -441,15 +449,17 @@ export function createApi({
         // Whether every kind of work has somebody other than its author to review it.
         independence: independenceReport({ agents: registry.agents(), roleDefs: registry.roles() }),
         // What this machine shows each agent can do, and held roles those facts now rule out.
+        // Conflicts compare what the FILE says (meta.writtenAgents) with the facts: the session already runs fitted.
         ...(() => {
-          const facts = factsFor(registry.agents(), {
+          const written = config.meta?.writtenAgents || registry.agents()
+          const facts = config.meta?.facts || factsFor(written, {
             roleDefs: registry.roles(),
             capabilityIds: Object.keys(registry.capabilities()),
             env: probeEnv || { ...machineEnv(), ...(home ? { home } : {}) }
           })
           return {
             facts: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, { installed: f.installed, sandbox: f.sandbox, capabilities: f.capabilities, unverified: f.unverified, blocked: f.blocked }])),
-            fact_conflicts: factConflicts(registry.agents(), facts)
+            fact_conflicts: factConflicts(written, facts)
           }
         })(),
         // Work that asks for a role nobody holds any more (the composition changed after it was created): it can
