@@ -32,6 +32,7 @@ import { catalogFor, loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSet
 import { detectBinary, planComposition, writeComposition } from './composition.mjs'
 import { independenceReport } from './independence.mjs'
 import { factsFor, fitToFacts, machineEnv } from './probe.mjs'
+import { unadaptedVendors } from './vendors.mjs'
 
 const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -1072,6 +1073,15 @@ const COMMANDS = {
       out(`  ${a.id.padEnd(8)} ${mark}  ${dim(a.how)}  ${dim(`runtime ${a.runtime_status}`)}`)
       if (a.note) out(`  ${' '.repeat(8)} ${dim(a.note)}`)
       if (a.fix) out(`  ${' '.repeat(8)} ${C.yellow}fix:${C.off} ${a.fix}`)
+    }
+    // Known vendor CLIs on this machine that the catalog has no adapter for (skill vendor-probe): only a PATH lookup.
+    const unknown = await unadaptedVendors()
+    if (unknown.length) {
+      out('', `${C.bold}found without an adapter${C.off} ${dim('(collab cannot work with these yet)')}`)
+      for (const v of unknown) {
+        out(`  ${v.binary.padEnd(8)} ${C.yellow}no adapter${C.off}  ${dim(`${v.vendor} · ${v.path}`)}`)
+        out(`  ${' '.repeat(8)} ${C.yellow}tell it:${C.off} ${v.phrase}`)
+      }
     }
     out('', `${C.bold}runners${C.off}`)
     if (!report.runners.length) out(dim('  none — declare them in the project registry entry'))

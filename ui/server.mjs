@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from '../collab/src/errors.mjs'
 import { describeProject, isUninitialised } from '../collab/src/api.mjs'
 import { cleanupTask, readBacklog, recordsWord, suggestedRole } from '../collab/src/backlog.mjs'
+import { unadaptedVendors } from '../collab/src/vendors.mjs'
 import { readKitFiles } from './kit-files.mjs'
 import { applySetup, detectSetup, previewSetup, revertSetup } from './setup-wizard.mjs'
 import { eventsView, overviewView, rosterView, setupCheckView, tasksView, taskView, waitingView } from './views.mjs'
@@ -205,7 +206,9 @@ export async function startPanel({
   probeEnv = undefined,
   // A journal API that can write, for the one journal write the panel makes (a backlog cleanup task). Used only when
   // allowWrite holds; without it that write is refused.
-  writeApiFactory = null
+  writeApiFactory = null,
+  // Known vendor CLIs on this machine without an adapter (collab/src/vendors.mjs); tests pass their own lookup.
+  vendorsLookup = unadaptedVendors
 } = {}) {
   if (host !== '127.0.0.1') throw new CollabError(CODES.INVALID_INPUT, 'the panel only listens on 127.0.0.1')
   if (typeof token !== 'string' || token.length < 16) throw new CollabError(CODES.INVALID_INPUT, 'the panel needs a random token')
@@ -382,6 +385,8 @@ export async function startPanel({
         return sendJson(res, 200, answer, { ...options, headers: authHeaders })
       }
       if (url.pathname === '/api/kit') return sendJson(res, 200, readKitFiles(kitRoot), { ...options, headers: authHeaders })
+      // Read-only: a PATH lookup, no CLI is started.
+      if (url.pathname === '/api/vendors') return sendJson(res, 200, { unadapted: await vendorsLookup() }, { ...options, headers: authHeaders })
 
       let api
       try {

@@ -1,6 +1,6 @@
 // Тесты детерминированной разведки: только локальные sh-заглушки, без живых CLI.
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -114,6 +114,23 @@ test('detect видит PATH и регистрацию в agents.json', { skip: 
       { binary: 'also-registered', found: false, registered: true },
       { binary: 'missing', found: false, registered: false },
     ]);
+  } finally { w.cleanup(); }
+});
+
+// The installed copy is reached through the `~/.agent-kit/current` link: run that way the script used to exit 0 with
+// no output at all, so an agent read "nothing found".
+test('запуск через символическую ссылку на каталог (как из ~/.agent-kit/current) печатает результат', { skip: skipWindows }, () => {
+  const w = world();
+  try {
+    const link = join(w.base, 'current');
+    symlinkSync(ROOT, link);
+    const candidates = join(w.base, 'candidates.json');
+    const agents = join(w.base, 'agents.json');
+    writeFileSync(candidates, JSON.stringify({ candidates: [{ binary: 'nothing-here', vendor: 'x' }] }));
+    writeFileSync(agents, JSON.stringify({ agents: [] }));
+    const call = spawnSync(process.execPath, [join(link, 'skills', 'vendor-probe', 'probe.mjs'), 'detect', '--agents', agents, '--candidates', candidates], { encoding: 'utf8', env: { PATH: w.bin } });
+    assert.equal(call.status, 0, call.stderr);
+    assert.equal(JSON.parse(call.stdout).candidates[0].binary, 'nothing-here');
   } finally { w.cleanup(); }
 });
 

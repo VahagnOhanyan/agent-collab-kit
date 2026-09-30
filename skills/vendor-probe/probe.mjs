@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Детерминированная часть разведки CLI: поиск, проба песочницы и чистка профиля.
 import { access, chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -52,6 +52,17 @@ export async function detect({ binary, agentsFile = DEFAULT_AGENTS, candidatesFi
       registered: agents.some((agent) => agent?.id === candidate.binary || agent?.adapter?.binary === candidate.binary),
     };
   })) };
+}
+
+// Found on this machine and not in the catalog: a vendor the kit can see but cannot yet work with. Only a file lookup
+// in PATH — no CLI is started. Used by the installer, `collab doctor` and the panel.
+export async function unadapted(options = {}) {
+  return (await detect(options)).candidates.filter((candidate) => candidate.found && !candidate.registered);
+}
+
+// What to tell the found agent itself: on a machine where it is the only agent, it studies itself by this skill.
+export function probePhrase(binary, skillFile = join(HERE, 'SKILL.md')) {
+  return `Прочитай ${skillFile} и выполни разведку вендора для ${binary}: профиль и отчёт, без правок в ~/agent-kit, платный вызов — только после моего «да».`;
 }
 
 export async function sandboxTest({ bin, args, cwd, target = 'probe-write-test.txt', passEnv = [], timeoutMs = 120000, env = process.env } = {}) {
@@ -210,4 +221,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main();
+// Run as a script, not when imported. Both sides as real paths: the installed copy is reached through the
+// `~/.agent-kit/current` link, and a link-vs-real comparison made the script exit silently with no output.
+const invokedAs = (() => { try { return realpathSync(resolve(process.argv[1] ?? '')); } catch { return null; } })();
+if (invokedAs && invokedAs === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = await main();

@@ -198,3 +198,18 @@ test('a panel without the right to write shows the backlog but creates nothing',
     p.cleanup()
   }
 })
+
+test('the panel names CLIs found without an adapter, read-only', async (t) => {
+  const p = project()
+  try {
+    const found = [{ binary: 'agy', vendor: 'google', path: '/usr/bin/agy', phrase: 'Прочитай …/SKILL.md и выполни разведку вендора для agy' }]
+    const started = await panel(t, p, { vendorsLookup: async () => found })
+    if (!started) return
+    const view = await send(started, 'GET', '/api/vendors')
+    assert.equal(view.status, 200, view.text)
+    assert.deepEqual(view.json.unadapted, found)
+    assert.equal((await send(started, 'POST', '/api/vendors', {})).status, 405, 'nothing is written through it')
+  } finally {
+    p.cleanup()
+  }
+})

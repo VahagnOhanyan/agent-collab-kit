@@ -126,6 +126,20 @@ const chips = (list) => el('div', { class: 'chips' }, (list || []).map((item) =>
 const command = (text, purpose = 'команду') =>
   el('div', { class: 'cmd' }, el('code', { text }), el('button', { type: 'button', 'aria-label': `Копировать ${purpose}`, onclick: () => copy(text), text: 'Копировать' }))
 
+// Known vendor CLIs on this machine without an adapter (skill vendor-probe): found by a PATH lookup only. Nothing is
+// started from here — the owner gives the sentence to that agent (or to the lead), and it asks before any paid call.
+async function vendorsNotice() {
+  const data = await api('/api/vendors').catch(() => null)
+  const list = data?.unadapted || []
+  if (!list.length) return null
+  return el('div', { class: 'note warn' },
+    el('strong', { text: `Найден${list.length > 1 ? 'ы агенты' : ' агент'} без адаптера — collab с ${list.length > 1 ? 'ними' : 'ним'} пока не работает` }),
+    ...list.map((v) => el('div', {},
+      el('div', { text: `${v.binary} (${v.vendor}) · ${v.path}` }),
+      el('div', { class: 'muted', text: 'Чтобы подготовить адаптер, скажите этому агенту — или своему ведущему — фразу ниже. Разведка идёт в песочнице, платный вызов только после вашего «да».' }),
+      command(v.phrase, `фразу для ${v.binary}`))))
+}
+
 function page(title, subtitle, ...content) {
   return [el('h1', { text: title }), subtitle ? el('p', { class: 'sub', text: subtitle }) : null, ...content]
 }
@@ -155,6 +169,7 @@ async function overview() {
   // granted, so it is shown apart instead of inflating "waiting for you".
   const waitingNow = await api('/api/waiting').catch(() => null)
   const known = Boolean(waitingNow) // if it failed the split is unknown; say so, do not guess zero
+  const vendors = await vendorsNotice()
   const expired = (waitingNow?.approvals || []).filter((a) => a.expired).length
   // Both numbers from one snapshot: status() and /api/waiting are read at different moments.
   const live = known ? (waitingNow.approvals || []).length - expired : s.approvals_pending
@@ -179,6 +194,7 @@ async function overview() {
       tile(s.decisions_open, 'открытых решений', s.decisions_open > 0, '#/waiting'),
       tile(s.reviews_pending, 'ревью в очереди', false, '#/waiting'),
       tile(s.runs_failed, 'проверок упало', s.runs_failed > 0)),
+    vendors,
     el('h2', { text: 'Агенты' }),
     el('div', { class: 'list' }, s.agents.map((a) =>
       el('div', { class: 'row' }, pill(a.status), el('strong', { text: a.id }), el('span', { class: 'grow muted', text: a.adapter?.how || '' }),
@@ -604,6 +620,7 @@ async function kit() {
 // ── setup wizard ──────────────────────────────────────────────────────────
 async function setup() {
   let detect = await api('/api/setup/detect')
+  const vendors = await vendorsNotice()
   // Start from what is written on this machine, so that "Применить" compares a change of yours against it,
   // not against the panel's guess; with nothing written, from what is installed.
   const written = detect.current?.machine?.agents ? detect.current.machine : null
@@ -907,7 +924,7 @@ async function setup() {
     // A plain table of contents: it jumps to a step, it does not claim progress.
     el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Проект', 'Команды'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
-    el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox,
+    el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox, vendors,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,
     el('h2', { id: 'step-3', text: '3. Режим ревью' }), reviewNote, single,
     el('h2', { id: 'step-4', text: '4. Язык текстов для вас' }),
