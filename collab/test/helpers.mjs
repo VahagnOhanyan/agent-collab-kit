@@ -44,7 +44,9 @@ function writeLauncher(kind, options) {
   const dir = mkdtempSync(join(tmpdir(), 'collab-launch-'))
   const file = join(dir, `${kind}.mjs`)
   const target = pathToFileURL(kind === 'cli' ? CLI : SERVER).href
-  options = { machineDir: join(dir, 'no-machine-composition'), ...options }
+  // A described machine by default: an empty home and both agents on PATH, so no test reads the owner's own
+  // ~/.codex or ~/.claude.json, or depends on which programs the machine running the tests has.
+  options = { machineDir: join(dir, 'no-machine-composition'), probeHome: join(dir, 'no-home'), probeBinaries: ['claude', 'codex'], ...options }
   const call = kind === 'cli' ? `main(process.argv.slice(2), ${JSON.stringify(options)})` : `main(${JSON.stringify(options)})`
   writeFileSync(file, `import { main } from ${JSON.stringify(target)}\nawait ${call}\n`)
   return { file, remove: () => rmSync(dir, { recursive: true, force: true }) }

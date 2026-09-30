@@ -471,6 +471,7 @@ async function setup() {
   // the page never invents roles, it only changes the ones it was shown.
   let chosenRoles = null
   const sameKeys = (object, ids) => Boolean(object) && [...Object.keys(object)].sort().join(',') === [...ids].sort().join(',')
+  const rolesSame = (a, b) => Object.keys(a).every((id) => [...(a[id] || [])].sort().join(',') === [...(b[id] || [])].sort().join(','))
   const out = el('div', {})
   const reviewNote = el('div', { class: 'note' })
   const checkOut = el('div', {})
@@ -493,7 +494,12 @@ async function setup() {
     if (seq !== previewSeq) return
     if (!preview.ok) return out.append(el('div', { class: 'note bad', text: preview.reason }))
     const apply = preview.apply || {}
-    if (!chosenRoles && apply.roles && sameKeys(apply.roles, [...chosen])) chosenRoles = structuredClone(apply.roles)
+    if (!chosenRoles && apply.roles && sameKeys(apply.roles, [...chosen])) {
+      // A written role the machine now rules out starts unticked: it shows as "−" in the change, so the owner sees it
+      // go and confirms it, and it no longer blocks every other change (lead, review mode).
+      chosenRoles = Object.fromEntries(Object.entries(apply.roles).map(([id, list]) => [id, apply.holdable?.[id] ? list.filter((r) => apply.holdable[id].includes(r)) : list]))
+      if (!rolesSame(chosenRoles, apply.roles)) return drawPreview()
+    }
     // What the check compares against is what would be written: the ticked roles, not the catalog's proposal.
     lastPlan = chosenRoles
       ? { ...preview.plan, agents: preview.plan.agents.map((a) => ({ ...a, roles: chosenRoles[a.id] || a.roles })) }
@@ -535,14 +541,18 @@ async function setup() {
       const held = chosenRoles?.[a.id] || a.roles
       const head = [el('strong', { text: a.id }), a.id === lead ? el('span', { class: 'pill', text: 'ведущий' }) : null]
       if (!editable) return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, chips(held)))
-      const boxes = (apply.holdable[a.id] || []).map((role) => el('label', { class: 'chip' },
+      const facts = apply.facts?.[a.id]
+      const unverified = new Set(facts?.unverified || [])
+      const boxes = (apply.holdable[a.id] || []).map((role) => el('label', { class: 'chip', title: unverified.has(role) ? 'Способность для этой роли на машине не подтверждена: агент получит такие задачи последним' : null },
         el('input', { type: 'checkbox', checked: held.includes(role), onchange: (e) => {
           const next = new Set(chosenRoles[a.id])
           if (e.target.checked) next.add(role); else next.delete(role)
           chosenRoles = { ...chosenRoles, [a.id]: (apply.holdable[a.id] || []).filter((r) => next.has(r)) }
           drawPreview()
-        } }), ` ${role}`))
-      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow chips' }, boxes))
+        } }), ` ${role}${unverified.has(role) ? ' · не проверено' : ''}`))
+      // Roles the facts rule out are named with the reason, never offered as a checkbox.
+      const blocked = (facts?.blocked || []).map((b) => el('div', { class: 'muted small', text: `${b.role} недоступна: ${b.reasons.join('; ')}` }))
+      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, el('span', { class: 'chips' }, boxes), ...blocked))
     })))
     if (editable) box.append(el('div', { class: 'muted', text: 'Показаны только роли, для которых у агента есть нужные способности. Изменения записываются кнопкой «Применить» ниже.' }))
     for (const p of apply.independence?.problems || []) {

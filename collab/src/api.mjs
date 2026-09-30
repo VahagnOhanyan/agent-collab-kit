@@ -34,6 +34,7 @@ import * as delegations from './domain/delegations.mjs'
 import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
 import { independenceReport } from './independence.mjs'
+import { factConflicts, factsFor, machineEnv } from './probe.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
 
@@ -157,6 +158,8 @@ export function createApi({
   configDir = undefined,
   registryDir = defaultRegistryDir(),
   machineDir = undefined,
+  // How doctor reads the machine's facts about agents (probe.mjs machineEnv); tests describe a machine.
+  probeEnv = undefined,
   projectRoot = null,
   readOnly = false
 } = {}) {
@@ -437,6 +440,18 @@ export function createApi({
         unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0),
         // Whether every kind of work has somebody other than its author to review it.
         independence: independenceReport({ agents: registry.agents(), roleDefs: registry.roles() }),
+        // What this machine shows each agent can do, and held roles those facts now rule out.
+        ...(() => {
+          const facts = factsFor(registry.agents(), {
+            roleDefs: registry.roles(),
+            capabilityIds: Object.keys(registry.capabilities()),
+            env: probeEnv || { ...machineEnv(), ...(home ? { home } : {}) }
+          })
+          return {
+            facts: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, { installed: f.installed, sandbox: f.sandbox, capabilities: f.capabilities, unverified: f.unverified, blocked: f.blocked }])),
+            fact_conflicts: factConflicts(registry.agents(), facts)
+          }
+        })(),
         // Work that asks for a role nobody holds any more (the composition changed after it was created): it can
         // never be claimed, so it is named here instead of quietly waiting.
         orphaned_tasks: tasks

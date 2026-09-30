@@ -5,6 +5,7 @@ import { delimiter, join } from 'node:path'
 import { describeProject } from '../collab/src/api.mjs'
 import { detectBinary, planComposition, rolesItCanHold, writeComposition } from '../collab/src/composition.mjs'
 import { independenceReport } from '../collab/src/independence.mjs'
+import { factsFor, fitToFacts } from '../collab/src/probe.mjs'
 import { DEFAULT_CONFIG_DIR } from '../collab/src/paths.mjs'
 import { loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../collab/src/registry.mjs'
 
@@ -50,8 +51,19 @@ function machineComposition(machineDir) {
 
 // The roles as the registry will read them after a write: the machine's own roles.json when it has one, the
 // catalog otherwise. Every check here uses the same definitions the written file is validated and run with.
+function machineConfig(machineDir) {
+  return loadConfigFrom(machineDir ? [machineDir] : null, machineDir ? { kind: 'machine', dir: machineDir } : { kind: 'built-in' })
+}
+
 function machineRoleDefs(machineDir) {
-  return loadConfigFrom(machineDir ? [machineDir] : null, machineDir ? { kind: 'machine', dir: machineDir } : { kind: 'built-in' }).roles.roles
+  return machineConfig(machineDir).roles.roles
+}
+
+// What this machine shows each agent can do (probe.mjs), against the same roles and capabilities the written file
+// will be validated with. `env` describes the machine; tests pass their own, the panel reads the real one.
+function machineFacts(agents, machineDir, env) {
+  const config = machineConfig(machineDir)
+  return factsFor(agents, { roleDefs: config.roles.roles, capabilityIds: Object.keys(config.capabilities.capabilities), env })
 }
 
 export function detectSetup({ registryDir, machineDir, cwd }) {
@@ -80,7 +92,7 @@ function command(tokens) {
   return tokens.join(' ')
 }
 
-export function previewSetup({ agents, lead, singleVendor, roles = null, registryDir, machineDir, cwd }) {
+export function previewSetup({ agents, lead, singleVendor, roles = null, registryDir, machineDir, cwd, env = undefined }) {
   if (!Array.isArray(agents) || !agents.length) return { ok: false, reason: 'choose at least one agent' }
   if (!agents.every((id) => ID.test(id)) || !ID.test(lead || '')) return { ok: false, reason: 'agent ids must use lowercase letters, digits, _ or -' }
   if (singleVendor !== '0' && singleVendor !== '1') return { ok: false, reason: 'single_vendor must be 0 or 1' }
@@ -112,7 +124,7 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, registr
       agents: planned.content.agents.map((agent) => ({ id: agent.id, roles: agent.roles || [] }))
     },
     commands,
-    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, machineDir }))
+    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, machineDir, env }))
   }
 }
 
@@ -149,7 +161,7 @@ function registryProblems(machineDir) {
 const rolesEqual = (a = [], b = []) => [...a].sort().join(',') === [...b].sort().join(',')
 
 // `roles` is { agentId: [role, …] } for exactly the agents in play, or null (keep what is there).
-function settleRoles({ agents, roles, roleDefs }) {
+function settleRoles({ agents, roles, roleDefs, facts }) {
   if (roles === null || roles === undefined) return { ok: true, agents }
   if (!roles || typeof roles !== 'object' || Array.isArray(roles)) return { ok: false, reason: 'Роли переданы в неверном виде.' }
   const ids = agents.map((agent) => agent.id)
@@ -162,12 +174,34 @@ function settleRoles({ agents, roles, roleDefs }) {
     }
     const unknown = wanted.filter((role) => !Object.hasOwn(roleDefs, role))
     if (unknown.length) return { ok: false, reason: `Таких ролей нет в реестре: ${unknown.join(', ')}.` }
-    const holdable = new Set(rolesItCanHold(agent, roleDefs))
+    // Allowed = the capabilities the composition declares AND nothing on this machine rules out (probe.mjs).
+    const known = facts[agent.id]
+    const holdable = new Set(known ? known.allowed : rolesItCanHold(agent, roleDefs))
     const beyond = wanted.filter((role) => !holdable.has(role))
-    if (beyond.length) return { ok: false, reason: `Агенту ${agent.id} не хватает способностей для ролей: ${beyond.join(', ')}.` }
-    next.push({ ...agent, roles: wanted })
+    if (beyond.length) {
+      const why = beyond.map((role) => {
+        const blocked = known?.blocked.find((b) => b.role === role)
+        return blocked ? `${role} (${blocked.reasons.join('; ')})` : role
+      })
+      return { ok: false, reason: `Агенту ${agent.id} не хватает способностей для ролей: ${why.join(', ')}.` }
+    }
+    const unverified = wanted.filter((role) => known?.unverified.includes(role))
+    const { unverified_roles: _old, ...rest } = agent
+    next.push(unverified.length ? { ...rest, roles: wanted, unverified_roles: unverified } : { ...rest, roles: wanted })
   }
   return { ok: true, agents: next }
+}
+
+// What the page shows about each agent: what it may hold, what is unconfirmed, what is blocked and why.
+function factsView(facts) {
+  return Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, {
+    installed: f.installed,
+    sandbox: f.sandbox,
+    capabilities: f.capabilities,
+    allowed: f.allowed,
+    unverified: f.unverified,
+    blocked: f.blocked
+  }]))
 }
 
 function independenceGate(agents, roleDefs) {
@@ -185,11 +219,6 @@ function roleChanges(before, after) {
   return changes
 }
 
-// What the page needs to draw the editor: for each agent, the roles it can hold at all.
-function holdableRoles(agents, roleDefs) {
-  return Object.fromEntries(agents.map((agent) => [agent.id, rolesItCanHold(agent, roleDefs)]))
-}
-
 // The file is "there" for the panel even when it is a link that points nowhere: such a path is never written.
 const present = (file) => {
   try {
@@ -205,13 +234,15 @@ const present = (file) => {
 // written", and a file that appeared meanwhile makes the request stale instead of being overwritten.
 const NOTHING_WRITTEN = 'none'
 
-function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir }) {
+function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env }) {
   if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id))) return { available: false, reason: 'Отметьте хотя бы одного агента.' }
   if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
   const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
-  const settled = settleRoles({ agents: planned.content.agents, roles, roleDefs })
+  // The proposal is fitted to this machine first: a role the facts block is not proposed, an unconfirmed one is marked.
+  const facts = machineFacts(planned.content.agents, machineDir, env)
+  const settled = settleRoles({ agents: fitToFacts(planned.content.agents, facts), roles, roleDefs, facts })
   if (!settled.ok) return { available: false, reason: settled.reason }
   const gate = independenceGate(settled.agents, roleDefs)
   const content = { ...planned.content, agents: settled.agents }
@@ -221,7 +252,12 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir }) {
     { field: 'review_mode', from: null, to: content.review_mode },
     ...content.agents.map((agent) => ({ field: 'roles', agent: agent.id, from: [], to: agent.roles }))
   ]
-  const shown = { roles: Object.fromEntries(content.agents.map((agent) => [agent.id, agent.roles])), holdable: holdableRoles(planned.content.agents, roleDefs), independence: gate.report }
+  const shown = {
+    roles: Object.fromEntries(content.agents.map((agent) => [agent.id, agent.roles])),
+    holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])),
+    facts: factsView(facts),
+    independence: gate.report
+  }
   if (!gate.ok) return { available: false, reason: gate.reason, ...shown }
   return { available: true, first_setup: true, changes, expect: NOTHING_WRITTEN, ...shown, _init: { content, machineDir } }
 }
@@ -251,9 +287,9 @@ function commitFirstSetup({ content, machineDir }) {
   }
 }
 
-export function evaluateApply({ agents, lead, singleVendor, roles = null, machineDir }) {
+export function evaluateApply({ agents, lead, singleVendor, roles = null, machineDir, env = undefined }) {
   const file = machineDir ? compositionFile(machineDir) : null
-  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir })
+  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env })
   if (!file) return { available: false, reason: 'Каталог настроек машины не задан.' }
   if (lstatSync(file).isSymbolicLink()) return { available: false, reason: 'agents.json — символическая ссылка: панель такой файл не переписывает.' }
   const raw = readFileSync(file)
@@ -273,10 +309,19 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const written = current.agents || []
-  const settled = settleRoles({ agents: written, roles, roleDefs })
-  if (!settled.ok) return { available: false, reason: settled.reason }
+  const facts = machineFacts(written, machineDir, env)
+  const settled = settleRoles({ agents: written, roles, roleDefs, facts })
+  // Refused, but the page still gets the facts: they are usually the reason, and the editor needs them to fix it.
+  if (!settled.ok) {
+    return { available: false, reason: settled.reason, facts: factsView(facts), holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])) }
+  }
   const gate = independenceGate(settled.agents, roleDefs)
-  const shown = { roles: Object.fromEntries(settled.agents.map((agent) => [agent.id, agent.roles || []])), holdable: holdableRoles(written, roleDefs), independence: gate.report }
+  const shown = {
+    roles: Object.fromEntries(settled.agents.map((agent) => [agent.id, agent.roles || []])),
+    holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])),
+    facts: factsView(facts),
+    independence: gate.report
+  }
   if (!gate.ok) return { available: false, reason: gate.reason, ...shown }
   const changes = []
   if ((current.lead || null) !== planned.content.lead) changes.push({ field: 'lead', from: current.lead || null, to: planned.content.lead })
@@ -286,7 +331,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
     available: true,
     changes,
     expect: fingerprint(raw),
-    revert: evaluateRevert(machineDir),
+    revert: evaluateRevert(machineDir, env),
     ...shown,
     _next: { current, raw, lead: planned.content.lead, review_mode: planned.content.review_mode, agents: settled.agents }
   }
@@ -297,7 +342,7 @@ const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 // "Вернуть прежний" gives back the lead and the review mode of the saved composition and NOTHING else: if the
 // agents or their roles differ from the saved one (the owner ran `collab setup` in between), there is nothing the
 // panel may put back.
-function evaluateRevert(machineDir) {
+function evaluateRevert(machineDir, env = undefined) {
   const file = compositionFile(machineDir)
   const previous = previousFile(machineDir)
   if (!existsSync(file) || !existsSync(previous)) return { available: false, reason: 'Прежнего состава нет: возвращать нечего.' }
@@ -330,8 +375,15 @@ function evaluateRevert(machineDir) {
   if (!sameJson(withoutRoles(current.agents), withoutRoles(before.agents))) {
     return { available: false, reason: 'Состав агентов изменился после применения (вероятно, командой collab setup): отсюда возвращать нельзя.' }
   }
-  const restored = (current.agents || []).map((agent) => ({ ...agent, roles: before.agents.find((b) => b.id === agent.id)?.roles || [] }))
-  const gate = independenceGate(restored, machineRoleDefs(machineDir))
+  // The saved roles go through today's facts like any other change: a role the machine now rules out does not come
+  // back, and which roles are unconfirmed is decided by the facts now, not copied from the saved file.
+  const roleDefs = machineRoleDefs(machineDir)
+  const facts = machineFacts(current.agents || [], machineDir, env)
+  const savedRoles = Object.fromEntries((current.agents || []).map((agent) => [agent.id, before.agents.find((b) => b.id === agent.id)?.roles || []]))
+  const settled = settleRoles({ agents: current.agents || [], roles: savedRoles, roleDefs, facts })
+  if (!settled.ok) return { available: false, reason: `Прежний состав нельзя вернуть на этой машине: ${settled.reason}` }
+  const restored = settled.agents
+  const gate = independenceGate(restored, roleDefs)
   if (!gate.ok) return { available: false, reason: `Прежний состав нарушает независимость ревью: ${gate.reason}` }
   const changes = []
   if ((current.lead || null) !== (before.lead || null)) changes.push({ field: 'lead', from: current.lead || null, to: before.lead || null })
@@ -357,7 +409,17 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agent
   const keptMark = present(mark) && lstatSync(mark).isFile() ? readFileSync(mark) : null
   const indent = /^\s*\{\n\s+"/.test(raw.toString('utf8')) ? 2 : 0
   // Roles are set on each written agent and nothing else about it moves.
-  const nextAgents = agents ? (current.agents || []).map((agent) => ({ ...agent, roles: agents.find((a) => a.id === agent.id)?.roles || agent.roles })) : current.agents
+  // Roles, and which of them are unconfirmed, are set on each written agent; nothing else about it moves.
+  const nextAgents = agents
+    ? (current.agents || []).map((agent) => {
+      const chosen = agents.find((a) => a.id === agent.id)
+      if (!chosen) return agent
+      const next = { ...agent, roles: chosen.roles }
+      if (chosen.unverified_roles?.length) next.unverified_roles = chosen.unverified_roles
+      else delete next.unverified_roles
+      return next
+    })
+    : current.agents
   const next = Buffer.from(`${JSON.stringify({ ...current, lead, review_mode: reviewMode, agents: nextAgents }, null, indent)}\n`)
   const restore = () => {
     try { writeAtomically(file, raw) } catch { /* the original bytes could not be written back; the caller says so */ }
@@ -406,10 +468,10 @@ export const publicApply = ({ _next, _init, revert, ...visible }) => ({
   ...(revert ? { revert: (({ _next: inner, ...shown }) => shown)(revert) } : {})
 })
 
-export function applySetup({ agents, lead, singleVendor, roles = null, expect, machineDir }) {
+export function applySetup({ agents, lead, singleVendor, roles = null, expect, machineDir, env = undefined }) {
   let evaluated
   try {
-    evaluated = evaluateApply({ agents, lead, singleVendor, roles, machineDir })
+    evaluated = evaluateApply({ agents, lead, singleVendor, roles, machineDir, env })
   } catch (error) {
     return { ok: false, reason: `Файл состава не читается: ${error.message}` }
   }
@@ -424,10 +486,10 @@ export function applySetup({ agents, lead, singleVendor, roles = null, expect, m
   return done.ok ? { ok: true, changed: true, changes: evaluated.changes, expect: done.expect } : done
 }
 
-export function revertSetup({ expect, machineDir }) {
+export function revertSetup({ expect, machineDir, env = undefined }) {
   let evaluated
   try {
-    evaluated = evaluateRevert(machineDir)
+    evaluated = evaluateRevert(machineDir, env)
   } catch (error) {
     return { ok: false, reason: `Файл состава не читается: ${error.message}` }
   }

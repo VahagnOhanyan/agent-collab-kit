@@ -199,7 +199,9 @@ export async function startPanel({
   machineDir,
   cwd = process.cwd(),
   clock = null,
-  allowWrite = false
+  allowWrite = false,
+  // How the machine's facts are read (collab/src/probe.mjs machineEnv): tests describe a machine, the CLI reads this one.
+  probeEnv = undefined
 } = {}) {
   if (host !== '127.0.0.1') throw new CollabError(CODES.INVALID_INPUT, 'the panel only listens on 127.0.0.1')
   if (typeof token !== 'string' || token.length < 16) throw new CollabError(CODES.INVALID_INPUT, 'the panel needs a random token')
@@ -264,7 +266,7 @@ export async function startPanel({
       try {
         if (url.pathname === '/api/setup/revert') {
           if (Object.keys(body).some((key) => key !== 'expect') || typeof body.expect !== 'string') return fail(res, 400, 'INVALID_INPUT', 'Revert takes exactly expect', options)
-          const undone = revertSetup({ expect: body.expect, machineDir })
+          const undone = revertSetup({ expect: body.expect, machineDir, env: probeEnv })
           return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
         }
         if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles and expect are accepted', options)
@@ -274,7 +276,7 @@ export async function startPanel({
         if (body.roles !== undefined && (!body.roles || typeof body.roles !== 'object' || Array.isArray(body.roles))) {
           return fail(res, 400, 'INVALID_INPUT', 'roles, when given, is an object of agent id to a list of roles', options)
         }
-        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, expect: body.expect, machineDir })
+        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, expect: body.expect, machineDir, env: probeEnv })
         return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
       } catch (error) {
         return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
@@ -310,6 +312,7 @@ export async function startPanel({
           agents: agentsValues[0].split(',').filter(Boolean),
           lead: leadValues[0],
           singleVendor: vendorValues[0],
+          env: probeEnv,
           roles,
           registryDir,
           machineDir,

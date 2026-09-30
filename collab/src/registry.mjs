@@ -123,6 +123,13 @@ export function validateRegistry(config) {
       }
       roleHolders.set(roleId, (roleHolders.get(roleId) || 0) + 1)
     }
+    // Roles held on a capability nothing on this machine could confirm (probe.mjs): routed to last.
+    if (agent.unverified_roles !== undefined) {
+      if (!Array.isArray(agent.unverified_roles)) problems.push(`${where} unverified_roles must be a list of roles`)
+      else for (const roleId of agent.unverified_roles) {
+        if (!agentRoles.includes(roleId)) problems.push(`${where} marks "${roleId}" unverified but does not hold it`)
+      }
+    }
 
     const adapter = agent.adapter || {}
     if (!['manual', 'cli'].includes(adapter.kind)) {
@@ -797,13 +804,17 @@ export function createRegistry(config) {
     find({ role = null, capability = null, exclude = [], includeSelf = true, self = null } = {}) {
       if (role) this.role(role)
       if (capability) this.assertCapability(capability)
-      return this.agents().filter((agent) => {
+      const found = this.agents().filter((agent) => {
         if (exclude.includes(agent.id)) return false
         if (!includeSelf && self && agent.id === self) return false
         if (role && !(agent.roles || []).includes(role)) return false
         if (capability && !(agent.capabilities || []).includes(capability)) return false
         return true
       })
+      // A holder whose hold on the role nothing could confirm comes after every confirmed one (stable otherwise):
+      // it is still a holder — the owner kept the role — but not the first choice.
+      const doubtful = (agent) => Boolean(role && (agent.unverified_roles || []).includes(role))
+      return [...found.filter((agent) => !doubtful(agent)), ...found.filter(doubtful)]
     },
 
     defaults: () => config.agents.defaults || {}

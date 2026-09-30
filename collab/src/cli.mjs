@@ -30,6 +30,7 @@ import { which } from './adapters/index.mjs'
 import { loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
 import { detectBinary, planComposition, writeComposition } from './composition.mjs'
 import { independenceReport } from './independence.mjs'
+import { factsFor, fitToFacts, machineEnv } from './probe.mjs'
 
 const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -77,8 +78,18 @@ function printError(error) {
 // Commands that do not need a journal.
 // Trusted inputs reach the CLI only as arguments to main() (tests); the
 // environment never supplies them.
-const trustedOptions = ({ configDir, registryDir, machineDir, projectRoot } = {}) =>
-  Object.fromEntries(Object.entries({ configDir, registryDir, machineDir, projectRoot }).filter(([, value]) => value))
+// `probeHome` and `probeBinaries` describe the machine the facts about agents are read from (probe.mjs): a test
+// names a home directory and the programs on its PATH instead of reading the machine it runs on.
+const trustedOptions = ({ configDir, registryDir, machineDir, projectRoot, probeHome, probeBinaries } = {}) =>
+  Object.fromEntries(Object.entries({ configDir, registryDir, machineDir, projectRoot, probeHome, probeBinaries }).filter(([, value]) => value))
+
+function probeEnvFrom(options) {
+  return {
+    ...machineEnv(),
+    ...(options.probeHome ? { home: options.probeHome } : {}),
+    ...(Array.isArray(options.probeBinaries) ? { which: (binary) => (options.probeBinaries.includes(binary) ? `/usr/bin/${binary}` : null) } : {})
+  }
+}
 
 // Who the CLI reads the ledger as when nobody said: the lead of the person's
 // composition (project first, then machine), else the first agent the
@@ -185,6 +196,16 @@ async function machineSetup(flags, options) {
     out(`refusing: ${plan.reason}${include.length > 1 && !lead ? ' — pass --lead <id>' : ''}`)
     process.exit(1)
   }
+  // Fitted to this machine: a role the facts block is not proposed, a role held on an unconfirmed capability is
+  // marked (probe.mjs). `probeHome` lets a test describe a machine without touching the owner's own config.
+  const machineCaps = Object.keys(loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir }).capabilities.capabilities)
+  const facts = factsFor(plan.content.agents, { roleDefs, capabilityIds: machineCaps, env: probeEnvFrom(options) })
+  plan.content.agents = fitToFacts(plan.content.agents, facts)
+  for (const [id, known] of Object.entries(facts)) {
+    for (const blocked of known.blocked.filter((b) => (catalog.agents || []).find((a) => a.id === id)?.roles?.includes(b.role))) {
+      out(dim(`  not given    ${id} ${blocked.role}: ${blocked.reasons.join('; ')}`))
+    }
+  }
   out(`  lead         ${plan.content.lead}`)
   out(
     `  review       ${
@@ -193,7 +214,10 @@ async function machineSetup(flags, options) {
         : 'cross vendor — a review never goes to its author'
     }`
   )
-  for (const agent of plan.content.agents) out(`  ${agent.id.padEnd(12)} ${agent.roles.join(', ')}`)
+  for (const agent of plan.content.agents) {
+    const unverified = new Set(agent.unverified_roles || [])
+    out(`  ${agent.id.padEnd(12)} ${agent.roles.map((role) => (unverified.has(role) ? `${role} (not confirmed)` : role)).join(', ')}`)
+  }
   const independence = independenceReport({ agents: plan.content.agents, roleDefs })
   for (const note of independence.notes) out(dim(`  note         ${note.message} — one vendor: a different, not weaker model reviews`))
   if (independence.problems.length) {
@@ -1022,6 +1046,9 @@ const COMMANDS = {
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
     }
+    for (const conflict of report.fact_conflicts || []) {
+      out('', `${C.red}cannot${C.off}      ${conflict.agent} holds ${conflict.role}, but on this machine: ${conflict.reasons.join('; ')}`)
+    }
     for (const problem of report.independence?.problems || []) {
       out('', `${C.red}unreviewed${C.off}  ${problem.message} — give ${problem.reviewer_role} to another agent`)
     }
@@ -1163,7 +1190,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   try {
     // The CLI acts as the owner's stand-in; the default identity is used only
     // for reads, and approve/reject refuse to use it at all.
-    const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || defaultIdentity(trusted), ...trusted })
+    const api = createApi({ agentId: parsed.flags.as || process.env.COLLAB_AGENT_ID || defaultIdentity(trusted), ...trusted, probeEnv: probeEnvFrom(trusted) })
     await handler(api, parsed)
   } catch (error) {
     if (error instanceof CollabError) {

@@ -27,10 +27,21 @@ function machineWith({ lead = 'claude', singleVendor = false } = {}) {
   return dir
 }
 
+// The machine the panel's facts describe (collab/src/probe.mjs): both agents installed, a simulator toolchain, no
+// configuration read — so no test depends on the owner's own ~/.codex or ~/.claude.json.
+const machineFacts = ({ files = {} } = {}) => ({
+  home: '/nowhere',
+  platform: 'darwin',
+  which: (binary) => `/usr/bin/${binary}`,
+  exists: (file) => file === '/Applications/Xcode.app' || Object.hasOwn(files, file),
+  read: (file) => (Object.hasOwn(files, file) ? files[file] : null)
+})
+const READ_ONLY_CODEX = { '/nowhere/.codex/config.toml': 'sandbox_mode = "read-only"\n' }
+
 async function panel(t, machineDir, options = {}) {
   let started
   try {
-    started = await startPanel({ token: TOKEN, apiFactory: inertApi, machineDir, allowWrite: true, ...options })
+    started = await startPanel({ token: TOKEN, apiFactory: inertApi, machineDir, allowWrite: true, probeEnv: machineFacts(), ...options })
   } catch (error) {
     if (error?.code !== 'EPERM') throw error
     t.skip(`sandbox refused 127.0.0.1 listen: ${error.message}`)
@@ -402,6 +413,77 @@ test('a write that fails AFTER both files were replaced puts back the compositio
   assert.match(res.json.reason, /прежние файлы возвращены/)
   assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), current)
   assert.equal(readFileSync(join(dir, 'agents.json.prev'), 'utf8'), saved)
+})
+
+test('facts: a role the machine rules out is shown with the reason and cannot be written', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir, { probeEnv: machineFacts({ files: READ_ONLY_CODEX }) })
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply
+  assert.ok(!preview.holdable.codex.includes('software_engineer'))
+  assert.match(preview.facts.codex.blocked.find((b) => b.role === 'software_engineer').reasons.join(), /read-only/)
+  const roles = { ...rolesOf(dir), codex: ['software_engineer', 'code_reviewer'] }
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: await expectOf(started) })
+  assert.equal(res.status, 409)
+  assert.match(res.json.reason, /software_engineer \(.*read-only/)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('facts: the first setup leaves out what the machine rules out and marks what it cannot confirm', async (t) => {
+  const dir = join(tempDir('panel-facts-first-'), 'machine')
+  // On this machine reviewing usability means running the application — which nothing can confirm.
+  const roles = structuredClone(loadConfigFrom().roles)
+  roles.roles.ux_reviewer.requires = [...roles.roles.ux_reviewer.requires, 'run_application']
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
+  const agents = JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'utf8'))
+  const started = await panel(t, dir, { probeEnv: machineFacts({ files: READ_ONLY_CODEX }) })
+  if (!started) return
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply
+  assert.ok(!preview.roles.codex.includes('software_engineer'), 'read-only codex is not proposed to write')
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles: preview.roles, expect: 'none' })
+  assert.equal(done.status, 200, done.text)
+  const written = read(dir)
+  const codex = written.agents.find((a) => a.id === 'codex')
+  assert.ok(!codex.roles.includes('software_engineer') && !codex.roles.includes('ux_reviewer'), 'codex has no run_application declared: ux_reviewer is blocked')
+  assert.equal(agents.agents.find((a) => a.id === 'codex').roles.includes('ux_reviewer'), true, 'the catalog would have given it')
+})
+
+test('facts: a role kept on an unconfirmed capability is written with its mark', async (t) => {
+  const dir = machineWith()
+  const roles = structuredClone(loadConfigFrom().roles)
+  roles.roles.ux_reviewer.requires = [...roles.roles.ux_reviewer.requires, 'run_application']
+  writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
+  const started = await panel(t, dir)
+  if (!started) return
+  const current = rolesOf(dir)
+  // Codex declares no run_application: its ux_reviewer is blocked here, and moves to claude with a mark.
+  const next = { claude: [...current.claude, 'ux_reviewer'], codex: current.codex.filter((r) => r !== 'ux_reviewer') }
+  const preview = (await send(started, 'GET', `/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&roles=${encodeURIComponent(JSON.stringify(next))}`)).json.apply
+  assert.ok(preview.facts.claude.unverified.includes('ux_reviewer'))
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles: next, expect: await expectOf(started) })
+  assert.equal(res.status, 200, res.text)
+  assert.deepEqual(read(dir).agents.find((a) => a.id === 'claude').unverified_roles, ['ux_reviewer'])
+})
+
+test('facts: revert does not bring back a role this machine now rules out', async (t) => {
+  const dir = machineWith()
+  const open = await panel(t, dir)
+  if (!open) return
+  // Codex gives up software_engineer through the panel: the saved copy still has it.
+  const current = rolesOf(dir)
+  const roles = { ...current, codex: current.codex.filter((r) => r !== 'software_engineer') }
+  const done = await send(open, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: await expectOf(open) })
+  assert.equal(done.status, 200, done.text)
+  const now = readFileSync(join(dir, 'agents.json'), 'utf8')
+  // Then Codex's sessions become read-only: going back would hand it a role it cannot do here.
+  const readOnly = await panel(t, dir, { probeEnv: machineFacts({ files: READ_ONLY_CODEX }) })
+  const info = (await send(readOnly, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply.revert
+  assert.equal(info.available, false)
+  assert.match(info.reason, /software_engineer \(.*read-only/)
+  assert.equal((await send(readOnly, 'POST', '/api/setup/revert', { expect: await expectOf(readOnly) })).status, 409)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), now)
 })
 
 test('roles: the first setup takes the roles the owner ticked', async (t) => {

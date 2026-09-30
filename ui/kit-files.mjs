@@ -2,7 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, relative } from 'node:path'
 
-import { readMcpServers } from './mcp-servers.mjs'
+import { readMcpServers } from '../collab/src/mcp-servers.mjs'
 
 function scalar(value) {
   const clean = value.trim()
