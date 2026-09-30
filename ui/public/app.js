@@ -257,7 +257,11 @@ async function taskDetail(id) {
     t.spec?.acceptance_criteria?.length ? [el('h2', { text: 'Критерии приёмки' }), el('div', { class: 'card' }, t.spec.acceptance_criteria.map((c) => el('div', { text: `• ${c}` })))] : null,
     // The verdict alone is not the review: what the reviewer found is the point.
     [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
-    section('Делегирование', data.delegations || t.delegations, (d) => el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by || ''} → ${d.to || ''}` }), el('span', { class: 'pill', text: d.model || '' }), el('span', { class: 'grow', text: d.purpose || '' }), pill(d.outcome || 'идёт'))),
+    // The outcome is the lead's free-text report, often a paragraph: it goes under the purpose and wraps. As a
+    // no-wrap pill it pushed the row off the page and squeezed the purpose to one letter per line.
+    section('Делегирование', data.delegations || t.delegations, (d) => el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by || ''} → ${d.to || ''}` }), el('span', { class: 'pill', text: d.model || '' }),
+      el('span', { class: 'grow' }, el('div', { text: d.purpose || '' }), d.outcome ? el('div', { class: 'muted', text: d.outcome }) : null),
+      d.outcome ? null : pill('идёт'))),
     section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, pill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
     section('Сообщения', data.messages, (m) => el('div', { class: 'row msg' },
       el('span', { class: 'mono muted', text: `${m.from_agent || '?'} · ${when(m.created_at)}` }),
