@@ -16,6 +16,7 @@ export async function overviewView(api) {
       problems: report.problems || [],
       agents: report.agents || [],
       unheld_roles: report.unheld_roles || [],
+      orphaned_tasks: report.orphaned_tasks || [],
       models: report.models || []
     }
   }

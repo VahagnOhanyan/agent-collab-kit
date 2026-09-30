@@ -1000,6 +1000,9 @@ const COMMANDS = {
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
     }
+    for (const task of report.orphaned_tasks || []) {
+      out('', `${C.red}orphaned${C.off}  ${task.id} (${task.status}) asks for role ${task.role}, which nobody holds — it can never be claimed: "${task.title}"`)
+    }
   },
 
   async sweep(api) {

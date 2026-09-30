@@ -433,7 +433,13 @@ export function createApi({
         }),
         runners: runs.listRunners(ctx),
         models: catalogDrift(config),
-        unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0)
+        unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0),
+        // Work that asks for a role nobody holds any more (the composition changed after it was created): it can
+        // never be claimed, so it is named here instead of quietly waiting.
+        orphaned_tasks: tasks
+          .listTasks(ctx, { open: true })
+          .filter((task) => task.role && registry.find({ role: task.role }).length === 0)
+          .map((task) => ({ id: task.id, title: task.title, role: task.role, status: task.status }))
       }
     }
   }

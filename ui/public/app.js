@@ -161,7 +161,10 @@ async function overview() {
   // must act on (approvals, decisions) should not need a second hunt in the menu.
   const tile = (n, label, hot, href) =>
     el(href ? 'a' : 'div', { class: `tile${hot ? ' hot' : ''}${href ? ' link' : ''}`, href }, el('div', { class: 'n', text: n }), el('div', { class: 'l', text: label }))
-  const problems = data.doctor?.problems || []
+  const problems = [
+    ...(data.doctor?.problems || []),
+    ...(data.doctor?.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`)
+  ]
   return page(
     'Обзор',
     s.journal_root || data.journal_root,
@@ -614,7 +617,8 @@ async function setup() {
     checkOut.replaceChildren(el('div', { class: 'muted', text: 'Проверяю…' }))
     try {
       const [now, doc] = await Promise.all([api('/api/setup/detect'), api('/api/setup/check')])
-      const problems = [...(doc.unheld_roles || []).map((r) => `Роль без исполнителя: ${r}`), ...(doc.agents || []).filter((a) => a.available === false || a.ok === false).map((a) => `Агент ${a.id}: ${a.reason || a.how || 'недоступен'}`)]
+      const problems = [...(doc.unheld_roles || []).map((r) => `Роль без исполнителя: ${r}`),
+        ...(doc.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`), ...(doc.agents || []).filter((a) => a.available === false || a.ok === false).map((a) => `Агент ${a.id}: ${a.reason || a.how || 'недоступен'}`)]
       checkOut.replaceChildren(
         el('h3', { text: 'Записан ли выбранный состав' }), ...compareBlock(now.current?.machine),
         el('h3', { text: 'Общее состояние набора (не зависит от выбора выше)' }),

@@ -117,7 +117,19 @@ export function createTask(ctx, input) {
   if (!title || title.length < 3) {
     throw new CollabError(CODES.INVALID_INPUT, 'a task needs a title that says what is to be done')
   }
-  if (role) ctx.registry.role(role)
+  if (role) {
+    ctx.registry.role(role)
+    // A task for a role nobody holds can never be claimed: it would sit unassigned and look like work in progress.
+    // Refused here, like a review, a message or an assignment addressed to such a role — the roster and the roles
+    // work is asked of must agree.
+    if (!ctx.registry.find({ role }).length) {
+      throw new CollabError(
+        CODES.NO_AGENT_AVAILABLE,
+        `no registered agent holds "${role}", so a task for it could never be claimed — give the role to an agent in the composition first, or create the task without a role`,
+        { role }
+      )
+    }
+  }
   const taskSpec = normaliseSpec(ctx.config, spec)
 
   // Classification is computed here, from the table — never taken from the
