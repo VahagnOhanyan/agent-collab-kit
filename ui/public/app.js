@@ -252,8 +252,8 @@ async function taskDetail(id) {
       : null,
     t.blocked_reason ? el('div', { class: 'note bad', text: `Заблокирована: ${plain(t.blocked_reason)}` }) : null,
     t.waiting_on && !TERMINAL.has(t.status) ? el('div', { class: 'note warn', text: `Ждёт: ${plain(t.waiting_on)}` }) : null,
-    t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'detail', text: plain(t.completion_summary) })] : null,
-    t.description ? el('div', { class: 'card', text: t.description }) : null,
+    t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'card' }, prose(t.completion_summary))] : null,
+    t.description ? el('div', { class: 'card' }, prose(t.description)) : null,
     t.spec?.acceptance_criteria?.length ? [el('h2', { text: 'Критерии приёмки' }), el('div', { class: 'card' }, t.spec.acceptance_criteria.map((c) => el('div', { text: `• ${c}` })))] : null,
     // The verdict alone is not the review: what the reviewer found is the point.
     [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
@@ -265,12 +265,88 @@ async function taskDetail(id) {
     section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, pill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
     section('Сообщения', data.messages, (m) => el('div', { class: 'row msg' },
       el('span', { class: 'mono muted', text: `${m.from_agent || '?'} · ${when(m.created_at)}` }),
-      el('span', { class: 'grow' }, m.subject ? el('strong', { text: m.subject }) : null, m.subject ? el('br') : null, el('span', { class: 'body', text: m.body || '' })))),
+      el('span', { class: 'grow' }, m.subject ? el('strong', { text: m.subject }) : null, m.body ? prose(m.body) : null))),
     t.files?.length ? [el('h2', { text: 'Файлы задачи' }), el('div', { class: 'card mono', text: t.files.join('\n') })] : null)
 }
 
 const labelled = (label, text, purpose) => el('div', {}, el('div', { class: 'cmd-label', text: label }), command(text, purpose))
 const plain = (value) => (value === undefined || value === null ? '' : typeof value === 'string' ? value : JSON.stringify(value))
+
+// Agents write task descriptions, summaries and messages in light Markdown: numbered and "-" lists, `code`,
+// **bold**, "Label: text", a long comma list of paths. Shown as one paragraph it was a wall of text. Everything is
+// built as DOM nodes and text nodes, never parsed as markup: the text comes from agents, and no HTML in it may run.
+function inlineText(text) {
+  const out = []
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*/g
+  let last = 0
+  let m
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index))
+    out.push(m[1] !== undefined ? el('code', { text: m[1] }) : el('strong', { text: m[2] }))
+    last = re.lastIndex
+  }
+  if (last < text.length) out.push(text.slice(last))
+  return out
+}
+
+// "a/b.js, c/{d,e}.js; f" → items, not splitting inside {…} alternatives.
+function splitItems(text) {
+  const items = []
+  let depth = 0
+  let current = ''
+  for (const c of text) {
+    if (c === '{') depth++
+    if (c === '}') depth = Math.max(0, depth - 1)
+    if ((c === ',' || c === ';') && depth === 0) {
+      if (current.trim()) items.push(current.trim())
+      current = ''
+    } else current += c
+  }
+  if (current.trim()) items.push(current.trim().replace(/\.$/, ''))
+  return items
+}
+
+// "Label: text" → bold label; when the text is mostly paths, one path per line.
+function withLabel(text) {
+  const m = /^([^:\n]{2,90}):\s+(\S.*)$/.exec(text)
+  // "Run the classes (backend: …)" — a colon inside an open bracket is not the end of a label.
+  if (!m || (m[1].match(/\(/g) || []).length !== (m[1].match(/\)/g) || []).length) return inlineText(text)
+  const items = splitItems(m[2])
+  // A path is a short item led by a word with a slash ("a/b.js", "a/b.prisma + миграция") — not a sentence that
+  // happens to mention "x/y".
+  const isPath = (item) => /^\S*\/\S*/.test(item) && item.split(/\s+/).length <= 3
+  if (items.length >= 3 && items.filter(isPath).length * 2 >= items.length) {
+    return [el('strong', {}, inlineText(`${m[1]}:`)), el('ul', { class: 'paths' }, items.map((item) => el('li', {}, el('code', { text: item }))))]
+  }
+  return [el('strong', {}, inlineText(`${m[1]}:`)), ' ', ...inlineText(m[2])]
+}
+
+function prose(value) {
+  const box = el('div', { class: 'prose' })
+  let list = null
+  for (const raw of plain(value).split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) {
+      list = null
+      continue
+    }
+    const ordered = /^(\d+)[.)]\s+(.*)$/.exec(line)
+    const bullet = ordered ? null : /^[-•]\s+(.*)$/.exec(line)
+    if (ordered || bullet) {
+      const tag = ordered ? 'OL' : 'UL'
+      if (!list || list.tagName !== tag) {
+        list = el(tag.toLowerCase(), ordered && ordered[1] !== '1' ? { start: ordered[1] } : {})
+        box.append(list)
+      }
+      list.append(el('li', {}, withLabel(ordered ? ordered[2] : bullet[1])))
+      continue
+    }
+    list = null
+    // A short line ending with a colon introduces what follows: a heading, not a sentence.
+    box.append(line.endsWith(':') && line.length <= 140 ? el('p', { class: 'lead' }, el('strong', {}, inlineText(line))) : el('p', {}, withLabel(line)))
+  }
+  return box
+}
 
 function reviewCard(r) {
   const findings = r.findings || []
@@ -280,7 +356,7 @@ function reviewCard(r) {
       r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'тот же агент' }) : null,
       r.independence === 'same_vendor' ? el('span', { class: 'pill warn', text: 'тот же вендор' }) : null,
       r.reviewer_model ? el('span', { class: 'pill', text: `ревьюер: ${r.reviewer_model}${r.reviewer_model_level ? ` (${r.reviewer_model_level})` : ''}${r.author_model ? `, автор: ${r.author_model}` : ''}` }) : null),
-    r.summary ? el('div', { class: 'detail', text: plain(r.summary) }) : null,
+    r.summary ? el('div', { class: 'detail' }, prose(r.summary)) : null,
     ...findings.map((f) => el('div', { class: 'position' },
       el('span', { class: `pill ${f.severity === 'blocker' || f.severity === 'major' ? 'bad' : ''}`, text: f.severity || 'нет оценки' }),
       f.file ? el('span', { class: 'mono small', text: ` ${f.file}${f.line ? `:${f.line}` : ''}` }) : null,

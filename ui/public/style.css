@@ -133,6 +133,19 @@ a.tile.link:hover { border-color: var(--accent); }
 .position { border-left: 3px solid var(--line); padding: 2px 10px; margin: 6px 0; }
 .cmd-label { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Agent-written text: task description, summary, message body. */
+.prose { line-height: 1.55; overflow-wrap: anywhere; }
+.prose p { margin: 0 0 8px; }
+.prose p.lead { margin-top: 12px; }
+.prose > :first-child { margin-top: 0; }
+.prose > :last-child { margin-bottom: 0; }
+.prose ol, .prose ul { margin: 0 0 10px; padding-left: 22px; }
+.prose li { margin: 4px 0; }
+.prose code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); border-radius: 4px; padding: 1px 5px; }
+.prose ul.paths { list-style: none; padding-left: 0; margin: 4px 0 8px; }
+.prose ul.paths li { margin: 2px 0; }
+.msg .prose { margin-top: 4px; }
+.detail .prose code { background: var(--surface); }
 .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
 .chip { border-radius: 14px; padding: 2px 12px; font-size: 12.5px; }
 
