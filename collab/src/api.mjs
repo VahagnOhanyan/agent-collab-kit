@@ -263,6 +263,9 @@ export function createApi({
         capabilities: declared.capabilities,
         briefing: declared.briefing,
         briefing_file: registry.briefingPath(agentId),
+        // The project's own rules for this agent, from the trusted registry (not the repository): boundaries the
+        // project sets without owning the composition. Read them together with the briefing above.
+        project_briefing: registry.projectBriefing(agentId)?.text ?? null,
         journal_root: roots.journalRoot,
         worktree: roots.codeRoot,
         state_dir: store.paths.root,

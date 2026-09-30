@@ -939,6 +939,8 @@ const COMMANDS = {
         out('', dim(`(${declared.briefing_file} is not readable from ${path || 'its config directory'})`))
       }
     }
+    const project = api.registry.projectBriefing(agent.id)
+    if (project?.text) out('', `${C.bold}Project rules${C.off}`, '', project.text)
   },
 
   async doctor(api) {

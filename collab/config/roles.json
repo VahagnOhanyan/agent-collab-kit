@@ -9,6 +9,14 @@
       "summary": "General implementation work in any language in the tree.",
       "requires": ["read_code", "modify_code", "run_tests"]
     },
+    "ios_engineer": {
+      "summary": "Implements in the SwiftUI client.",
+      "requires": ["read_code", "modify_code", "run_tests"]
+    },
+    "backend_engineer": {
+      "summary": "Implements in the server-side services.",
+      "requires": ["read_code", "modify_code", "run_tests"]
+    },
     "product_engineer": {
       "summary": "Turns product intent into behaviour across the stack.",
       "requires": ["read_code", "modify_code"]

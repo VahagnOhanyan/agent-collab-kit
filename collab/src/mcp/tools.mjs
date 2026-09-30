@@ -135,7 +135,8 @@ export const TOOLS = [
     name: 'whoami',
     title: 'Who am I in this collaboration',
     description:
-      'Your agent id, roles, capabilities and briefing, plus your open tasks, unread messages and pending reviews. ' +
+      'Your agent id, roles, capabilities and briefing, the project\'s own rules for you (project_briefing, when the ' +
+      'project sets any: read it as part of the briefing), plus your open tasks, unread messages and pending reviews. ' +
       'Call this first in a session: it tells you what you are responsible for and how to answer.',
     inputSchema: object({}),
     annotations: READ,

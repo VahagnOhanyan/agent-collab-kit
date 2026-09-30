@@ -23,7 +23,7 @@
 // exits. Sharing one function is what stops the gate and the runtime from
 // disagreeing about what "valid" means.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
@@ -695,8 +695,40 @@ export function briefingPath(config, agent) {
   return path
 }
 
+// A project's own rules for an agent, kept beside its composition-independent
+// config in the TRUSTED registry: `<project>/collab/briefings/<agent>.project.md`.
+// They are shown after the agent's briefing, so the project can say "push only
+// the lead, do not edit these paths" without owning agents.json (which would
+// replace the person's machine composition wholesale). Only a registered
+// project has one — the machine composition and the catalog never do — and it
+// is read from the registry, never from the repository.
+export const PROJECT_BRIEFING_MAX = 8000
+
+export function projectBriefing(config, agentId) {
+  const source = config.meta?.source
+  if (source?.kind !== 'project' || typeof source.dir !== 'string') return null
+  if (!isValidAgentId(agentId)) return null
+  const file = join(source.dir, 'collab', 'briefings', `${agentId}.project.md`)
+  let stat
+  try {
+    stat = lstatSync(file)
+  } catch {
+    return null
+  }
+  // A link could point anywhere on the machine: it is not followed.
+  if (!stat.isFile()) return { file, text: null, problem: 'is not a regular file' }
+  if (stat.size > PROJECT_BRIEFING_MAX * 4) return { file, text: null, problem: `is over ${PROJECT_BRIEFING_MAX} characters` }
+  const text = readFileSync(file, 'utf8')
+  if (text.length > PROJECT_BRIEFING_MAX) return { file, text: null, problem: `is over ${PROJECT_BRIEFING_MAX} characters` }
+  return { file, text, problem: null }
+}
+
 export function checkBriefings(config) {
   const problems = []
+  for (const agent of config.agents?.agents || []) {
+    const extra = projectBriefing(config, agent.id)
+    if (extra?.problem) problems.push(`briefings/${agent.id}.project.md ${extra.problem}, so it is not shown to the agent`)
+  }
   for (const agent of config.agents?.agents || []) {
     if (!agent.briefing_file) continue
     const path = briefingPath(config, agent)
@@ -751,6 +783,7 @@ export function createRegistry(config) {
     hasRole: (agentId, roleId) => (byId.get(agentId)?.roles || []).includes(roleId),
     hasCapability: (agentId, capId) => (byId.get(agentId)?.capabilities || []).includes(capId),
     briefingPath: (agentId) => briefingPath(config, byId.get(agentId)),
+    projectBriefing: (agentId) => (byId.has(agentId) ? projectBriefing(config, agentId) : null),
 
     // The routing primitive. Everything that says "find me somebody who can X"
     // goes through here, which is why no caller needs to know an agent's name.
