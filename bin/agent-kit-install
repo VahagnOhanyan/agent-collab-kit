@@ -3021,13 +3021,13 @@ async function unadaptedReport(ctx) {
   try {
     const probe = path.join(ctx.currentPath, 'skills', 'vendor-probe', 'probe.mjs')
     if (!lstatOrNull(probe)) return []
-    const { unadapted, probePhrase } = await import(pathToFileURL(probe).href)
+    const { unadapted, probePhrase, installerClientAdvice } = await import(pathToFileURL(probe).href)
     const found = await unadapted({ agentsFile: path.join(ctx.currentPath, 'collab', 'config', 'agents.json'), adaptersDir: adaptersDir(ctx) })
     if (!found.length) return []
     const skill = path.join(ctx.currentPath, 'skills', 'vendor-probe', 'SKILL.md')
     return ['', 'найдены CLI без адаптера в наборе (collab с ними пока не работает):', ...found.flatMap((f) => [
       `  - ${f.binary} (${f.vendor}): ${f.path}`,
-      `    скажите этому агенту: ${probePhrase(f.binary, skill)}`
+      f.installer_client ? `    ${installerClientAdvice(f)}` : `    скажите этому агенту: ${probePhrase(f.binary, skill)}`
     ])]
   } catch (error) {
     return ['', `поиск CLI без адаптера не удался: ${error.message}`]

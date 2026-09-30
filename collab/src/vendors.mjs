@@ -38,6 +38,9 @@ export async function unadaptedVendors({ probeFile = PROBE, agentsFile = join(DE
     binary: found.binary,
     vendor: found.vendor,
     path: found.path,
-    phrase: probe.probePhrase(found.binary, probeFile === PROBE ? SKILL : skillFile)
+    // Connected by the installer's own client (agy → gemini): no reconnaissance phrase, the advice instead.
+    installer_client: found.installer_client || null,
+    phrase: found.installer_client ? null : probe.probePhrase(found.binary, probeFile === PROBE ? SKILL : skillFile),
+    advice: found.installer_client && probe.installerClientAdvice ? probe.installerClientAdvice(found) : null
   }))
 }

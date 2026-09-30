@@ -28,12 +28,34 @@ test('a known CLI on PATH that the catalog lacks is named, with the sentence for
   const m = machine()
   try {
     const agentsFile = join(m.base, 'agents.json')
+    const none = join(m.base, 'no-adapters')
     writeFileSync(agentsFile, JSON.stringify({ agents: [{ id: 'grok-agent', adapter: { binary: 'grok' } }] }))
-    const found = await unadaptedVendors({ agentsFile, env: { PATH: m.bin } })
+    const found = await unadaptedVendors({ agentsFile, adaptersDir: none, env: { PATH: m.bin } })
     assert.deepEqual(found.map((v) => [v.binary, v.vendor, v.path]), [['agy', 'google', join(m.bin, 'agy')]])
-    assert.match(found[0].phrase, /vendor-probe\/SKILL\.md/)
-    assert.match(found[0].phrase, /для agy/)
-    assert.match(found[0].phrase, /только после моего «да»/)
+    // grok unregistered: an ordinary vendor without an adapter gets the reconnaissance sentence.
+    writeFileSync(agentsFile, JSON.stringify({ agents: [] }))
+    const grok = (await unadaptedVendors({ agentsFile, adaptersDir: none, env: { PATH: m.bin } })).find((v) => v.binary === 'grok')
+    assert.match(grok.phrase, /vendor-probe\/SKILL\.md/)
+    assert.match(grok.phrase, /для grok/)
+    assert.match(grok.phrase, /только после моего «да»/)
+    assert.equal(grok.advice, null)
+  } finally {
+    m.cleanup()
+  }
+})
+
+// agy's MCP settings are the installer's own Gemini client: a machine adapter for it is refused, so the kit must not
+// send the owner to reconnaissance that leads nowhere — it says what does work instead.
+test('a vendor the installer already connects gets advice, not a reconnaissance sentence', { skip: skipWindows }, async () => {
+  const m = machine()
+  try {
+    const agentsFile = join(m.base, 'agents.json')
+    writeFileSync(agentsFile, JSON.stringify({ agents: [] }))
+    const agy = (await unadaptedVendors({ agentsFile, adaptersDir: join(m.base, 'no-adapters'), env: { PATH: m.bin } })).find((v) => v.binary === 'agy')
+    assert.equal(agy.installer_client, 'gemini')
+    assert.equal(agy.phrase, null)
+    assert.match(agy.advice, /клиент gemini/)
+    assert.match(agy.advice, /встроенный каталог/)
   } finally {
     m.cleanup()
   }

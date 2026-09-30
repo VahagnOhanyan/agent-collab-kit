@@ -63,6 +63,9 @@ export async function detect({ binary, agentsFile = DEFAULT_AGENTS, candidatesFi
     return {
       binary: candidate.binary, vendor: candidate.vendor, found: Boolean(path), path,
       registered: agents.some((agent) => agent?.id === candidate.binary || agent?.adapter?.binary === candidate.binary),
+      // The installer already writes this vendor's MCP settings with its own client (e.g. agy → gemini): a machine
+      // adapter for it is refused, so reconnaissance is not the way — returning it to the built-in catalog is.
+      installer_client: typeof candidate.installer_client === 'string' ? candidate.installer_client : null,
     };
   })) };
 }
@@ -71,6 +74,11 @@ export async function detect({ binary, agentsFile = DEFAULT_AGENTS, candidatesFi
 // in PATH — no CLI is started. Used by the installer, `collab doctor` and the panel.
 export async function unadapted(options = {}) {
   return (await detect(options)).candidates.filter((candidate) => candidate.found && !candidate.registered);
+}
+
+// What to do about a vendor the installer already connects with its own client but the catalog lacks.
+export function installerClientAdvice(found) {
+  return `${found.binary} уже подключается установщиком (клиент ${found.installer_client}), но его нет во встроенном каталоге collab: разведка и --adopt-profile тут не помогут. Чтобы он работал в collab, владелец набора возвращает ${found.installer_client} во встроенный каталог (collab/config/agents.json).`;
 }
 
 // What to tell the found agent itself: on a machine where it is the only agent, it studies itself by this skill.

@@ -1080,7 +1080,8 @@ const COMMANDS = {
       out('', `${C.bold}found without an adapter${C.off} ${dim('(collab cannot work with these yet)')}`)
       for (const v of unknown) {
         out(`  ${v.binary.padEnd(8)} ${C.yellow}no adapter${C.off}  ${dim(`${v.vendor} · ${v.path}`)}`)
-        out(`  ${' '.repeat(8)} ${C.yellow}tell it:${C.off} ${v.phrase}`)
+        if (v.advice) out(`  ${' '.repeat(8)} ${C.yellow}note:${C.off} ${v.advice}`)
+        else out(`  ${' '.repeat(8)} ${C.yellow}tell it:${C.off} ${v.phrase}`)
       }
     }
     out('', `${C.bold}runners${C.off}`)

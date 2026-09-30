@@ -136,8 +136,11 @@ async function vendorsNotice() {
     el('strong', { text: `Найден${list.length > 1 ? 'ы агенты' : ' агент'} без адаптера — collab с ${list.length > 1 ? 'ними' : 'ним'} пока не работает` }),
     ...list.map((v) => el('div', {},
       el('div', { text: `${v.binary} (${v.vendor}) · ${v.path}` }),
-      el('div', { class: 'muted', text: 'Чтобы подготовить адаптер, скажите этому агенту — или своему ведущему — фразу ниже. Разведка идёт в песочнице, платный вызов только после вашего «да».' }),
-      command(v.phrase, `фразу для ${v.binary}`))))
+      // Connected by the installer's own client (agy → gemini): reconnaissance would lead nowhere, so no phrase.
+      v.advice
+        ? el('div', { class: 'muted', text: v.advice })
+        : [el('div', { class: 'muted', text: 'Чтобы подготовить адаптер, скажите этому агенту — или своему ведущему — фразу ниже. Разведка идёт в песочнице, платный вызов только после вашего «да».' }),
+            command(v.phrase, `фразу для ${v.binary}`)])))
 }
 
 function page(title, subtitle, ...content) {
