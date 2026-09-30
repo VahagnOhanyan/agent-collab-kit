@@ -63,8 +63,7 @@ const WRITING_METHODS = Object.freeze([
   'requestUserApproval',
   'startRun',
   'setStatus',
-  'suspendRole',
-  'restoreRole'
+  'suspendRole'
 ])
 
 function executableOnPath(binary) {
@@ -305,8 +304,8 @@ export function createApi({
         .map((a) => agents.readAgent(ctx, a.id)),
     setStatus: (input) => agents.setStatus(ctx, input),
     suspendRole: (input) => agents.suspendRole(ctx, input),
-    // The owner's: refused from an agent's shell and without a terminal by the CLI (refuseUnlessHuman).
-    restoreRole: (input) => agents.restoreRole(ctx, input),
+    // No restoreRole here on purpose: giving a role back is the owner's, and this object is what every agent
+    // session holds. `collab role restore` calls the domain function itself, after its barriers.
 
     // ── tasks ─────────────────────────────────────────────────────────────
     createTask: (input) => tasks.createTask(ctx, input),

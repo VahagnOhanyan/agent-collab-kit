@@ -291,7 +291,7 @@ export async function startPanel({
       }
       if (url.pathname === '/api/setup/preview') {
         if ([...url.searchParams.keys()].some((key) => !PREVIEW_KEYS.has(key))) {
-          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor and roles are accepted', options)
+          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles and confirmed are accepted', options)
         }
         // roles and confirmed: each at most once, short, a JSON object of agent id to a list.
         const objectParam = (name) => {

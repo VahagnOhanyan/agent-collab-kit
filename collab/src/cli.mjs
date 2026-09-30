@@ -24,6 +24,7 @@ import { DEFAULT_CONFIG_DIR, defaultRegistryDir, initJournal, MACHINE_CONFIG_DIR
 import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
 import { findProject, listProjects } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
+import { restoreRole } from './domain/agents.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
@@ -955,7 +956,8 @@ const COMMANDS = {
       process.stderr.write("refusing: collab role restore needs an interactive terminal — it is the owner's decision, not a script's.\n")
       process.exit(3)
     }
-    const result = await api.restoreRole({ agent_id: agentId, role })
+    // The domain function directly, as approvals are answered: the agents' API has no restore on purpose.
+    const result = await restoreRole(api.ctx, { agent_id: agentId, role })
     out(`${C.green}restored${C.off}  ${result.restored.agent_id} holds ${result.restored.role} again`)
   },
 

@@ -104,23 +104,38 @@ export async function suspendRole(ctx, { role, reason = '', task_id = null }) {
     throw new CollabError(CODES.NOT_PERMITTED, `${ctx.agentId} does not hold role "${role}", so there is nothing to suspend`, { role })
   }
   return ctx.store.transact(async (tx) => {
-    let released = null
+    // A named task must be one of this agent's open tasks that needs this role — a mistake is said, not ignored.
     if (task_id) {
-      const task = tx.get('tasks', task_id)
-      if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
-      if (task.owner === ctx.agentId && task.role === role && !TERMINAL.has(task.status)) {
-        assertTransition(task, TASK_STATUS.CREATED, {})
-        tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
-        tx.emit('task.released', { collection: 'tasks', id: task_id }, { by: ctx.agentId, previous_owner: ctx.agentId, reason: `role ${role} suspended: ${clean}` })
-        released = task_id
+      const named = tx.get('tasks', task_id)
+      if (!named) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+      if (named.owner !== ctx.agentId || named.role !== role || TERMINAL.has(named.status)) {
+        throw new CollabError(CODES.INVALID_INPUT, `task ${task_id} is not an open task of yours that needs "${role}"`, { id: task_id, owner: named.owner, role: named.role, status: named.status })
       }
+    }
+    // EVERY open task of this agent that needs the role goes back to the queue — named or not. One that cannot go
+    // back from where it stands (a review in progress, an approval) is left as it is and named in the answer; the
+    // suspension itself always holds.
+    const mine = tx.list('tasks', { filter: (t) => t.owner === ctx.agentId && t.role === role && !TERMINAL.has(t.status) })
+    const released = []
+    const kept = []
+    for (const task of mine) {
+      try {
+        assertTransition(task, TASK_STATUS.CREATED, {})
+      } catch {
+        kept.push({ id: task.id, status: task.status })
+        continue
+      }
+      tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
+      tx.emit('task.released', { collection: 'tasks', id: task.id }, { by: ctx.agentId, previous_owner: ctx.agentId, reason: `role ${role} suspended: ${clean}` })
+      released.push(task.id)
     }
     const current = tx.get('agents', ctx.agentId) || { id: ctx.agentId, version: 0 }
     const others = (current.suspended_roles || []).filter((s) => s.role !== role)
     const suspension = { role, reason: clean, task_id, at: tx.iso() }
-    touchAgent(tx, ctx, { suspended_roles: [...others, suspension], ...(released ? { status: 'available', current_task_id: null } : {}) })
-    tx.emit('agent.role_suspended', { collection: 'agents', id: ctx.agentId }, { role, reason: clean, task_id, released })
-    return { suspended: suspension, released_task: released }
+    const freed = released.includes(current.current_task_id)
+    touchAgent(tx, ctx, { suspended_roles: [...others, suspension], ...(freed ? { status: 'available', current_task_id: null } : {}) })
+    tx.emit('agent.role_suspended', { collection: 'agents', id: ctx.agentId }, { role, reason: clean, task_id, released, kept })
+    return { suspended: suspension, released_tasks: released, kept_tasks: kept }
   })
 }
 
@@ -130,13 +145,15 @@ export function suspendedRoles(ctx, agentId) {
   return (runtime?.suspended_roles || []).filter((s) => held.includes(s.role))
 }
 
+// The OWNER's act. Not on the agents' API (api.mjs) and not an MCP tool: only `collab role restore` calls it, after
+// its own barriers (not an agent's shell, an interactive terminal) — the same place approvals are answered from.
 export function restoreRole(ctx, { agent_id, role }) {
   return ctx.store.transact(async (tx) => {
     const current = tx.get('agents', agent_id)
     const had = (current?.suspended_roles || []).some((s) => s.role === role)
     if (!had) throw new CollabError(CODES.NOT_FOUND, `${agent_id} has no suspended role "${role}"`, { agent_id, role })
     tx.put('agents', { ...current, suspended_roles: current.suspended_roles.filter((s) => s.role !== role) })
-    tx.emit('agent.role_restored', { collection: 'agents', id: agent_id }, { role, by: ctx.agentId })
+    tx.emit('agent.role_restored', { collection: 'agents', id: agent_id }, { role, by: 'owner', via: 'collab role restore' })
     return { restored: { agent_id, role } }
   })
 }

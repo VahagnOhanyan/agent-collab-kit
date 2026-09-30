@@ -8,6 +8,8 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
+import { restoreRole } from '../src/domain/agents.mjs'
+import { TOOLS } from '../src/mcp/tools.mjs'
 import { probeAgent } from '../src/probe.mjs'
 import { loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
 import { runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
@@ -44,7 +46,7 @@ test('a suspended role stops counting for the agent at once, and its task that n
     const task = await codex.createTask({ title: 'Some backend work', role: 'software_engineer', action: 'edit a file' })
     await codex.claimTask({ task_id: task.id })
     const done = await codex.suspendRole({ role: 'software_engineer', reason: 'The test runner cannot start in my session here.', task_id: task.id })
-    assert.equal(done.released_task, task.id)
+    assert.deepEqual([done.released_tasks, done.kept_tasks], [[task.id], []])
     const back = await codex.getTask({ task_id: task.id })
     assert.deepEqual([back.status, back.owner], ['created', null])
     const fresh = w.api('claude')
@@ -54,6 +56,30 @@ test('a suspended role stops counting for the agent at once, and its task that n
     await assert.rejects(w.api('codex').claimTask({ task_id: task.id }), /software_engineer/)
     const listed = fresh.doctor().suspended_roles
     assert.deepEqual(listed.map((s) => [s.agent, s.role, s.restore]), [['codex', 'software_engineer', 'collab role restore codex software_engineer']])
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('every open task of the agent that needs the role goes back, named or not; one that cannot go back is named and the suspension holds', async () => {
+  const w = world(TWO())
+  try {
+    const codex = w.api('codex')
+    const working = await codex.createTask({ title: 'First backend task', role: 'software_engineer', action: 'edit a file' })
+    await codex.claimTask({ task_id: working.id })
+    const inReview = await codex.createTask({ title: 'Second backend task', role: 'software_engineer', action: 'edit a file' })
+    await codex.claimTask({ task_id: inReview.id })
+    await codex.requestReview({ task_id: inReview.id })
+    const other = await codex.createTask({ title: 'Reviewing something', role: 'code_reviewer', action: 'edit a file' })
+    await codex.claimTask({ task_id: other.id })
+    // No task named: still, the working one goes back; the one in review cannot, and is named; the other role's stays.
+    const done = await codex.suspendRole({ role: 'software_engineer', reason: 'The test runner cannot start in my session here.' })
+    assert.deepEqual(done.released_tasks, [working.id])
+    assert.deepEqual(done.kept_tasks, [{ id: inReview.id, status: 'review' }])
+    assert.equal((await codex.getTask({ task_id: other.id })).owner, 'codex')
+    assert.equal(w.api('claude').registry.hasRole('codex', 'software_engineer'), false, 'the suspension holds although one task could not go back')
+    // A task named by mistake is said, not ignored.
+    await assert.rejects(codex.suspendRole({ role: 'code_reviewer', reason: 'Reviews time out in my sandbox every time.', task_id: working.id }), /not an open task of yours/)
   } finally {
     w.cleanup()
   }
@@ -75,12 +101,23 @@ test('the owner gives the role back; the CLI refuses without a terminal; unticki
   const w = world(TWO())
   try {
     await w.api('codex').suspendRole({ role: 'code_reviewer', reason: 'Reviews time out in my sandbox every time.' })
-    const cli = runCli(['role', 'restore', 'codex', 'code_reviewer'], { cwd: w.sbx.roots.journalRoot, options: { machineDir: w.machineDir, registryDir: join(w.machineDir, 'no-registry') } })
-    assert.equal(cli.status, 3, cli.stdout + cli.stderr)
-    assert.match(cli.stderr, /interactive terminal/)
-    await w.api('claude').restoreRole({ agent_id: 'codex', role: 'code_reviewer' })
+    // No agent can give a role back: not through the API every agent session holds, not through an MCP tool.
+    assert.equal(w.api('codex').restoreRole, undefined)
+    assert.equal(w.api('claude').restoreRole, undefined)
+    assert.ok(!TOOLS.some((tool) => /restore/.test(tool.name)))
+    // The CLI refuses from an agent's shell (barrier 1) and without an interactive terminal (barrier 2).
+    const options = { machineDir: w.machineDir, registryDir: join(w.machineDir, 'no-registry') }
+    const fromAgent = runCli(['role', 'restore', 'codex', 'code_reviewer'], { cwd: w.sbx.roots.journalRoot, env: { COLLAB_AGENT_ID: 'codex' }, options })
+    assert.equal(fromAgent.status, 3, fromAgent.stdout + fromAgent.stderr)
+    assert.match(fromAgent.stderr, /agent's shell/)
+    const noTerminal = runCli(['role', 'restore', 'codex', 'code_reviewer'], { cwd: w.sbx.roots.journalRoot, options })
+    assert.equal(noTerminal.status, 3, noTerminal.stdout + noTerminal.stderr)
+    assert.match(noTerminal.stderr, /interactive terminal/)
+    assert.equal(w.api('claude').registry.hasRole('codex', 'code_reviewer'), false, 'still suspended after both refusals')
+    // What the CLI calls past its barriers: the domain function, recorded as the owner's act.
+    await restoreRole(w.api('claude').ctx, { agent_id: 'codex', role: 'code_reviewer' })
     assert.equal(w.api('claude').registry.hasRole('codex', 'code_reviewer'), true)
-    await assert.rejects(w.api('claude').restoreRole({ agent_id: 'codex', role: 'code_reviewer' }), /no suspended role/)
+    await assert.rejects(restoreRole(w.api('claude').ctx, { agent_id: 'codex', role: 'code_reviewer' }), /no suspended role/)
   } finally {
     w.cleanup()
   }
