@@ -19,8 +19,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD'])
 // The panel writes exactly two things, both about the lead and the review mode of the machine composition.
 const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert'])
 const WRITE_BODY_MAX = 4096
-const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'expect'])
-const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 't'])
+const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'expect'])
+const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 't'])
+const ROLES_PARAM_MAX = 2048
 
 const panelHeaders = () => ({
   'Content-Security-Policy': CSP,
@@ -266,11 +267,14 @@ export async function startPanel({
           const undone = revertSetup({ expect: body.expect, machineDir })
           return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
         }
-        if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor and expect are accepted', options)
+        if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles and expect are accepted', options)
         if (!Array.isArray(body.agents) || typeof body.lead !== 'string' || typeof body.single_vendor !== 'boolean' || typeof body.expect !== 'string') {
           return fail(res, 400, 'INVALID_INPUT', 'agents (list), lead, single_vendor (boolean) and expect are each required', options)
         }
-        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, expect: body.expect, machineDir })
+        if (body.roles !== undefined && (!body.roles || typeof body.roles !== 'object' || Array.isArray(body.roles))) {
+          return fail(res, 400, 'INVALID_INPUT', 'roles, when given, is an object of agent id to a list of roles', options)
+        }
+        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, expect: body.expect, machineDir })
         return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
       } catch (error) {
         return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
@@ -283,7 +287,18 @@ export async function startPanel({
       }
       if (url.pathname === '/api/setup/preview') {
         if ([...url.searchParams.keys()].some((key) => !PREVIEW_KEYS.has(key))) {
-          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead and single_vendor are accepted', options)
+          return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor and roles are accepted', options)
+        }
+        const rolesValues = url.searchParams.getAll('roles')
+        let roles = null
+        if (rolesValues.length > 1 || (rolesValues[0] || '').length > ROLES_PARAM_MAX) return fail(res, 400, 'INVALID_INPUT', 'roles is given at most once and is short', options)
+        if (rolesValues.length) {
+          try {
+            roles = JSON.parse(rolesValues[0])
+          } catch {
+            return fail(res, 400, 'INVALID_INPUT', 'roles must be JSON', options)
+          }
+          if (!roles || typeof roles !== 'object' || Array.isArray(roles)) return fail(res, 400, 'INVALID_INPUT', 'roles is an object of agent id to a list of roles', options)
         }
         const agentsValues = url.searchParams.getAll('agents')
         const leadValues = url.searchParams.getAll('lead')
@@ -295,6 +310,7 @@ export async function startPanel({
           agents: agentsValues[0].split(',').filter(Boolean),
           lead: leadValues[0],
           singleVendor: vendorValues[0],
+          roles,
           registryDir,
           machineDir,
           cwd

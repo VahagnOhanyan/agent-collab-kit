@@ -33,6 +33,7 @@ import * as tasks from './domain/tasks.mjs'
 import * as delegations from './domain/delegations.mjs'
 import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
+import { independenceReport } from './independence.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
 
@@ -434,6 +435,8 @@ export function createApi({
         runners: runs.listRunners(ctx),
         models: catalogDrift(config),
         unheld_roles: Object.keys(registry.roles()).filter((role) => registry.find({ role }).length === 0),
+        // Whether every kind of work has somebody other than its author to review it.
+        independence: independenceReport({ agents: registry.agents(), roleDefs: registry.roles() }),
         // Work that asks for a role nobody holds any more (the composition changed after it was created): it can
         // never be claimed, so it is named here instead of quietly waiting.
         orphaned_tasks: tasks

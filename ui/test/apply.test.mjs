@@ -249,6 +249,125 @@ test('a panel started without the right to write refuses every write', async (t)
   assert.equal((await send(started, 'GET', '/api/setup/detect')).json.writable, false)
 })
 
+const rolesOf = (dir) => Object.fromEntries(read(dir).agents.map((a) => [a.id, a.roles]))
+
+test('roles: the panel changes an agent\'s roles and nothing else about it, and shows the change first', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = read(dir)
+  const roles = { ...rolesOf(dir), codex: [...rolesOf(dir).codex, 'backend_engineer'] }
+  const preview = (await send(started, 'GET', `/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&roles=${encodeURIComponent(JSON.stringify(roles))}`)).json.apply
+  assert.equal(preview.available, true, preview.reason)
+  assert.deepEqual(preview.changes, [{ field: 'roles', agent: 'codex', from: before.agents[1].roles, to: roles.codex }])
+  assert.ok(preview.holdable.codex.includes('backend_engineer'))
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: await expectOf(started) })
+  assert.equal(done.status, 200, done.text)
+  const after = read(dir)
+  assert.deepEqual(after.agents[1].roles, roles.codex)
+  assert.deepEqual({ ...after, agents: after.agents.map(({ roles: _r, ...rest }) => rest) }, { ...before, agents: before.agents.map(({ roles: _r, ...rest }) => rest) })
+})
+
+test('roles: revert gives the previous roles back', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const original = rolesOf(dir)
+  const roles = { ...original, codex: [...original.codex, 'backend_engineer'] }
+  await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: await expectOf(started) })
+  const info = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply.revert
+  assert.equal(info.available, true, info.reason)
+  assert.equal((await send(started, 'POST', '/api/setup/revert', { expect: info.expect })).status, 200)
+  assert.deepEqual(rolesOf(dir), original)
+})
+
+test('roles: an unknown role, a role beyond the agent\'s capabilities, and roles for other agents are refused', async (t) => {
+  const dir = machineWith()
+  // This machine's codex cannot record decisions: architect needs that.
+  const content = read(dir)
+  content.agents = content.agents.map((a) => (a.id === 'codex' ? { ...a, capabilities: a.capabilities.filter((c) => c !== 'record_decision') } : a))
+  writeFileSync(join(dir, 'agents.json'), `${JSON.stringify(content, null, 2)}\n`)
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const expect = await expectOf(started)
+  const base = rolesOf(dir)
+  const cases = [
+    ['unknown role', { ...base, codex: [...base.codex, 'wizard'] }, /нет в реестре/],
+    ['beyond capabilities', { ...base, codex: [...base.codex, 'architect'] }, /не хватает способностей/],
+    ['other agents', { claude: base.claude, gemini: [] }, /не для тех агентов/],
+    ['duplicated role', { ...base, codex: [...base.codex, base.codex[0]] }, /неверном виде/]
+  ]
+  for (const [name, roles, pattern] of cases) {
+    const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect })
+    assert.equal(res.status, 409, `${name}: ${res.text}`)
+    assert.match(res.json.reason, pattern, name)
+  }
+  assert.equal((await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles: [], expect })).status, 400, 'roles as a list')
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('roles: a composition where the author is the only reviewer is refused with two vendors', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const base = rolesOf(dir)
+  const roles = { ...base, codex: base.codex.filter((r) => r !== 'code_reviewer') }
+  const preview = (await send(started, 'GET', `/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&roles=${encodeURIComponent(JSON.stringify(roles))}`)).json.apply
+  assert.equal(preview.available, false)
+  assert.ok(preview.independence.problems.length > 0)
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: await expectOf(started) })
+  assert.equal(res.status, 409)
+  assert.match(res.json.reason, /некому будет проверить/)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('roles: the gate reads the machine\'s own roles.json, the one the written file will run with', async (t) => {
+  const dir = machineWith()
+  const roles = structuredClone(loadConfigFrom().roles)
+  // On this machine test_engineer work must be checked by a security_reviewer — nobody holds that role.
+  roles.roles.test_engineer.reviewed_by = ['security_reviewer']
+  writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(res.status, 409, res.text)
+  assert.match(res.json.reason, /test_engineer/)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('roles: revert will not bring back a composition that breaks independence', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  // The saved copy is one where only claude could review: written by the panel's own path, then made unreviewable
+  // by a later change of the machine's roles.json (the definitions revert is checked against).
+  await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: await expectOf(started) })
+  const roles = structuredClone(loadConfigFrom().roles)
+  roles.roles.ux_reviewer.reviewed_by = ['security_reviewer']
+  writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
+  const now = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const info = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply
+  assert.equal(info.available, false, 'apply is refused too: the current composition is unreviewable under these roles')
+  const res = await send(started, 'POST', '/api/setup/revert', { expect: await expectOf(started) })
+  assert.equal(res.status, 409, res.text)
+  assert.match(res.json.reason, /независимость/)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), now)
+})
+
+test('roles: the first setup takes the roles the owner ticked', async (t) => {
+  const dir = join(tempDir('panel-first-roles-'), 'machine')
+  const started = await panel(t, dir)
+  if (!started) return
+  const planned = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply.roles
+  const roles = { ...planned, codex: [...planned.codex, 'backend_engineer'] }
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, roles, expect: 'none' })
+  assert.equal(done.status, 200, done.text)
+  assert.deepEqual(rolesOf(dir), roles)
+})
+
 const emptyMachine = () => join(tempDir('panel-first-'), 'machine')
 
 test('first setup: with nothing recorded the panel writes what `collab setup` would, and says so before', async (t) => {
@@ -258,7 +377,7 @@ test('first setup: with nothing recorded the panel writes what `collab setup` wo
   const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply
   assert.equal(preview.first_setup, true)
   assert.equal(preview.expect, 'none')
-  assert.deepEqual(preview.changes.map((c) => c.field), ['agents', 'lead', 'review_mode'])
+  assert.deepEqual(preview.changes.map((c) => c.agent ? `${c.field}:${c.agent}` : c.field), ['agents', 'lead', 'review_mode', 'roles:claude', 'roles:codex'])
   assert.equal(JSON.stringify(preview).includes('_init'), false)
   assert.equal(existsSync(join(dir, 'agents.json')), false, 'a preview writes nothing')
 

@@ -68,6 +68,13 @@ export function validateRegistry(config) {
     for (const cap of role.requires || []) {
       if (!capIds.has(cap)) problems.push(`roles.json: role "${roleId}" requires unknown capability "${cap}"`)
     }
+    if (role.reviewed_by !== undefined && !Array.isArray(role.reviewed_by)) {
+      problems.push(`roles.json: role "${roleId}" reviewed_by must be a list of roles`)
+    }
+    for (const reviewer of Array.isArray(role.reviewed_by) ? role.reviewed_by : []) {
+      if (!roleIds.has(reviewer)) problems.push(`roles.json: role "${roleId}" is reviewed_by unknown role "${reviewer}"`)
+      if (reviewer === roleId) problems.push(`roles.json: role "${roleId}" cannot be reviewed_by itself`)
+    }
   }
 
   const list = agents?.agents || []

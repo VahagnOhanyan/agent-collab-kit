@@ -29,6 +29,7 @@ import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
 import { loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
 import { detectBinary, planComposition, writeComposition } from './composition.mjs'
+import { independenceReport } from './independence.mjs'
 
 const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -149,8 +150,9 @@ async function confirmTyped(options, prompt, expected) {
 async function machineSetup(flags, options) {
   if (!flags['dry-run']) refuseUnlessHuman(options, 'collab setup')
   const catalog = loadBuiltinAgents()
-  const roleDefs = loadConfigFrom().roles.roles
   const machineDir = options.machineDir || MACHINE_CONFIG_DIR
+  // The roles as the registry will read them after the write: the machine's roles.json when it has one.
+  const roleDefs = loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir }).roles.roles
   const detected = (catalog.agents || []).filter((a) => detectBinary(a) && which(detectBinary(a))).map((a) => a.id)
   out(
     `${C.bold}collab setup${C.off} — this machine's composition ${dim(join(machineDir, 'agents.json'))}`,
@@ -192,6 +194,13 @@ async function machineSetup(flags, options) {
     }`
   )
   for (const agent of plan.content.agents) out(`  ${agent.id.padEnd(12)} ${agent.roles.join(', ')}`)
+  const independence = independenceReport({ agents: plan.content.agents, roleDefs })
+  for (const note of independence.notes) out(dim(`  note         ${note.message} — one vendor: a different, not weaker model reviews`))
+  if (independence.problems.length) {
+    for (const problem of independence.problems) out(`${C.red}refusing${C.off}     ${problem.message}`)
+    out('Give the reviewing role to another agent, then run collab setup again.')
+    process.exit(1)
+  }
   out('')
   if (flags['dry-run']) {
     out('dry run — nothing written')
@@ -999,6 +1008,12 @@ const COMMANDS = {
     }
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
+    }
+    for (const problem of report.independence?.problems || []) {
+      out('', `${C.red}unreviewed${C.off}  ${problem.message} — give ${problem.reviewer_role} to another agent`)
+    }
+    for (const note of report.independence?.notes || []) {
+      out('', dim(`one vendor  ${note.message} — a different, not weaker model reviews`))
     }
     for (const task of report.orphaned_tasks || []) {
       out('', `${C.red}orphaned${C.off}  ${task.id} (${task.status}) asks for role ${task.role}, which nobody holds — it can never be claimed: "${task.title}"`)

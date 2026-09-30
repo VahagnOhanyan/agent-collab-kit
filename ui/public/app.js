@@ -467,6 +467,10 @@ async function setup() {
   let lead = written?.lead && chosen.has(written.lead) ? written.lead : detect.installed[0] || null
   let forceSingle = written?.review_mode === 'single_vendor'
   let lastPlan = null // the composition the user has chosen right now, for the check
+  // The roles ticked in step 4, { agentId: [role] }. null until the server has said what is written (or proposed):
+  // the page never invents roles, it only changes the ones it was shown.
+  let chosenRoles = null
+  const sameKeys = (object, ids) => Boolean(object) && [...Object.keys(object)].sort().join(',') === [...ids].sort().join(',')
   const out = el('div', {})
   const reviewNote = el('div', { class: 'note' })
   const checkOut = el('div', {})
@@ -482,11 +486,18 @@ async function setup() {
     if (!chosen.size) return out.append(el('div', { class: 'note warn', text: 'Отметьте хотя бы одного агента.' }))
     if (!lead || !chosen.has(lead)) lead = [...chosen][0]
     const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0' })
+    if (!sameKeys(chosenRoles, [...chosen])) chosenRoles = null
+    if (chosenRoles) query.set('roles', JSON.stringify(chosenRoles))
     let preview
     try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return seq === previewSeq ? out.append(el('div', { class: 'note bad', text: error.message })) : undefined }
     if (seq !== previewSeq) return
     if (!preview.ok) return out.append(el('div', { class: 'note bad', text: preview.reason }))
-    lastPlan = preview.plan
+    const apply = preview.apply || {}
+    if (!chosenRoles && apply.roles && sameKeys(apply.roles, [...chosen])) chosenRoles = structuredClone(apply.roles)
+    // What the check compares against is what would be written: the ticked roles, not the catalog's proposal.
+    lastPlan = chosenRoles
+      ? { ...preview.plan, agents: preview.plan.agents.map((a) => ({ ...a, roles: chosenRoles[a.id] || a.roles })) }
+      : preview.plan
     const missing = [...chosen].filter((id) => !detect.installed.includes(id))
     if (missing.length) {
       out.append(el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` }))
@@ -495,12 +506,12 @@ async function setup() {
       ? 'Один вендор: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
       : 'Разные вендоры: ревью никогда не достаётся автору.'
     out.append(
-      el('h2', { id: 'step-4', text: '4. Роли (задаются реестром, здесь только справка)' }),
-      el('div', { class: 'list' }, preview.plan.agents.map((a) => el('div', { class: 'row' }, el('strong', { text: a.id }), a.id === lead ? el('span', { class: 'pill', text: 'ведущий' }) : null, el('span', { class: 'grow' }, chips(a.roles))))),
+      el('h2', { id: 'step-4', text: '4. Роли' }),
+      rolesEditor(preview.plan, apply),
       el('h2', { id: 'step-5', text: '5. Проект' }),
       projectCard(detect.project),
       el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — только ведущего и режим ревью, и всегда после вашего подтверждения. Смена агентов и ролей — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
+      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — ведущего, режим ревью и роли агентов, всегда после вашего подтверждения. Смена набора агентов — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
       applyBlock(preview.apply),
       ...preview.commands.map((c) => {
         const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
@@ -514,8 +525,46 @@ async function setup() {
         el('span', { class: 'muted', text: 'Нажимать нужно, только если вы меняли состав в терминале. После «Применить» и «Записать состав» проверка запускается сама.' })))
   }
 
-  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты' }
-  const valueRu = (field, value) => (field === 'review_mode' ? REVIEW_MODE_RU[value] || value || 'не записано' : value || 'не записано')
+  // Step 4: a checkbox for every role the agent can hold (its capabilities allow it), ticked when it holds it.
+  // Read-only chips when the panel cannot write this composition. Gaps in independent review are shown under it:
+  // with two vendors they block "Применить", with one they are notes.
+  function rolesEditor(plan, apply) {
+    const box = el('div', {})
+    const editable = detect.writable && chosenRoles && apply.holdable
+    box.append(el('div', { class: 'list' }, plan.agents.map((a) => {
+      const held = chosenRoles?.[a.id] || a.roles
+      const head = [el('strong', { text: a.id }), a.id === lead ? el('span', { class: 'pill', text: 'ведущий' }) : null]
+      if (!editable) return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, chips(held)))
+      const boxes = (apply.holdable[a.id] || []).map((role) => el('label', { class: 'chip' },
+        el('input', { type: 'checkbox', checked: held.includes(role), onchange: (e) => {
+          const next = new Set(chosenRoles[a.id])
+          if (e.target.checked) next.add(role); else next.delete(role)
+          chosenRoles = { ...chosenRoles, [a.id]: (apply.holdable[a.id] || []).filter((r) => next.has(r)) }
+          drawPreview()
+        } }), ` ${role}`))
+      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow chips' }, boxes))
+    })))
+    if (editable) box.append(el('div', { class: 'muted', text: 'Показаны только роли, для которых у агента есть нужные способности. Изменения записываются кнопкой «Применить» ниже.' }))
+    for (const p of apply.independence?.problems || []) {
+      box.append(el('div', { class: 'note bad', text: `Работу роли ${p.role} у ${p.author} некому проверить, кроме автора: дайте роль ${p.reviewer_role} другому агенту.` }))
+    }
+    for (const n of apply.independence?.notes || []) {
+      box.append(el('div', { class: 'note', text: `Один вендор: работу роли ${n.role} у ${n.author} проверит тот же агент на другой, не более слабой модели.` }))
+    }
+    return box
+  }
+
+  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты', roles: 'роли' }
+  const valueRu = (field, value) => (field === 'review_mode'
+    ? REVIEW_MODE_RU[value] || value || 'не записано'
+    : Array.isArray(value) ? value.join(', ') || 'нет ролей' : value || 'не записано')
+  // A roles change reads as what is added and taken away, not as two long lists.
+  const changeText = (c) => {
+    if (c.field !== 'roles' || !c.from?.length) return `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`
+    const added = c.to.filter((r) => !c.from.includes(r))
+    const removed = c.from.filter((r) => !c.to.includes(r))
+    return `роли ${c.agent}: ${[added.length ? `+ ${added.join(', ')}` : '', removed.length ? `− ${removed.join(', ')}` : ''].filter(Boolean).join('; ')}`
+  }
   const applyBox = el('div', {})
   const finish = async (text) => {
     toast(text)
@@ -553,7 +602,7 @@ async function setup() {
         el('button', { type: 'button', class: 'primary', text: 'Да, вернуть', onclick: undo }),
         el('button', { type: 'button', text: 'Отмена', onclick: () => { row.hidden = true } }))
       return el('div', {},
-        el('div', { class: 'muted', text: `Сохранён прежний состав: ${info.revert.changes.map((c) => `${FIELD_RU[c.field] || c.field}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`).join('; ')}` }),
+        el('div', { class: 'muted', text: `Сохранён прежний состав: ${info.revert.changes.map(changeText).join('; ')}` }),
         el('button', { type: 'button', text: 'Вернуть прежний', onclick: () => { row.hidden = false } }), row)
     })() : null
     if (!info.changes.length) {
@@ -564,7 +613,7 @@ async function setup() {
     const apply = async () => {
       confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = true })
       try {
-        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, expect: info.expect })
+        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, ...(chosenRoles ? { roles: chosenRoles } : {}), expect: info.expect })
         await finish('Записано. Перезапустите открытые сессии агентов.')
       } catch (error) {
         confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = false })
@@ -579,7 +628,9 @@ async function setup() {
       el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmRow.hidden = true } }))
     applyBox.append(
       el('div', { class: 'card' }, el('strong', { text: info.first_setup ? 'Состав ещё не записан. Будет записано' : 'Что изменится' }), ...info.changes.map((c) =>
-        el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
+        c.field === 'roles' && c.from?.length
+          ? el('div', { class: 'row' }, el('strong', { text: changeText(c) }))
+          : el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: info.first_setup ? 'Записать состав' : 'Применить', onclick: () => { confirmRow.hidden = false } })),
       confirmRow, ...(back ? [back] : []))
     return applyBox
@@ -700,7 +751,7 @@ const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждё
 async function route() {
   const seq = ++routeSeq
   closeStream()
-  setConn('', 'пишет состав, ведущего и режим ревью')
+  setConn('', 'пишет состав, ведущего, режим ревью и роли')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
   const screen = ROUTES[name] || overview
   for (const link of document.querySelectorAll('[data-route]')) {

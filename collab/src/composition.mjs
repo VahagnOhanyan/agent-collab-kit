@@ -16,7 +16,7 @@ export function detectBinary(agent) {
 }
 
 // Every role this agent's capabilities satisfy.
-function rolesItCanHold(agent, roleDefs) {
+export function rolesItCanHold(agent, roleDefs) {
   const caps = new Set(agent.capabilities || [])
   return Object.entries(roleDefs)
     .filter(([, role]) => (role.requires || []).every((c) => caps.has(c)))
