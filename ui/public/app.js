@@ -503,8 +503,8 @@ async function setup() {
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck })))
   }
 
-  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью' }
-  const valueRu = (field, value) => (field === 'review_mode' ? REVIEW_MODE_RU[value] || value || '—' : value || 'никто')
+  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты' }
+  const valueRu = (field, value) => (field === 'review_mode' ? REVIEW_MODE_RU[value] || value || 'не записано' : value || 'не записано')
   const applyBox = el('div', {})
   const finish = async (text) => {
     toast(text)
@@ -561,14 +561,16 @@ async function setup() {
       }
     }
     confirmRow.append(
-      el('span', { text: 'Записать это на машину? Прежний состав сохранится, его можно вернуть.' }),
+      el('span', { text: info.first_setup
+        ? 'Записать состав на эту машину? Панель создаст agents.json и памятки агентов; вернуть отсюда нельзя — файл удаляется вручную.'
+        : 'Записать это на машину? Прежний состав сохранится, его можно вернуть.' }),
       el('button', { type: 'button', class: 'primary', text: 'Да, записать', onclick: apply }),
       el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmRow.hidden = true } }))
     applyBox.append(
-      el('div', { class: 'card' }, el('strong', { text: 'Что изменится' }), ...info.changes.map((c) =>
+      el('div', { class: 'card' }, el('strong', { text: info.first_setup ? 'Состав ещё не записан. Будет записано' : 'Что изменится' }), ...info.changes.map((c) =>
         el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
-      el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Применить', onclick: () => { confirmRow.hidden = false } })),
-      confirmRow, back)
+      el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: info.first_setup ? 'Записать состав' : 'Применить', onclick: () => { confirmRow.hidden = false } })),
+      confirmRow, ...(back ? [back] : []))
     return applyBox
   }
 

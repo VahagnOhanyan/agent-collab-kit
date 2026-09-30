@@ -3,7 +3,8 @@ import { existsSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writ
 import { delimiter, join } from 'node:path'
 
 import { describeProject } from '../collab/src/api.mjs'
-import { detectBinary, planComposition } from '../collab/src/composition.mjs'
+import { detectBinary, planComposition, writeComposition } from '../collab/src/composition.mjs'
+import { DEFAULT_CONFIG_DIR } from '../collab/src/paths.mjs'
 import { loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../collab/src/registry.mjs'
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -116,9 +117,60 @@ function registryProblems(machineDir) {
   return validateRegistry(loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir })).problems
 }
 
+// The file is "there" for the panel even when it is a link that points nowhere: such a path is never written.
+const present = (file) => {
+  try {
+    lstatSync(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// First setup: nothing is recorded yet, so the panel records the composition `collab setup` would — the chosen
+// agents with the catalog's roles for them — and only that. `expect` is the word "none": the owner saw "nothing is
+// written", and a file that appeared meanwhile makes the request stale instead of being overwritten.
+const NOTHING_WRITTEN = 'none'
+
+function evaluateFirstSetup({ agents, lead, singleVendor, machineDir }) {
+  if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id))) return { available: false, reason: 'Отметьте хотя бы одного агента.' }
+  if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
+  const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs: loadConfigFrom().roles.roles, include: agents, lead, singleVendor: Boolean(singleVendor) })
+  if (!planned.ok) return { available: false, reason: planned.reason }
+  const changes = [
+    { field: 'agents', from: null, to: planned.content.agents.map((agent) => agent.id).join(', ') },
+    { field: 'lead', from: null, to: planned.content.lead },
+    { field: 'review_mode', from: null, to: planned.content.review_mode }
+  ]
+  return { available: true, first_setup: true, changes, expect: NOTHING_WRITTEN, _init: { content: planned.content, machineDir } }
+}
+
+function commitFirstSetup({ content, machineDir }) {
+  const file = compositionFile(machineDir)
+  const briefings = content.agents.map((agent) => agent.briefing_file).filter(Boolean).map((relative) => join(machineDir, relative))
+  const already = new Set(briefings.filter((path) => present(path)))
+  const undo = () => {
+    try { rmSync(file, { force: true }) } catch { /* nothing more can be done from here */ }
+    for (const path of briefings) if (!already.has(path)) try { rmSync(path, { force: true }) } catch { /* same */ }
+  }
+  try {
+    writeComposition(machineDir, content, { catalogDir: DEFAULT_CONFIG_DIR })
+    const problems = registryProblems(machineDir)
+    if (problems.length) {
+      undo()
+      return { ok: false, reason: `Запись отменена, реестр не прошёл проверку: ${problems.join('; ')}` }
+    }
+    return { ok: true, expect: fingerprint(readFileSync(file)) }
+  } catch (error) {
+    undo()
+    return { ok: false, reason: `Запись отменена, созданное убрано: ${error.message}` }
+  }
+}
+
 export function evaluateApply({ agents, lead, singleVendor, machineDir }) {
   const file = machineDir ? compositionFile(machineDir) : null
-  if (!file || !existsSync(file)) return { available: false, reason: 'На машине ещё нет записанного состава: первая настройка делается командой collab setup в терминале.' }
+  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, machineDir })
+  if (!file) return { available: false, reason: 'Каталог настроек машины не задан.' }
   if (lstatSync(file).isSymbolicLink()) return { available: false, reason: 'agents.json — символическая ссылка: панель такой файл не переписывает.' }
   const raw = readFileSync(file)
   let current
@@ -200,7 +252,7 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode }) {
 }
 
 // The internals of an evaluation never leave this module.
-export const publicApply = ({ _next, revert, ...visible }) => ({
+export const publicApply = ({ _next, _init, revert, ...visible }) => ({
   ...visible,
   ...(revert ? { revert: (({ _next: inner, ...shown }) => shown)(revert) } : {})
 })
@@ -214,6 +266,10 @@ export function applySetup({ agents, lead, singleVendor, expect, machineDir }) {
   }
   if (!evaluated.available) return { ok: false, reason: evaluated.reason }
   if (expect !== evaluated.expect) return { ok: false, reason: 'Состав на машине изменился, пока вы выбирали. Обновите страницу и выберите заново.' }
+  if (evaluated.first_setup) {
+    const first = commitFirstSetup(evaluated._init)
+    return first.ok ? { ok: true, changed: true, first_setup: true, changes: evaluated.changes, expect: first.expect } : first
+  }
   if (!evaluated.changes.length) return { ok: true, changed: false, changes: [] }
   const done = commit(machineDir, evaluated._next)
   return done.ok ? { ok: true, changed: true, changes: evaluated.changes, expect: done.expect } : done

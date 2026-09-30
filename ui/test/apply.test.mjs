@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { join } from 'node:path'
 
@@ -249,12 +249,81 @@ test('a panel started without the right to write refuses every write', async (t)
   assert.equal((await send(started, 'GET', '/api/setup/detect')).json.writable, false)
 })
 
-test('no composition on the machine: the first setup stays at the terminal', async (t) => {
-  const started = await panel(t, tempDir('panel-empty-machine-'))
+const emptyMachine = () => join(tempDir('panel-first-'), 'machine')
+
+test('first setup: with nothing recorded the panel writes what `collab setup` would, and says so before', async (t) => {
+  const dir = emptyMachine()
+  const started = await panel(t, dir)
   if (!started) return
-  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: 'x' })
-  assert.equal(res.status, 409)
-  assert.match(res.json.reason, /collab setup/)
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply
+  assert.equal(preview.first_setup, true)
+  assert.equal(preview.expect, 'none')
+  assert.deepEqual(preview.changes.map((c) => c.field), ['agents', 'lead', 'review_mode'])
+  assert.equal(JSON.stringify(preview).includes('_init'), false)
+  assert.equal(existsSync(join(dir, 'agents.json')), false, 'a preview writes nothing')
+
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: 'none' })
+  assert.equal(done.status, 200, done.text)
+  const expected = planComposition({ catalog: loadBuiltinAgents(), roleDefs: loadConfigFrom().roles.roles, include: IDS, lead: 'codex' }).content
+  assert.deepEqual(read(dir), expected, 'exactly the composition collab setup would write')
+  assert.equal(existsSync(join(dir, 'agents.json.prev')), false)
+  for (const agent of expected.agents) if (agent.briefing_file) assert.ok(existsSync(join(dir, agent.briefing_file)), agent.briefing_file)
+})
+
+test('first setup honours the review mode and only takes agents from the catalog', async (t) => {
+  const dir = emptyMachine()
+  const started = await panel(t, dir)
+  if (!started) return
+  const unknown = await send(started, 'POST', '/api/setup/apply', { agents: ['claude', 'nobody'], lead: 'claude', single_vendor: false, expect: 'none' })
+  assert.equal(unknown.status, 409)
+  const noLead = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'gemini', single_vendor: false, expect: 'none' })
+  assert.equal(noLead.status, 409)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+  const single = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: true, expect: 'none' })
+  assert.equal(single.status, 200, single.text)
+  assert.equal(read(dir).review_mode, 'single_vendor')
+})
+
+test('first setup is refused when a file appeared meanwhile or with any other fingerprint', async (t) => {
+  const dir = emptyMachine()
+  const started = await panel(t, dir)
+  if (!started) return
+  const wrong = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: 'x' })
+  assert.equal(wrong.status, 409)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+  const ok = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: 'none' })
+  assert.equal(ok.status, 200)
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  // The owner's tab still holds "nothing is recorded": it must not overwrite what is there now.
+  const again = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: 'none' })
+  assert.equal(again.status, 409)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('a first setup the registry finds problems with is taken back, not left half-written', async (t) => {
+  const dir = emptyMachine()
+  mkdirSync(dir, { recursive: true })
+  // Valid JSON that names no roles: the composition then holds roles the registry does not know.
+  writeFileSync(join(dir, 'roles.json'), JSON.stringify({ roles: {} }))
+  const started = await panel(t, dir)
+  if (!started) return
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: 'none' })
+  assert.equal(res.status, 409, res.text)
+  assert.match(res.json.reason, /не прошёл проверку/)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+})
+
+test('a first setup the registry rejects leaves nothing behind', async (t) => {
+  const dir = emptyMachine()
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'roles.json'), '{ this is not json')
+  const started = await panel(t, dir)
+  if (!started) return
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: 'none' })
+  assert.equal(res.status, 409, res.text)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+  assert.equal(existsSync(join(dir, 'briefings')) && readdirSync(join(dir, 'briefings')).length > 0, false, 'copied briefings are removed too')
+  assert.equal((await send(started, 'GET', '/api/setup/detect')).status, 200)
 })
 
 test('only the two write paths take a POST; everything else stays GET and HEAD', async (t) => {
