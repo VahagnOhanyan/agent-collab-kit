@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "binary", "version", "headless", "readonly", "config", "mcp", "hooks", "auth", "limits", "models"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "binary": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "install_source": { "type": "string", "minLength": 1 },
+    "headless": { "$ref": "#/$defs/headless" },
+    "readonly": { "$ref": "#/$defs/readonly" },
+    "config": { "$ref": "#/$defs/config" },
+    "mcp": { "$ref": "#/$defs/mcp" },
+    "hooks": { "$ref": "#/$defs/hooks" },
+    "auth": { "$ref": "#/$defs/auth" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "models": { "type": "array", "items": { "$ref": "#/$defs/model" } }
+  },
+  "$defs": {
+    "group": {
+      "type": "object",
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": { "type": "string", "enum": ["verified", "documented", "not_found"] },
+        "evidence": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "headless": {
+      "allOf": [{ "$ref": "#/$defs/group" }],
+      "properties": {
+        "command": { "type": "string" }, "model_flag": { "type": "string" }, "cwd_flag": { "type": "string" },
+        "output_file": { "type": "string", "pattern": "^(flag:.+|redirect)$" }, "json_flag": { "type": "string" },
+        "approval_flag": { "type": "string" }, "needs_stdin_closed": { "type": "boolean" }
+      }, "additionalProperties": true
+    },
+    "readonly": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "mechanism": { "type": "string" }, "flag": { "type": "string" }, "sandbox_test": { "type": "object" } }, "additionalProperties": true },
+    "config": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "path": { "type": "string" }, "format": { "type": "string" } }, "additionalProperties": true },
+    "mcp": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "mechanism": { "type": "string" }, "format": { "type": "string" } }, "additionalProperties": true },
+    "hooks": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "events": { "type": "array", "items": { "type": "string" } }, "can_block": { "type": "boolean" }, "failure_mode": { "type": "string" } }, "additionalProperties": true },
+    "auth": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "kind": { "type": "string" } }, "additionalProperties": true },
+    "limits": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "how_to_read": { "type": "string" } }, "additionalProperties": true },
+    "model": { "type": "object", "additionalProperties": false, "required": ["id", "tier_guess", "source"], "properties": { "id": { "type": "string", "minLength": 1 }, "tier_guess": { "type": "string", "enum": ["cheap", "mid", "strong", "unknown"] }, "source": { "type": "string", "minLength": 1 } } }
+  }
+}

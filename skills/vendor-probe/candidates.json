@@ -1,0 +1,7 @@
+{
+  "candidates": [
+    { "binary": "grok", "vendor": "xai" },
+    { "binary": "mcode", "vendor": "minimax" },
+    { "binary": "agy", "vendor": "google" }
+  ]
+}
