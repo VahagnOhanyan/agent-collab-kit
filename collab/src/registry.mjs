@@ -23,7 +23,8 @@
 // exits. Sharing one function is what stops the gate and the runtime from
 // disagreeing about what "valid" means.
 
-import { existsSync, lstatSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { CollabConfigError, CODES, CollabError } from './errors.mjs'
 import { isValidAgentId } from './ids.mjs'
@@ -684,15 +685,68 @@ export function expandCatalogAgents(agentsConfig, { capabilityIds, roleDefs }) {
 // The catalog as a given configuration sees it: every capability THAT configuration declares (a machine's or a
 // project's capabilities.json included) minus the ceiling, and every role of THAT configuration they satisfy. What
 // setup proposes and what runs before anything is written are then one answer, not two.
-export function catalogFor(config) {
-  return expandCatalogAgents(readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json'), {
+export function catalogFor(config, machineDir = MACHINE_CONFIG_DIR) {
+  return expandCatalogAgents(catalogWithMachineAdapters(machineDir), {
     capabilityIds: Object.keys(config.capabilities?.capabilities || {}),
     roleDefs: config.roles?.roles || {}
   })
 }
 
-export function loadBuiltinAgents() {
-  return expandCatalogAgents(readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json'), {
+// ── machine adapters (vendor-probe, stage 2) ─────────────────────────────────
+// A vendor this kit has no built-in adapter for, adopted on THIS machine from a checked profile
+// (`agent-kit-install --adopt-profile`): <machineDir>/adapters/<id>.json, outside git. It joins the catalog as an
+// ordinary agent — the wizard offers it, `collab setup` accepts it — and never as anything more: no process is started
+// for it (adapter kind manual), what it may do is cut by the facts like any agent's, and a built-in agent with the
+// same id always wins.
+export const MACHINE_ADAPTERS_DIR = 'adapters'
+const ADAPTER_BRIEFING =
+  'You are an agent on this project, joined through a machine adapter built from your own vendor-probe profile. ' +
+  'whoami says whether you lead or take work and reviews from the lead — the person\'s composition decides. Read the ' +
+  'project\'s own instructions (AGENTS.md, CLAUDE.md or README). Claim work before doing it, ask for an independent ' +
+  'review by ROLE (code_reviewer) before you call your work done, and say plainly what you could not check.'
+
+export function machineAdapterAgents(machineDir = MACHINE_CONFIG_DIR) {
+  const dir = machineDir ? join(machineDir, MACHINE_ADAPTERS_DIR) : null
+  if (!dir || !existsSync(dir)) return []
+  const agents = []
+  for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sort()) {
+    let adapter
+    try {
+      const file = join(dir, name)
+      if (!lstatSync(file).isFile()) continue
+      const bytes = readFileSync(file)
+      // Only what the owner approved (agent-kit-install writes <file>.approved = its sha-256): an adapter edited by
+      // hand or dropped in without adoption is not offered — the installer refuses it the same way.
+      const mark = `${file}.approved`
+      if (!existsSync(mark) || !lstatSync(mark).isFile() || readFileSync(mark, 'utf8').trim() !== createHash('sha256').update(bytes).digest('hex')) continue
+      adapter = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      continue // an unreadable adapter is simply not offered; the installer names it
+    }
+    if (!adapter || !isValidAgentId(adapter.id) || name !== `${adapter.id}.json` || typeof adapter.binary !== 'string') continue
+    if (!['json-file', 'toml-file'].includes(adapter.registration?.kind)) continue
+    agents.push({
+      id: adapter.id,
+      name: typeof adapter.name === 'string' && adapter.name ? adapter.name : adapter.id,
+      provider: typeof adapter.provider === 'string' && adapter.provider ? adapter.provider : adapter.id,
+      detect: adapter.binary,
+      adapter: { kind: 'manual', session: 'interactive', cannot: [] },
+      briefing: ADAPTER_BRIEFING,
+      machine_adapter: true
+    })
+  }
+  return agents
+}
+
+function catalogWithMachineAdapters(machineDir) {
+  const builtin = readConfig(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'agents.json')
+  const known = new Set((builtin.agents || []).map((agent) => agent.id))
+  const extra = machineAdapterAgents(machineDir).filter((agent) => !known.has(agent.id))
+  return extra.length ? { ...builtin, agents: [...(builtin.agents || []), ...extra] } : builtin
+}
+
+export function loadBuiltinAgents(machineDir = MACHINE_CONFIG_DIR) {
+  return expandCatalogAgents(catalogWithMachineAdapters(machineDir), {
     capabilityIds: Object.keys(readConfig(join(DEFAULT_CONFIG_DIR, 'capabilities.json'), 'capabilities.json').capabilities || {}),
     roleDefs: readConfig(join(DEFAULT_CONFIG_DIR, 'roles.json'), 'roles.json').roles || {}
   })

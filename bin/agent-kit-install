@@ -395,6 +395,12 @@ collab MCP server with Claude Code (user scope) and Codex.
   --skip-gemini        do not touch ~/.gemini/config/mcp_config.json
   --dry-run            run every check, tests and smoke included; change nothing
   --rollback           switch current back to the previous release
+  --adopt-profile <profile.json>
+                       connect a vendor the kit has no adapter for, from the profile its
+                       vendor-probe reconnaissance wrote: shows what it will write, asks
+                       "да" at a terminal, writes ~/.agent-kit/collab/adapters/<id>.json and
+                       the vendor's MCP settings (with a backup), then checks them with the
+                       vendor's own command — and puts everything back if the check fails
   -h, --help           this text
 
 Claude Code reads skills, agents and rules only from the config directory the
@@ -427,7 +433,7 @@ function parseArgs(argv) {
     help: false
   }
   opts.claudeConfigDirs = []
-  const valued = { '--source': 'source', '--home': 'home', '--bindir': 'bindir', '--claude-bin': 'claudeBin' }
+  const valued = { '--source': 'source', '--home': 'home', '--bindir': 'bindir', '--claude-bin': 'claudeBin', '--adopt-profile': 'adoptProfile' }
   const repeated = { '--claude-config-dir': 'claudeConfigDirs' }
   const flags = {
     '--replace-claude': 'replaceClaude',
@@ -1802,8 +1808,15 @@ function codexBlock(serverPath, nodePath) {
   ]
 }
 
-// text and block lines are latin1 strings. Returns { changed, text, replaced, oldBlock }.
+// text and block lines are latin1 strings. Returns { changed, text, replaced, oldBlock }. `CODEX_TABLE` below is the
+// table being written: Codex's [mcp_servers.collab], or a machine adapter's [<servers_key>.collab] — one scanner, one
+// set of refusals for every TOML file the installer writes.
 function rewriteCodexToml(text, blockLines) {
+  return rewriteToml(text, blockLines, CODEX_TABLE)
+}
+
+function rewriteToml(text, blockLines, tableName) {
+  const CODEX_TABLE = tableName
   const lines = splitLines(text)
   const info = classifyToml(lines)
   const eol = lines.find((l) => l.eol)?.eol || '\n'
@@ -1903,25 +1916,10 @@ function planCodex(ctx) {
 }
 
 function applyCodex(ctx, plan, journal, changes) {
-  if (!plan.changed) return
-  if (plan.exists) {
-    const now = fs.readFileSync(plan.file)
-    if (!now.equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
-    const backup = `${plan.file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`
-    fs.copyFileSync(plan.file, backup, fs.constants.COPYFILE_EXCL)
-    writeFileAtomic(plan.file, plan.next, plan.mode)
-    journal.add(`rewrote ${plan.file}`, () => {
-      writeFileAtomic(plan.file, plan.original, plan.mode)
-      fs.rmSync(backup, { force: true })
-    })
-    changes.push(`codex: ${plan.replaced ? 'replaced' : 'appended'} [${CODEX_TABLE}] in ${plan.file} (backup ${backup})`)
-  } else {
-    ensureDir(path.dirname(plan.file), journal)
-    writeFileAtomic(plan.file, plan.next, 0o600)
-    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
-    changes.push(`codex: created ${plan.file} with [${CODEX_TABLE}]`)
-  }
-  if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
+  applyFileRegistration(plan, journal, changes, {
+    updated: (backup) => `codex: ${plan.replaced ? 'replaced' : 'appended'} [${CODEX_TABLE}] in ${plan.file} (backup ${backup})`,
+    created: () => `codex: created ${plan.file} with [${CODEX_TABLE}]`
+  })
 }
 
 // ── Codex as the lead: its instructions (~/.codex/AGENTS.md) ─────────────────
@@ -2395,6 +2393,405 @@ function summarizeClaude(ctx, plan) {
     )
 }
 
+// ── MCP registration described by data: a JSON or TOML settings file ─────────
+// One path for every file-based registration — Gemini's JSON, Codex's TOML (rewriteToml above) and a machine adapter
+// adopted from a vendor-probe profile: read the file (through a link, to the real one), merge collab in and keep
+// everything else, back the file up before writing, undo through the journal, read back what was written.
+
+function readSettingsFile(display) {
+  const st = lstatOrNull(display)
+  if (!st) return { exists: false, file: display, original: null, mode: 0o600, viaLink: null }
+  const file = fs.realpathSync(display)
+  const real = fs.statSync(file)
+  if (!real.isFile()) throw new InstallError(`${display} is not a regular file`)
+  return { exists: true, file, original: fs.readFileSync(file), mode: real.mode & 0o777, viaLink: st.isSymbolicLink() ? display : null }
+}
+
+// Equal but for the settings the agent's owner toggles with the agent's own CLI (`ownToggles`, e.g. agy's `disabled`):
+// an install must not silently undo what they switched.
+function registrationEqual(existing, desired, ownToggles) {
+  if (!existing || typeof existing !== 'object') return false
+  const rest = Object.fromEntries(Object.entries(existing).filter(([key]) => !Object.hasOwn(ownToggles, key)))
+  return jsonEqual(rest, desired)
+}
+
+// `serversKey` is the table of servers, dotted for a nested one ("mcpServers", "mcp.servers"); collab goes in as
+// its "collab" entry. Every other key of the file is kept exactly as parsed.
+function planJsonRegistration({ display, serversKey, entry, ownToggles = {} }) {
+  const read = readSettingsFile(display)
+  let current = {}
+  if (read.exists) {
+    try {
+      current = JSON.parse(read.original.toString('utf8'))
+    } catch (error) {
+      throw new InstallError(`cannot safely merge ${display}: it is not valid JSON (${error.message}). Fix it by hand.`)
+    }
+    if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+      throw new InstallError(`${display} does not contain a JSON object at the top level`)
+    }
+  }
+  const keys = serversKey.split('.')
+  let servers = current
+  for (const key of keys) {
+    const value = servers?.[key]
+    if (value !== undefined && (value === null || typeof value !== 'object' || Array.isArray(value))) {
+      throw new InstallError(`${display} has a non-object "${key}" key. Fix it by hand.`)
+    }
+    servers = value
+  }
+  const existing = servers?.collab
+  const changed = !registrationEqual(existing, entry, ownToggles)
+  const toggles = Object.fromEntries(Object.entries(ownToggles).map(([key, fallback]) => [key, existing && typeof existing[key] === typeof fallback ? existing[key] : fallback]))
+  const written = { ...entry, ...toggles }
+  const place = (node, i) => (i === keys.length ? { ...(node || {}), collab: written } : { ...(node || {}), [keys[i]]: place(node?.[keys[i]], i + 1) })
+  return {
+    file: read.file,
+    exists: read.exists,
+    original: read.original,
+    mode: read.mode,
+    next: Buffer.from(`${JSON.stringify(place(current, 0), null, 2)}\n`, 'utf8'),
+    changed
+  }
+}
+
+function planTomlRegistration({ display, table, blockLines }) {
+  const read = readSettingsFile(display)
+  const block = blockLines.map((line) => Buffer.from(line, 'utf8').toString('latin1'))
+  let result
+  try {
+    result = rewriteToml(read.original ? read.original.toString('latin1') : '', block, table)
+  } catch (error) {
+    throw new InstallError(`cannot safely rewrite ${display}: ${error.message}. Fix the [${table}] entry by hand.`)
+  }
+  return { file: read.file, viaLink: read.viaLink, exists: read.exists, original: read.original, mode: read.mode, next: Buffer.from(result.text, 'latin1'), changed: result.changed, replaced: result.replaced }
+}
+
+// Undo is careful in both directions: the backup is registered for removal the moment it exists (a write that then
+// fails leaves no stray copy), and a file is put back only while it still holds what WE wrote — if something else
+// changed it after our write, undo leaves it and its backup alone and says so, instead of overwriting their change.
+function applyFileRegistration(plan, journal, changes, describe) {
+  if (!plan.changed) return
+  const ours = () => {
+    try {
+      return fs.readFileSync(plan.file).equals(plan.next)
+    } catch {
+      return false
+    }
+  }
+  if (plan.exists) {
+    const now = fs.readFileSync(plan.file)
+    if (!now.equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
+    const backup = `${plan.file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    fs.copyFileSync(plan.file, backup, fs.constants.COPYFILE_EXCL)
+    // Runs last on undo: the backup goes only when the file is back to its original bytes.
+    journal.add(`backup ${backup}`, () => {
+      if (fs.readFileSync(plan.file).equals(plan.original)) fs.rmSync(backup, { force: true })
+    })
+    writeFileAtomic(plan.file, plan.next, plan.mode)
+    journal.add(`rewrote ${plan.file}`, () => {
+      if (!ours()) throw new Error(`${plan.file} was changed by something else after this write; left as it is, the backup ${backup} is kept`)
+      writeFileAtomic(plan.file, plan.original, plan.mode)
+    })
+    changes.push(describe.updated(backup))
+  } else {
+    ensureDir(path.dirname(plan.file), journal)
+    writeFileAtomic(plan.file, plan.next, 0o600)
+    journal.add(`created ${plan.file}`, () => {
+      if (!ours()) throw new Error(`${plan.file} was changed by something else after this write; left as it is`)
+      fs.rmSync(plan.file, { force: true })
+    })
+    changes.push(describe.created())
+  }
+  if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
+}
+
+// ── machine adapters: vendors adopted from a vendor-probe profile ────────────
+// ~/.agent-kit/collab/adapters/<id>.json, outside git, written only by `--adopt-profile` after the owner's "да". Every
+// install keeps their registration in sync like the built-in vendors'; a changed registration is checked with the
+// vendor's own command right after the write, and a check that fails undoes the install.
+
+// The same shape collab's registry accepts for an agent id (collab/src/ids.mjs): an adapter it would not read is never
+// written in the first place.
+const ADAPTER_ID = /^[a-z][a-z0-9_-]{1,31}$/
+const ADAPTER_KEY = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/
+const ADAPTER_EXTRA_KEY = /^[A-Za-z0-9_-]+$/
+const ADAPTER_RESERVED = new Set(['command', 'args', 'env', 'type', 'url'])
+// A vendor's CLI is its own program, never a general one that runs whatever it is given: the check runs the adapter's
+// binary, so a shell or an interpreter there would make the check a way to run anything.
+const NOT_A_VENDOR = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh', 'env', 'xargs', 'sudo', 'su', 'doas', 'busybox', 'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'perl', 'ruby', 'php', 'lua', 'osascript', 'open', 'npx', 'pnpm', 'yarn', 'npm', 'pip', 'uv', 'uvx', 'git', 'curl', 'wget', 'ssh', 'cmd', 'powershell', 'pwsh'])
+
+const adaptersDir = (ctx) => path.join(ctx.kitDir, 'collab', 'adapters')
+// What the owner said "да" to: the sha-256 of the adapter file as adopted, beside it. An adapter whose bytes differ
+// from its mark — edited by hand, or dropped in without adoption — is never used: its program is never run and its
+// settings never written, by the installer or by collab's catalog.
+const approvalMark = (file) => `${file}.approved`
+
+// Physically inside the home: the nearest existing ancestor is resolved through its links and must still be under
+// the home's real path. A lexical check alone lets `~/.x -> /elsewhere` carry a write out of the home.
+function assertInsideHomeReal(ctx, target, what) {
+  let head = path.resolve(target)
+  const rest = []
+  while (!lstatOrNull(head)) {
+    const parent = path.dirname(head)
+    if (parent === head) break
+    rest.push(path.basename(head))
+    head = parent
+  }
+  const real = path.join(realpathOr(head), ...rest.reverse())
+  const home = realpathOr(ctx.home)
+  if (real !== home && !real.startsWith(home + path.sep)) throw new InstallError(`${what} ${target} resolves outside the home (${real})`)
+  return real
+}
+
+// The file an adapter names, as a path inside the home — never outside it, never through "..", never through a link
+// that leads out.
+function adapterSettingsPath(ctx, configPath) {
+  if (typeof configPath !== 'string' || !configPath.startsWith('~/') || configPath.split('/').includes('..')) {
+    throw new InstallError(`adapter settings path ${JSON.stringify(configPath)} must be ~/… inside the home`)
+  }
+  const full = path.resolve(ctx.home, configPath.slice(2))
+  if (!full.startsWith(ctx.home + path.sep)) throw new InstallError(`adapter settings path ${configPath} leaves the home`)
+  assertInsideHomeReal(ctx, full, 'adapter settings path')
+  return full
+}
+
+// The built-in vendors' ids and programs: a machine adapter never stands in for one of them.
+function builtinVendors(ctx) {
+  const catalog = JSON.parse(fs.readFileSync(path.join(ctx.currentPath, 'collab', 'config', 'agents.json'), 'utf8'))
+  // Gemini (agy) is not in the catalog but its MCP settings are the installer's own client (planGemini): two writers
+  // of one file are never allowed.
+  const ids = new Set(['gemini'])
+  const binaries = new Set(['claude', 'codex', 'agy'])
+  for (const agent of catalog.agents || []) {
+    ids.add(agent.id)
+    for (const bin of [agent.detect, agent.adapter?.binary]) if (bin) binaries.add(bin)
+  }
+  return { ids, binaries }
+}
+
+// What makes an adapter usable, checked on every read — the file sits in the owner's home and could be edited by hand.
+function adapterProblems(adapter, fileName = null) {
+  const problems = []
+  const reg = adapter?.registration
+  if (!adapter || !ADAPTER_ID.test(adapter.id || '')) problems.push('id must be lowercase letters, digits, _ or -')
+  if (fileName && fileName !== `${adapter?.id}.json`) problems.push(`file name must be ${adapter?.id}.json`)
+  if (typeof adapter?.binary !== 'string' || !/^[A-Za-z0-9._-]+$/.test(adapter.binary)) problems.push('binary must be a program name')
+  else if (NOT_A_VENDOR.has(adapter.binary.toLowerCase().replace(/\.(exe|cmd|bat)$/, '').replace(/[0-9.]+$/, ''))) problems.push(`binary ${adapter.binary} is a shell or an interpreter, not a vendor's CLI`)
+  if (!reg || !['json-file', 'toml-file'].includes(reg.kind)) problems.push('registration.kind must be json-file or toml-file (cli is not supported for machine adapters yet)')
+  if (reg && !ADAPTER_KEY.test(reg.servers_key || '')) problems.push('registration.servers_key must be a key like mcpServers')
+  if (reg && (typeof reg.config_path !== 'string' || !reg.config_path.startsWith('~/'))) problems.push('registration.config_path must start with ~/')
+  const argv = reg?.verify?.argv
+  if (!Array.isArray(argv) || argv[0] !== adapter?.binary || !argv.every((a) => typeof a === 'string' && a.length)) problems.push('registration.verify.argv must run the vendor\'s own binary')
+  // A check that says nothing (a blank, a newline, one letter) would pass whatever the program printed.
+  if (typeof reg?.verify?.expect !== 'string' || reg.verify.expect.trim().length < 3 || /[\r\n]/.test(reg.verify.expect)) problems.push('registration.verify.expect must be at least 3 characters on one line, printed by the check when collab is there')
+  for (const [key, value] of Object.entries(reg?.entry_extra || {})) {
+    if (!ADAPTER_EXTRA_KEY.test(key) || ADAPTER_RESERVED.has(key)) problems.push(`registration.entry_extra.${key} is not allowed`)
+    else if (!['string', 'number', 'boolean'].includes(typeof value)) problems.push(`registration.entry_extra.${key} must be a string, a number or true/false`)
+  }
+  return problems
+}
+
+function readMachineAdapters(ctx) {
+  const dir = adaptersDir(ctx)
+  if (!lstatOrNull(dir)) return []
+  if (!fs.lstatSync(dir).isDirectory()) throw new InstallError(`${dir} must be a plain directory, not a link`)
+  assertInsideHomeReal(ctx, dir, 'the adapters directory')
+  const builtin = builtinVendors(ctx)
+  return fs.readdirSync(dir).filter((name) => name.endsWith('.json')).sort().map((name) => {
+    const file = path.join(dir, name)
+    const remedy = `Remove it, or connect the vendor again with --adopt-profile.`
+    let bytes
+    let adapter
+    try {
+      if (!fs.lstatSync(file).isFile()) throw new Error('not a regular file')
+      bytes = fs.readFileSync(file)
+      adapter = JSON.parse(bytes.toString('utf8'))
+    } catch (error) {
+      throw new InstallError(`machine adapter ${file} cannot be read: ${error.message}. ${remedy}`)
+    }
+    const mark = approvalMark(file)
+    const approved = lstatOrNull(mark)?.isFile() ? fs.readFileSync(mark, 'utf8').trim() : null
+    if (approved !== sha256(bytes)) throw new InstallError(`machine adapter ${file} is not the one the owner approved (changed, or never adopted); nothing of it is used. ${remedy}`)
+    const problems = adapterProblems(adapter, name)
+    if (builtin.ids.has(adapter?.id) || builtin.binaries.has(adapter?.binary)) problems.push(`${adapter.id}/${adapter.binary} is a built-in vendor: its settings are the installer's own`)
+    if (problems.length) throw new InstallError(`machine adapter ${file} is not usable: ${problems.join('; ')}. ${remedy}`)
+    return adapter
+  })
+}
+
+function adapterEntry(ctx, adapter) {
+  return { command: ctx.node.path, args: [ctx.serverPath], env: { COLLAB_AGENT_ID: adapter.id }, ...(adapter.registration.entry_extra || {}) }
+}
+
+function adapterTomlBlock(ctx, adapter) {
+  const reg = adapter.registration
+  return [
+    `[${reg.servers_key}.collab]`,
+    `# Managed by agent-kit-install: machine adapter ${adapter.id}, adopted from its vendor-probe profile.`,
+    `command = ${JSON.stringify(ctx.node.path)}`,
+    `args = [${JSON.stringify(ctx.serverPath)}]`,
+    `env = { COLLAB_AGENT_ID = ${JSON.stringify(adapter.id)} }`,
+    ...Object.entries(reg.entry_extra || {}).map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+  ]
+}
+
+function planAdapterRegistration(ctx, adapter) {
+  const reg = adapter.registration
+  const display = adapterSettingsPath(ctx, reg.config_path)
+  const plan = reg.kind === 'json-file'
+    ? planJsonRegistration({ display, serversKey: reg.servers_key, entry: adapterEntry(ctx, adapter) })
+    : planTomlRegistration({ display, table: `${reg.servers_key}.collab`, blockLines: adapterTomlBlock(ctx, adapter) })
+  return { ...plan, display, adapter }
+}
+
+// The vendor's own list of MCP servers must show collab after a write. Only the vendor's binary runs (adapterProblems),
+// with the installer's clean environment and a time limit; nothing is sent to a model.
+// HOME is the home being installed into, so the vendor reads the settings this run wrote (not the real ones under a
+// test --home). Success is exit 0 AND the expected text on stdout: an error message that happens to name collab is not.
+function verifyAdapter(ctx, adapter) {
+  const [bin, ...args] = adapter.registration.verify.argv
+  const run = spawnSync(bin, args, { encoding: 'utf8', timeout: 30000, env: childEnv({ HOME: ctx.home }), stdio: ['ignore', 'pipe', 'pipe'] })
+  const text = `${run.stdout || ''}\n${run.stderr || ''}`
+  if (run.error || run.status !== 0 || !(run.stdout || '').includes(adapter.registration.verify.expect)) {
+    const why = run.error ? run.error.message : run.status !== 0 ? `it exited with ${run.status}` : `"${adapter.registration.verify.expect}" is not in its output`
+    throw new InstallError(`${adapter.id}: the check \`${adapter.registration.verify.argv.join(' ')}\` did not confirm collab (${why}); nothing is kept. Output: ${text.trim().slice(0, 300)}`)
+  }
+}
+
+function adapterDescribe(item) {
+  const where = item.adapter.registration.kind === 'json-file' ? `${item.adapter.registration.servers_key}.collab` : `[${item.adapter.registration.servers_key}.collab]`
+  return {
+    updated: (backup) => `${item.adapter.id}: updated ${where} in ${item.file} (backup ${backup})`,
+    created: () => `${item.adapter.id}: created ${item.file} with ${where}`
+  }
+}
+
+function planAdapters(ctx) {
+  const adapters = readMachineAdapters(ctx)
+  if (!adapters.length) return { skipped: true, reason: 'no machine adapters' }
+  return {
+    items: adapters.map((adapter) => {
+      const display = adapterSettingsPath(ctx, adapter.registration.config_path)
+      // Same rule as the built-in vendors: no settings file created for a program nobody has here.
+      if (!lstatOrNull(display) && !commandExists(adapter.binary) && !lstatOrNull(path.dirname(display))) {
+        return { adapter, skipped: true, reason: `${adapter.binary} is not installed and ${path.dirname(display)} does not exist` }
+      }
+      return planAdapterRegistration(ctx, adapter)
+    })
+  }
+}
+
+function applyAdapters(ctx, plan, journal, changes) {
+  for (const item of plan.items) {
+    if (item.skipped || !item.changed) continue
+    applyFileRegistration(item, journal, changes, adapterDescribe(item))
+    verifyAdapter(ctx, item.adapter)
+  }
+}
+
+function summarizeAdapters(ctx, plan) {
+  const lines = plan.items.filter((item) => !item.skipped && item.changed).map((item) => `${item.adapter.id}: ${item.exists ? 'update' : 'create'} collab in ${item.file}, then check with \`${item.adapter.registration.verify.argv.join(' ')}\``)
+  return lines.length ? lines : null
+}
+
+// ── --adopt-profile: a checked profile becomes a machine adapter, after "да" ──
+// The profile is the one the vendor-probe skill wrote; it is checked again here by the installed skill's own checker.
+// Only what the probe proved by running is used (mcp.status verified). The owner sees the adapter, the file and the
+// check before anything is written, and answers at a terminal — without one nothing is written.
+async function adoptProfile(ctx) {
+  const skillDir = path.join(ctx.currentPath, 'skills', 'vendor-probe')
+  if (!lstatOrNull(path.join(skillDir, 'probe.mjs'))) throw new InstallError(`agent-kit is not installed at ${ctx.currentPath} yet: install it first, then adopt the profile`)
+  const profileFile = path.resolve(ctx.opts.adoptProfile)
+  let profile
+  try {
+    profile = JSON.parse(fs.readFileSync(profileFile, 'utf8'))
+  } catch (error) {
+    throw new InstallError(`профиль ${profileFile} не читается: ${error.message}`)
+  }
+  const { checkProfile } = await import(pathToFileURL(path.join(skillDir, 'probe.mjs')).href)
+  const schema = JSON.parse(fs.readFileSync(path.join(skillDir, 'profile.schema.json'), 'utf8'))
+  const checked = checkProfile(profile, schema)
+  if (!checked.ok) throw new InstallError(`профиль не прошёл проверку:\n${checked.problems.map((p) => `  ${p.path}: ${p.message}`).join('\n')}`)
+  const reg = profile.mcp?.registration
+  if (!reg) throw new InstallError('профиль не говорит, как вписать MCP-сервер (mcp.registration): разведка должна это выяснить и проверить запуском')
+  const builtin = builtinVendors(ctx)
+  if (builtin.ids.has(profile.id) || builtin.binaries.has(profile.binary)) {
+    throw new InstallError(`${profile.id} (${profile.binary}) уже подключается самим установщиком как встроенный вендор: адаптер машины для него не нужен`)
+  }
+  const adapter = {
+    '//': 'Machine adapter adopted from a vendor-probe profile by agent-kit-install --adopt-profile. Change it by adopting a new profile, not by hand.',
+    id: profile.id,
+    name: profile.id,
+    provider: profile.vendor || profile.id,
+    binary: profile.binary,
+    version: profile.version,
+    adopted_at: new Date().toISOString(),
+    readonly: profile.readonly?.status || 'not_found',
+    registration: { kind: reg.kind, config_path: reg.config_path, servers_key: reg.servers_key, entry_extra: reg.entry_extra || {}, verify: reg.verify }
+  }
+  const problems = adapterProblems(adapter)
+  if (problems.length) throw new InstallError(`из профиля нельзя собрать адаптер: ${problems.join('; ')}`)
+  if (!commandExists(adapter.binary)) throw new InstallError(`${adapter.binary} не найден в PATH: адаптер подключается там, где программа установлена`)
+
+  const plan = planAdapterRegistration(ctx, adapter)
+  assertInsideHomeReal(ctx, adaptersDir(ctx), 'the adapters directory')
+  const target = path.join(adaptersDir(ctx), `${adapter.id}.json`)
+  const targetStat = lstatOrNull(target)
+  if (targetStat && !targetStat.isFile()) throw new InstallError(`${target} is not a regular file (a link?): remove it first`)
+  const previous = targetStat ? fs.readFileSync(target) : null
+  const previousMode = targetStat ? targetStat.mode & 0o777 : 0o600
+  const markFile = approvalMark(target)
+  const previousMark = lstatOrNull(markFile)?.isFile() ? fs.readFileSync(markFile) : null
+  const where = reg.kind === 'json-file' ? `ключ ${reg.servers_key}.collab` : `таблица [${reg.servers_key}.collab]`
+  out(`адаптер: ${adapter.id} (${adapter.provider}), программа ${adapter.binary} ${adapter.version}`)
+  out(`  файл адаптера: ${target}${previous ? ' (заменит прежний)' : ''}`)
+  out(`  настройки агента: ${plan.file}, ${where}${plan.exists ? '' : ' (файл будет создан)'}${plan.changed ? '' : ' — уже вписано так же'}`)
+  out(`  запись: ${JSON.stringify(adapterEntry(ctx, adapter))}`)
+  out(`  до записи будет сохранена копия; после записи проверка: ${reg.verify.argv.join(' ')} → в выводе «${reg.verify.expect}»`)
+  out(`  режим «только чтение»: ${adapter.readonly === 'verified' ? 'доказан пробой' : 'не доказан — ревьюером агент не станет'}`)
+  const confirm = ctx.confirm || ttyConfirm
+  if (!ctx.confirm && !(process.stdin.isTTY && process.stdout.isTTY)) {
+    out('ничего не записано: подтверждение принимается только в терминале владельца')
+    return 1
+  }
+  if (!(await confirm('Записать? (да/нет) '))) {
+    out('ничего не записано')
+    return 1
+  }
+  const journal = new Journal()
+  const changes = []
+  const bytes = Buffer.from(`${JSON.stringify(adapter, null, 2)}\n`, 'utf8')
+  try {
+    // The answer took a human's time: what was shown must still be what is there.
+    const now = lstatOrNull(target) ? fs.readFileSync(target) : null
+    if (!(now === null ? previous === null : previous !== null && now.equals(previous))) throw new InstallError(`${target} changed while you were answering: nothing written, run again`)
+    ensureDir(adaptersDir(ctx), journal)
+    writeFileAtomic(target, bytes, previousMode)
+    journal.add(`wrote ${target}`, () => (previous ? writeFileAtomic(target, previous, previousMode) : fs.rmSync(target, { force: true })))
+    writeFileAtomic(markFile, Buffer.from(`${sha256(bytes)}\n`), 0o600)
+    journal.add(`approved ${target}`, () => (previousMark ? writeFileAtomic(markFile, previousMark, 0o600) : fs.rmSync(markFile, { force: true })))
+    applyFileRegistration(plan, journal, changes, adapterDescribe(plan))
+    verifyAdapter(ctx, adapter)
+  } catch (error) {
+    const undone = journal.rollback()
+    if (undone.length) error.message += `\nоткат:\n${undone.map((u) => `  ${u}`).join('\n')}`
+    throw error
+  }
+  for (const change of changes) out(`  ${change}`)
+  out(`готово: ${adapter.id} подключён к collab и проверен командой ${reg.verify.argv.join(' ')}`)
+  out(`дальше: в панели (collab ui → Мастер настройки) отметьте ${adapter.id} и примените состав; перезапустите ${adapter.binary}`)
+  return 0
+}
+
+async function ttyConfirm(question) {
+  const rl = require('node:readline/promises').createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return /^(да|д|yes|y)$/i.test((await rl.question(question)).trim())
+  } finally {
+    rl.close()
+  }
+}
+
 // ── Gemini (Google's Antigravity CLI, `agy`): ~/.gemini/config/mcp_config.json
 // The npm package `@google/gemini-cli` this used to target is gone: Google cut
 // free/Pro/Ultra individual access to it on 2026-06-18 and pointed everyone at
@@ -2414,12 +2811,8 @@ function geminiServerEntry(ctx) {
 // install that ran after the owner disabled it must not silently re-enable
 // what they turned off. So it is excluded from the equality check below and
 // preserved verbatim from whatever is already on disk; only a fresh entry
-// gets the `disabled: false` agy itself would write for a new one.
-function geminiEqual(existing, desired) {
-  if (!existing) return false
-  const { disabled: _existingDisabled, ...existingRest } = existing
-  return jsonEqual(existingRest, desired)
-}
+// gets the `disabled: false` agy itself would write for a new one. That is
+// `ownToggles: { disabled: false }` of the shared planJsonRegistration.
 
 // Structural equality for the JSON-shaped values compared here (plain
 // objects, arrays, strings): good enough that mcp_config.json re-saved by
@@ -2450,64 +2843,15 @@ function planGemini(ctx) {
   if (!st && !commandExists('agy') && !lstatOrNull(path.dirname(path.dirname(ctx.geminiConfig)))) {
     return { skipped: true, reason: 'agy (Antigravity CLI) is not installed and ~/.gemini does not exist yet' }
   }
-  let file = ctx.geminiConfig
-  let original = null
-  let mode = 0o600
-  let current = {}
-  if (st) {
-    file = fs.realpathSync(ctx.geminiConfig)
-    const real = fs.statSync(file)
-    if (!real.isFile()) throw new InstallError(`${ctx.geminiConfig} is not a regular file`)
-    original = fs.readFileSync(file)
-    mode = real.mode & 0o777
-    try {
-      current = JSON.parse(original.toString('utf8'))
-    } catch (error) {
-      throw new InstallError(`cannot safely merge ${ctx.geminiConfig}: it is not valid JSON (${error.message}). Fix it by hand.`)
-    }
-    if (current === null || typeof current !== 'object' || Array.isArray(current)) {
-      throw new InstallError(`${ctx.geminiConfig} does not contain a JSON object at the top level`)
-    }
-  }
-  const servers = current.mcpServers
-  if (servers !== undefined && (servers === null || typeof servers !== 'object' || Array.isArray(servers))) {
-    throw new InstallError(`${ctx.geminiConfig} has a non-object "mcpServers" key. Fix it by hand.`)
-  }
-  const desired = geminiServerEntry(ctx)
-  const existing = servers?.collab
-  const changed = !geminiEqual(existing, desired)
-  const entry = existing && typeof existing.disabled === 'boolean' ? { ...desired, disabled: existing.disabled } : { ...desired, disabled: false }
-  const next = { ...current, mcpServers: { ...(servers || {}), collab: entry } }
-  return {
-    file,
-    exists: Boolean(st),
-    original,
-    mode,
-    next: Buffer.from(`${JSON.stringify(next, null, 2)}\n`, 'utf8'),
-    changed
-  }
+  // `disabled` is agy's own toggle: kept as the owner left it (see above).
+  return planJsonRegistration({ display: ctx.geminiConfig, serversKey: 'mcpServers', entry: geminiServerEntry(ctx), ownToggles: { disabled: false } })
 }
 
 function applyGemini(ctx, plan, journal, changes) {
-  if (!plan.changed) return
-  if (plan.exists) {
-    const now = fs.readFileSync(plan.file)
-    if (!now.equals(plan.original)) throw new InstallError(`${plan.file} changed while the installer was running`)
-    const backup = `${plan.file}.backup-${new Date().toISOString().replace(/[:.]/g, '-')}`
-    fs.copyFileSync(plan.file, backup, fs.constants.COPYFILE_EXCL)
-    writeFileAtomic(plan.file, plan.next, plan.mode)
-    journal.add(`rewrote ${plan.file}`, () => {
-      writeFileAtomic(plan.file, plan.original, plan.mode)
-      fs.rmSync(backup, { force: true })
-    })
-    changes.push(`gemini: updated mcpServers.collab in ${plan.file} (backup ${backup})`)
-  } else {
-    ensureDir(path.dirname(plan.file), journal)
-    writeFileAtomic(plan.file, plan.next, 0o600)
-    journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
-    changes.push(`gemini: created ${plan.file} with mcpServers.collab`)
-  }
-  if (!fs.readFileSync(plan.file).equals(plan.next)) throw new InstallError(`${plan.file} does not read back as written`)
+  applyFileRegistration(plan, journal, changes, {
+    updated: (backup) => `gemini: updated mcpServers.collab in ${plan.file} (backup ${backup})`,
+    created: () => `gemini: created ${plan.file} with mcpServers.collab`
+  })
 }
 
 function summarizeGemini(ctx, plan) {
@@ -2539,7 +2883,9 @@ const MCP_CLIENTS = [
   { id: 'codex-hooks', plan: planCodexHooks, apply: applyCodexHooks, summary: summarizeCodexHooks },
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
   { id: 'claude-hooks', plan: planClaudeHooks, apply: applyClaudeHooks, summary: summarizeClaudeHooks },
-  { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini }
+  { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini },
+  // Vendors adopted on this machine from a vendor-probe profile (~/.agent-kit/collab/adapters/).
+  { id: 'adapters', plan: planAdapters, apply: applyAdapters, summary: summarizeAdapters }
 ]
 
 function planAll(ctx) {
@@ -2676,7 +3022,7 @@ async function unadaptedReport(ctx) {
     const probe = path.join(ctx.currentPath, 'skills', 'vendor-probe', 'probe.mjs')
     if (!lstatOrNull(probe)) return []
     const { unadapted, probePhrase } = await import(pathToFileURL(probe).href)
-    const found = await unadapted({ agentsFile: path.join(ctx.currentPath, 'collab', 'config', 'agents.json') })
+    const found = await unadapted({ agentsFile: path.join(ctx.currentPath, 'collab', 'config', 'agents.json'), adaptersDir: adaptersDir(ctx) })
     if (!found.length) return []
     const skill = path.join(ctx.currentPath, 'skills', 'vendor-probe', 'SKILL.md')
     return ['', 'найдены CLI без адаптера в наборе (collab с ними пока не работает):', ...found.flatMap((f) => [
@@ -2787,8 +3133,10 @@ async function main(argv) {
     return 0
   }
   const ctx = makeContext(opts)
+  if (opts.adoptProfile && (opts.rollback || opts.dryRun)) throw new InstallError('--adopt-profile is its own step: not with --rollback or --dry-run')
   const release = opts.dryRun ? () => {} : acquireLock(ctx)
   try {
+    if (opts.adoptProfile) return await adoptProfile(ctx)
     if (opts.rollback) rollback(ctx)
     else await install(ctx)
   } finally {
@@ -2825,7 +3173,17 @@ module.exports = {
   linkSpecs,
   planLinksWindows,
   applyLinksWindows,
-  Journal
+  Journal,
+  // Registration described by data and machine adapters (vendor-probe, stage 2). adoptProfile takes the owner's
+  // answer from ctx.confirm in tests; the command line has no way to skip the question.
+  planJsonRegistration,
+  planTomlRegistration,
+  rewriteToml,
+  adapterProblems,
+  planAdapters,
+  applyAdapters,
+  adoptProfile,
+  makeContext
 }
 
 if (require.main === module) {

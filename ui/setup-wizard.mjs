@@ -77,7 +77,7 @@ function machineFacts(agents, machineDir, env) {
 }
 
 export function detectSetup({ registryDir, machineDir, cwd }) {
-  const catalog = loadBuiltinAgents()
+  const catalog = loadBuiltinAgents(machineDir)
   // A broken roles.json on the machine is named, never a crash of the page that should show it.
   let roles
   let rolesProblem = null
@@ -111,7 +111,7 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, confirm
   let catalog
   try {
     roleDefs = machineRoleDefs(machineDir)
-    catalog = catalogFor(machineConfig(machineDir))
+    catalog = catalogFor(machineConfig(machineDir), machineDir)
   } catch (error) {
     return { ok: false, reason: `Настройки ролей на машине не читаются: ${error.message}` }
   }
@@ -293,7 +293,7 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, owne
   if (!language.ok) return { available: false, reason: language.reason }
   if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
-  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
+  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir), machineDir), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const withConfirmed = settleConfirmed({ agents: planned.content.agents, confirmed })
   if (!withConfirmed.ok) return { available: false, reason: withConfirmed.reason }
@@ -371,7 +371,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
   const language = settleLanguage(ownerLanguage, current.owner_language)
   if (!language.ok) return { available: false, reason: language.reason }
   const roleDefs = machineRoleDefs(machineDir)
-  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
+  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir), machineDir), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const written = current.agents || []
   const withConfirmed = settleConfirmed({ agents: written, confirmed })

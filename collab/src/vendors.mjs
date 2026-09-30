@@ -7,7 +7,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { DEFAULT_CONFIG_DIR } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, MACHINE_CONFIG_DIR } from './paths.mjs'
+import { MACHINE_ADAPTERS_DIR } from './registry.mjs'
 
 // The kit root is the parent of collab/; the skill sits next to it, in the same release.
 const PROBE = join(DEFAULT_CONFIG_DIR, '..', '..', 'skills', 'vendor-probe', 'probe.mjs')
@@ -25,7 +26,7 @@ function stableSkillPath() {
 const SKILL = stableSkillPath()
 
 // `probeFile` and `agentsFile` are for tests; `env` is the PATH the lookup uses.
-export async function unadaptedVendors({ probeFile = PROBE, agentsFile = join(DEFAULT_CONFIG_DIR, 'agents.json'), env = process.env } = {}) {
+export async function unadaptedVendors({ probeFile = PROBE, agentsFile = join(DEFAULT_CONFIG_DIR, 'agents.json'), adaptersDir = join(MACHINE_CONFIG_DIR, MACHINE_ADAPTERS_DIR), env = process.env } = {}) {
   let probe
   try {
     probe = await import(pathToFileURL(probeFile).href)
@@ -33,7 +34,7 @@ export async function unadaptedVendors({ probeFile = PROBE, agentsFile = join(DE
     return [] // no skill in this install: nothing to report, never a failure of the caller
   }
   const skillFile = join(probeFile, '..', 'SKILL.md')
-  return (await probe.unadapted({ agentsFile, env })).map((found) => ({
+  return (await probe.unadapted({ agentsFile, adaptersDir, env })).map((found) => ({
     binary: found.binary,
     vendor: found.vendor,
     path: found.path,

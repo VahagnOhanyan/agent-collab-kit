@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Детерминированная часть разведки CLI: поиск, проба песочницы и чистка профиля.
-import { access, chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { constants, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,11 +40,24 @@ async function findBinary(binary, env = process.env) {
   return null;
 }
 
-export async function detect({ binary, agentsFile = DEFAULT_AGENTS, candidatesFile = DEFAULT_CANDIDATES, env = process.env } = {}) {
+// A vendor adopted on this machine (agent-kit-install --adopt-profile) has an adapter file in `adaptersDir`: it counts
+// as registered like one in the catalog.
+async function machineAdapters(adaptersDir) {
+  if (!adaptersDir) return [];
+  let names;
+  try { names = await readdir(adaptersDir); } catch { return []; }
+  const found = [];
+  for (const name of names.filter((file) => file.endsWith('.json'))) {
+    try { found.push(await readJson(join(adaptersDir, name))); } catch { /* unreadable: not an adapter */ }
+  }
+  return found.map((adapter) => ({ id: adapter?.id, adapter: { binary: adapter?.binary } }));
+}
+
+export async function detect({ binary, agentsFile = DEFAULT_AGENTS, candidatesFile = DEFAULT_CANDIDATES, adaptersDir = null, env = process.env } = {}) {
   const candidatesData = await readJson(candidatesFile);
   const agentsData = await readJson(agentsFile);
   const source = binary === undefined ? candidatesData.candidates : candidatesData.candidates.filter((item) => item.binary === binary);
-  const agents = Array.isArray(agentsData.agents) ? agentsData.agents : [];
+  const agents = [...(Array.isArray(agentsData.agents) ? agentsData.agents : []), ...await machineAdapters(adaptersDir)];
   return { candidates: await Promise.all(source.map(async (candidate) => {
     const path = await findBinary(candidate.binary, env);
     return {
@@ -152,6 +165,32 @@ function scanStrings(value, at, problems) {
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) scanStrings(item, pathAt(at, key), problems);
 }
 
+// mcp.registration is what the installer later WRITES into the agent's own settings (agent-kit-install
+// --adopt-profile), so beyond the schema: it rests only on a check by running, the check runs the agent's own
+// program and nothing else, and the entry cannot replace what collab itself puts there.
+const RESERVED_ENTRY_KEYS = new Set(['command', 'args', 'env', 'type', 'url']);
+function registrationProblems(profile, problems) {
+  const registration = profile?.mcp?.registration;
+  if (!registration || typeof registration !== 'object') return;
+  const at = '$.mcp.registration';
+  if (profile.mcp.status !== 'verified') problems.push({ path: '$.mcp.status', message: 'registration принимается только при verified: как вписать MCP, должно быть проверено запуском' });
+  if (registration.kind === 'json-file' || registration.kind === 'toml-file') {
+    if (!registration.config_path) problems.push({ path: `${at}.config_path`, message: `для ${registration.kind} нужен путь к файлу настроек (~/…)` });
+    if (!registration.servers_key) problems.push({ path: `${at}.servers_key`, message: `для ${registration.kind} нужен ключ раздела MCP-серверов` });
+  }
+  const expect = registration.verify?.expect;
+  if (typeof expect === 'string' && (expect.trim().length < 3 || /[\r\n]/.test(expect))) problems.push({ path: `${at}.verify.expect`, message: 'не меньше 3 символов в одну строку: иначе проверка пройдёт при любом выводе' });
+  const argv = registration.verify?.argv;
+  if (Array.isArray(argv) && argv[0] !== profile.binary) problems.push({ path: `${at}.verify.argv[0]`, message: 'проверка запускает только сам CLI этого вендора (argv[0] = binary)' });
+  const extra = registration.entry_extra;
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+    for (const [key, value] of Object.entries(extra)) {
+      if (RESERVED_ENTRY_KEYS.has(key)) problems.push({ path: `${at}.entry_extra.${key}`, message: 'это поле задаёт сам набор, не профиль' });
+      else if (!['string', 'number', 'boolean'].includes(typeof value)) problems.push({ path: `${at}.entry_extra.${key}`, message: 'только строка, число или да/нет' });
+    }
+  }
+}
+
 export function checkProfile(profile, schema) {
   const problems = [];
   validate(profile, schema, schema, '$', problems);
@@ -163,12 +202,13 @@ export function checkProfile(profile, schema) {
     }
   }
   if (profile?.readonly?.status === 'verified' && profile.readonly?.sandbox_test?.status !== 'verified') problems.push({ path: '$.readonly.status', message: 'verified требует verified sandbox_test' });
+  registrationProblems(profile, problems);
   scanStrings(profile, '$', problems);
   return { ok: problems.length === 0, problems };
 }
 
 function usage() {
-  return 'usage: probe.mjs detect [binary] [--agents file] [--candidates file]\n       probe.mjs sandbox-test --bin binary --args-json json --cwd dir [--target file] [--pass-env NAME] [--timeout-ms N]\n       probe.mjs check-profile profile.json [--schema schema.json]';
+  return 'usage: probe.mjs detect [binary] [--agents file] [--candidates file] [--adapters dir]\n       probe.mjs sandbox-test --bin binary --args-json json --cwd dir [--target file] [--pass-env NAME] [--timeout-ms N]\n       probe.mjs check-profile profile.json [--schema schema.json]';
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -178,12 +218,15 @@ export async function main(argv = process.argv.slice(2)) {
       let binary;
       let agentsFile = DEFAULT_AGENTS;
       let candidatesFile = DEFAULT_CANDIDATES;
+      // Vendors adopted on this machine count as registered (agent-kit-install --adopt-profile).
+      let adaptersDir = join(homedir(), '.agent-kit', 'collab', 'adapters');
       for (let index = 0; index < args.length; index += 1) {
         if (args[index] === '--agents') agentsFile = args[++index] ?? (() => { throw new Error('usage'); })();
         else if (args[index] === '--candidates') candidatesFile = args[++index] ?? (() => { throw new Error('usage'); })();
+        else if (args[index] === '--adapters') adaptersDir = args[++index] ?? (() => { throw new Error('usage'); })();
         else if (!args[index].startsWith('--') && binary === undefined) binary = args[index]; else throw new Error('usage');
       }
-      console.log(JSON.stringify(await detect({ binary, agentsFile, candidatesFile })));
+      console.log(JSON.stringify(await detect({ binary, agentsFile, candidatesFile, adaptersDir })));
       return 0;
     }
     if (command === 'sandbox-test') {

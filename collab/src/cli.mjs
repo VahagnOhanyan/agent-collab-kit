@@ -167,7 +167,7 @@ async function machineSetup(flags, options) {
   // has them — and the catalog expanded against those, the same answer the configuration in force gives.
   const machineConfig = loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir })
   const roleDefs = machineConfig.roles.roles
-  const catalog = catalogFor(machineConfig)
+  const catalog = catalogFor(machineConfig, machineDir)
   const detected = (catalog.agents || []).filter((a) => detectBinary(a) && which(detectBinary(a))).map((a) => a.id)
   out(
     `${C.bold}collab setup${C.off} — this machine's composition ${dim(join(machineDir, 'agents.json'))}`,

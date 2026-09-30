@@ -4,8 +4,9 @@
   "additionalProperties": false,
   "required": ["id", "binary", "version", "headless", "readonly", "config", "mcp", "hooks", "auth", "limits", "models"],
   "properties": {
-    "id": { "type": "string", "minLength": 1 },
-    "binary": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,31}$" },
+    "vendor": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+    "binary": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
     "version": { "type": "string", "minLength": 1 },
     "install_source": { "type": "string", "minLength": 1 },
     "headless": { "$ref": "#/$defs/headless" },
@@ -37,7 +38,27 @@
     },
     "readonly": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "mechanism": { "type": "string" }, "flag": { "type": "string" }, "sandbox_test": { "type": "object" } }, "additionalProperties": true },
     "config": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "path": { "type": "string" }, "format": { "type": "string" } }, "additionalProperties": true },
-    "mcp": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "mechanism": { "type": "string" }, "format": { "type": "string" } }, "additionalProperties": true },
+    "mcp": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "mechanism": { "type": "string" }, "format": { "type": "string" }, "registration": { "$ref": "#/$defs/registration" } }, "additionalProperties": true },
+    "registration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "verify"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["json-file", "toml-file", "cli"] },
+        "config_path": { "type": "string", "pattern": "^~/(?!.*\\.\\.)[A-Za-z0-9._/-]+$" },
+        "servers_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$" },
+        "entry_extra": { "type": "object" },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["argv", "expect"],
+          "properties": {
+            "argv": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "expect": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
     "hooks": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "events": { "type": "array", "items": { "type": "string" } }, "can_block": { "type": "boolean" }, "failure_mode": { "type": "string" } }, "additionalProperties": true },
     "auth": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "kind": { "type": "string" } }, "additionalProperties": true },
     "limits": { "allOf": [{ "$ref": "#/$defs/group" }], "properties": { "how_to_read": { "type": "string" } }, "additionalProperties": true },
