@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { join } from 'node:path'
 
@@ -355,6 +355,53 @@ test('roles: revert will not bring back a composition that breaks independence',
   assert.equal(res.status, 409, res.text)
   assert.match(res.json.reason, /независимость/)
   assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), now)
+})
+
+test('roles: with one vendor, a composition where nobody holds the reviewing role is refused', async (t) => {
+  const dir = join(tempDir('panel-one-vendor-'), 'machine')
+  const started = await panel(t, dir)
+  if (!started) return
+  const planned = (await send(started, 'GET', '/api/setup/preview?agents=claude&lead=claude&single_vendor=0')).json.apply.roles
+  const roles = { claude: planned.claude.filter((r) => r !== 'code_reviewer') }
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: ['claude'], lead: 'claude', single_vendor: false, roles, expect: 'none' })
+  assert.equal(res.status, 409, res.text)
+  assert.equal(existsSync(join(dir, 'agents.json')), false)
+  const ok = await send(started, 'POST', '/api/setup/apply', { agents: ['claude'], lead: 'claude', single_vendor: false, roles: planned, expect: 'none' })
+  assert.equal(ok.status, 200, 'holding the reviewing role itself is the accepted one-vendor answer')
+})
+
+test('roles: revert refuses a saved copy that was changed outside the panel', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: await expectOf(started) })
+  const saved = JSON.parse(readFileSync(join(dir, 'agents.json.prev'), 'utf8'))
+  writeFileSync(join(dir, 'agents.json.prev'), `${JSON.stringify({ ...saved, review_mode: 'single_vendor' }, null, 2)}\n`)
+  const now = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const info = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply.revert
+  assert.equal(info.available, false)
+  assert.match(info.reason, /вне панели/)
+  assert.equal((await send(started, 'POST', '/api/setup/revert', { expect: await expectOf(started) })).status, 409)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), now)
+})
+
+test('a write that fails AFTER both files were replaced puts back the composition and the saved copy', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  // First apply: a saved copy and its mark exist.
+  await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: await expectOf(started) })
+  const current = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const saved = readFileSync(join(dir, 'agents.json.prev'), 'utf8')
+  // The mark cannot be written now (a directory stands where it goes): the failure comes after agents.json and
+  // agents.json.prev were already replaced, so restore is what has to put them back.
+  rmSync(join(dir, 'agents.json.prev.after'))
+  mkdirSync(join(dir, 'agents.json.prev.after'))
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(res.status, 409, res.text)
+  assert.match(res.json.reason, /прежние файлы возвращены/)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), current)
+  assert.equal(readFileSync(join(dir, 'agents.json.prev'), 'utf8'), saved)
 })
 
 test('roles: the first setup takes the roles the owner ticked', async (t) => {

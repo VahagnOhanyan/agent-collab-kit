@@ -228,6 +228,9 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir }) {
 
 function commitFirstSetup({ content, machineDir }) {
   const file = compositionFile(machineDir)
+  // Checked again right before writing: a composition that appeared since the page's request was evaluated
+  // (`collab setup` in a terminal) is never overwritten — and never removed by the undo below.
+  if (present(file)) return { ok: false, reason: 'На машине появился состав, пока вы выбирали: ничего не записано. Обновите страницу.' }
   const briefings = content.agents.map((agent) => agent.briefing_file).filter(Boolean).map((relative) => join(machineDir, relative))
   const already = new Set(briefings.filter((path) => present(path)))
   const undo = () => {
@@ -301,12 +304,17 @@ function evaluateRevert(machineDir) {
   if (lstatSync(file).isSymbolicLink() || lstatSync(previous).isSymbolicLink()) return { available: false, reason: 'Файл состава — символическая ссылка: панель его не переписывает.' }
   const raw = readFileSync(file)
   const mark = writtenMarkFile(machineDir)
-  const lastWritten = present(mark) && !lstatSync(mark).isSymbolicLink() ? readFileSync(mark, 'utf8').trim() : null
-  if (lastWritten === null) {
+  // The mark binds both files: line 1 is what the panel wrote, line 2 is the copy it saved. Either one changed
+  // outside the panel, and there is nothing trustworthy to go back to.
+  const [lastWritten = null, lastSaved = null] = present(mark) && lstatSync(mark).isFile() ? readFileSync(mark, 'utf8').trim().split('\n') : []
+  if (!lastWritten || !lastSaved) {
     return { available: false, reason: 'Прежний состав сохранён до того, как панель стала отмечать записанное: вернуть его отсюда нельзя. Следующее применение сохранит копию, которую можно вернуть.' }
   }
   if (lastWritten !== fingerprint(raw)) {
     return { available: false, reason: 'Состав изменился после применения из панели (например, командой collab setup): возврат отменил бы это изменение.' }
+  }
+  if (lastSaved !== fingerprint(readFileSync(previous))) {
+    return { available: false, reason: 'Сохранённая копия прежнего состава изменена вне панели: возвращать её нельзя.' }
   }
   let current
   let before
@@ -330,18 +338,23 @@ function evaluateRevert(machineDir) {
   if ((current.review_mode || null) !== (before.review_mode || null)) changes.push({ field: 'review_mode', from: current.review_mode || null, to: before.review_mode || null })
   changes.push(...roleChanges(current.agents || [], restored))
   if (!changes.length) return { available: false, reason: 'Прежний состав не отличается от текущего: возвращать нечего.' }
-  return { available: true, changes, expect: fingerprint(raw), _next: { current, raw, lead: before.lead, review_mode: before.review_mode, agents: restored } }
+  return {
+    available: true,
+    changes,
+    expect: fingerprint(raw),
+    _next: { current, raw, lead: before.lead, review_mode: before.review_mode, agents: restored, savedFingerprint: lastSaved }
+  }
 }
 
 // One write path for apply and revert. The current file becomes the saved one, the new one is checked by the
 // registry, and ANY failure — a rejected registry, a file that cannot be read or replaced — puts both files back as
 // they were, so a half-done write is never left behind.
-function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agents = null }) {
+function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agents = null, savedFingerprint = null }) {
   const file = compositionFile(machineDir)
   const previous = previousFile(machineDir)
   const keptPrevious = existsSync(previous) ? readFileSync(previous) : null
   const mark = writtenMarkFile(machineDir)
-  const keptMark = existsSync(mark) ? readFileSync(mark) : null
+  const keptMark = present(mark) && lstatSync(mark).isFile() ? readFileSync(mark) : null
   const indent = /^\s*\{\n\s+"/.test(raw.toString('utf8')) ? 2 : 0
   // Roles are set on each written agent and nothing else about it moves.
   const nextAgents = agents ? (current.agents || []).map((agent) => ({ ...agent, roles: agents.find((a) => a.id === agent.id)?.roles || agent.roles })) : current.agents
@@ -357,6 +370,20 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agent
       else rmSync(mark, { force: true })
     } catch { /* same */ }
   }
+  // Compare-before-swap: the file is read again right before it is replaced. A write by another process after the
+  // page's request was checked is refused, not overwritten. (A process writing in the few microseconds between this
+  // read and the rename below is not caught — there is no lock shared with `collab setup` or an editor.)
+  try {
+    if (fingerprint(readFileSync(file)) !== fingerprint(raw)) {
+      return { ok: false, reason: 'Состав на машине изменился во время записи: ничего не записано. Обновите страницу.' }
+    }
+    // A revert puts back values read from the saved copy: that copy is checked again too.
+    if (savedFingerprint && fingerprint(readFileSync(previous)) !== savedFingerprint) {
+      return { ok: false, reason: 'Сохранённая копия прежнего состава изменилась во время возврата: ничего не записано. Обновите страницу.' }
+    }
+  } catch (error) {
+    return { ok: false, reason: `Файл состава не читается: ${error.message}` }
+  }
   try {
     writeAtomically(previous, raw)
     writeAtomically(file, next)
@@ -365,7 +392,7 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agent
       restore()
       return { ok: false, reason: `Запись отменена, реестр не прошёл проверку: ${problems.join('; ')}` }
     }
-    writeAtomically(mark, `${fingerprint(next)}\n`)
+    writeAtomically(mark, `${fingerprint(next)}\n${fingerprint(raw)}\n`)
     return { ok: true, expect: fingerprint(next) }
   } catch (error) {
     restore()

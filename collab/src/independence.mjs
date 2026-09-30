@@ -10,14 +10,15 @@
 //
 // With one vendor there is no second model family to lean on, and the same
 // agent reviewing in a separate session on a different, not weaker model is the
-// accepted answer (see reviews.mjs). Those gaps are NOTES then, not problems.
+// accepted answer (see reviews.mjs) — when that agent holds the reviewing role.
+// Those gaps are NOTES then; a reviewing role nobody holds is always a problem.
 
 const holders = (agents, role) => agents.filter((agent) => (agent.roles || []).includes(role))
 
 export function independenceReport({ agents = [], roleDefs = {} }) {
   // An agent that names no provider counts as a vendor of its own: an unknown family must never make a gap look
-  // like the accepted one-vendor case.
-  const providers = new Set(agents.map((agent) => agent.provider || `unknown:${agent.id}`))
+  // like the accepted one-vendor case. A fresh object per such agent cannot collide with any provider string.
+  const providers = new Set(agents.map((agent) => agent.provider || {}))
   const singleVendor = agents.length <= 1 || providers.size <= 1
   const problems = []
   const notes = []
@@ -35,7 +36,9 @@ export function independenceReport({ agents = [], roleDefs = {} }) {
             (author.roles || []).includes(reviewerRole) ? `${author.id} itself` : 'nobody'
           }`
         }
-        ;(singleVendor ? notes : problems).push(gap)
+        // One vendor is answered by the author reviewing on a different, not weaker model — which needs the author
+        // to HOLD the reviewing role (reviews.mjs routes by role). Nobody holding it is a problem with any vendors.
+        ;(singleVendor && gap.only_the_author ? notes : problems).push(gap)
       }
     }
   }

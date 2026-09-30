@@ -34,7 +34,11 @@ export function planComposition({ catalog, roleDefs, include, lead, singleVendor
   if (!include.includes(lead)) return { ok: false, reason: `the lead "${lead}" is not among the chosen agents` }
 
   const chosen = include.map((id) => byId.get(id))
-  const roles = new Map(chosen.map((a) => [a.id, chosen.length === 1 ? rolesItCanHold(a, roleDefs) : [...(a.roles || [])]]))
+  // A catalog default the agent cannot hold here (the machine's roles.json may ask more of a role) is not proposed.
+  const roles = new Map(chosen.map((a) => {
+    const holdable = rolesItCanHold(a, roleDefs)
+    return [a.id, chosen.length === 1 ? holdable : (a.roles || []).filter((role) => holdable.includes(role))]
+  }))
   if (chosen.length > 1) {
     const held = new Set([...roles.values()].flat())
     const orphaned = [...new Set((catalog.agents || []).flatMap((a) => a.roles || []))].filter((r) => !held.has(r))

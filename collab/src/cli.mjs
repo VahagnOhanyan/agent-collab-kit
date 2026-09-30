@@ -15,7 +15,7 @@
 import { createInterface } from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
@@ -210,12 +210,25 @@ async function machineSetup(flags, options) {
     out('aborted — nothing changed')
     process.exit(0)
   }
+  // A composition the registry rejects is never left behind: the file that was there before comes back (or none).
+  const target = join(machineDir, 'agents.json')
+  const before = existsSync(target) ? readFileSync(target) : null
   const file = writeComposition(machineDir, plan.content, { catalogDir: DEFAULT_CONFIG_DIR })
-  const { problems } = validateRegistry(loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir }))
+  let problems
+  try {
+    problems = validateRegistry(loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir })).problems
+  } catch (error) {
+    problems = [error.message]
+  }
+  if (problems.length) {
+    if (before) writeFileSync(target, before)
+    else rmSync(target, { force: true })
+    for (const p of problems) out(`${C.red}problem${C.off}  ${p}`)
+    out(before ? 'not written — the previous composition is back as it was' : 'not written — nothing is left on this machine')
+    process.exit(1)
+  }
   out(`${C.green}written${C.off}  ${file}`)
-  for (const p of problems) out(`${C.red}problem${C.off}  ${p}`)
   out('Edit it by hand any time, or run collab setup again. Restart open agent sessions to pick it up.')
-  if (problems.length) process.exit(1)
 }
 
 function rootHere(options) {

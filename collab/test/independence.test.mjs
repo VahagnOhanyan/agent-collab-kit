@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { rmSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
@@ -84,6 +84,49 @@ test('collab setup refuses a composition where the author is the only reviewer',
     const alone = runCli(['setup', '--agents', 'codex', '--lead', 'codex', '--dry-run'], { cwd: base, options: { machineDir: dir } })
     assert.equal(alone.status, 0, alone.stdout + alone.stderr)
     assert.match(alone.stdout, /note/)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('one vendor where NOBODY holds the reviewing role is a problem: the same-agent fallback needs a holder', () => {
+  const report = independenceReport({ agents: [agent('a', 'one', ['software_engineer'])], roleDefs })
+  assert.equal(report.single_vendor, true)
+  assert.deepEqual(report.problems.map((p) => [p.author, p.reviewer_role, p.only_the_author]), [['a', 'code_reviewer', false]])
+  assert.deepEqual(report.notes, [])
+})
+
+test('a provider string can never stand in for a missing provider', () => {
+  const report = independenceReport({
+    agents: [{ id: 'a', roles: ['software_engineer', 'code_reviewer'] }, agent('b', 'unknown:a', [])],
+    roleDefs
+  })
+  assert.equal(report.single_vendor, false)
+  assert.equal(report.problems.length, 1)
+})
+
+test('with several agents, a catalog default the agent cannot hold on this machine is not proposed', () => {
+  const config = loadConfigFrom()
+  const defs = structuredClone(config.roles.roles)
+  defs.software_engineer.requires = [...defs.software_engineer.requires, 'run_application']
+  const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs: defs, include: ['claude', 'codex'], lead: 'claude' })
+  const roles = Object.fromEntries(planned.content.agents.map((a) => [a.id, a.roles]))
+  assert.ok(!roles.codex.includes('software_engineer'), 'codex has no run_application')
+  assert.ok(roles.claude.includes('software_engineer'))
+})
+
+test('collab setup writes only what the registry accepts, with the machine\'s own roles', () => {
+  const base = tempDir('collab-independence-setup-write-')
+  try {
+    const dir = join(base, 'machine')
+    const roles = structuredClone(loadConfigFrom().roles)
+    roles.roles.software_engineer.requires = [...roles.roles.software_engineer.requires, 'run_application']
+    writeJson(join(dir, 'roles.json'), roles)
+    const r = runCli(['setup', '--agents', 'claude,codex', '--lead', 'claude'], { cwd: base, options: { machineDir: dir, assumeHuman: true } })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    const written = JSON.parse(readFileSync(join(dir, 'agents.json'), 'utf8'))
+    assert.ok(!written.agents.find((a) => a.id === 'codex').roles.includes('software_engineer'))
+    assert.deepEqual(validateRegistry(loadConfigFrom([dir], { kind: 'machine', dir })).problems, [])
   } finally {
     rmSync(base, { recursive: true, force: true })
   }
