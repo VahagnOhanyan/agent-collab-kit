@@ -545,11 +545,15 @@ async function setup() {
   const drawPreview = async () => {
     // Clicks can outrun the server: only the answer to the LATEST selection may
     // be drawn, or two command sets and a wrong lastPlan would stay on screen.
+    // The old steps stay on screen until the answer is here and are then swapped in one go: emptying them first made
+    // the page short for a moment and the browser jumped to the top on every tick.
     const seq = ++previewSeq
-    out.replaceChildren()
     lastPlan = null
-    reviewNote.textContent = ''
-    if (!chosen.size) return out.append(el('div', { class: 'note warn', text: 'Отметьте хотя бы одного агента.' }))
+    const show = (...nodes) => { out.replaceChildren(...nodes) }
+    if (!chosen.size) {
+      reviewNote.textContent = ''
+      return show(el('div', { class: 'note warn', text: 'Отметьте хотя бы одного агента.' }))
+    }
     if (!lead || !chosen.has(lead)) lead = [...chosen][0]
     const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0' })
     if (!sameKeys(chosenRoles, [...chosen])) chosenRoles = null
@@ -557,9 +561,10 @@ async function setup() {
     if (!sameKeys(chosenConfirmed, [...chosen])) chosenConfirmed = null
     if (chosenConfirmed) query.set('confirmed', JSON.stringify(chosenConfirmed))
     let preview
-    try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return seq === previewSeq ? out.append(el('div', { class: 'note bad', text: error.message })) : undefined }
+    const fail = (text) => { reviewNote.textContent = ''; show(el('div', { class: 'note bad', text })) }
+    try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return seq === previewSeq ? fail(error.message) : undefined }
     if (seq !== previewSeq) return
-    if (!preview.ok) return out.append(el('div', { class: 'note bad', text: preview.reason }))
+    if (!preview.ok) return fail(preview.reason)
     const apply = preview.apply || {}
     if (!chosenConfirmed && apply.confirmed && sameKeys(apply.confirmed, [...chosen])) chosenConfirmed = structuredClone(apply.confirmed)
     if (!chosenRoles && apply.roles && sameKeys(apply.roles, [...chosen])) {
@@ -573,13 +578,14 @@ async function setup() {
       ? { ...preview.plan, agents: preview.plan.agents.map((a) => ({ ...a, roles: chosenRoles[a.id] || a.roles })) }
       : preview.plan
     const missing = [...chosen].filter((id) => !detect.installed.includes(id))
-    if (missing.length) {
-      out.append(el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` }))
-    }
+    const missingNote = missing.length
+      ? el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` })
+      : null
     reviewNote.textContent = preview.plan.review_mode === 'single_vendor'
       ? 'Один вендор: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
       : 'Разные вендоры: ревью никогда не достаётся автору.'
-    out.append(
+    show(
+      ...(missingNote ? [missingNote] : []),
       el('h2', { id: 'step-4', text: '4. Роли' }),
       rolesEditor(preview.plan, apply),
       el('h2', { id: 'step-5', text: '5. Проект' }),
