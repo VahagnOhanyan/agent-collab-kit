@@ -61,10 +61,10 @@ test('a project is found by the exact realpath of its journal root, and only by 
     assert.equal(findProject(join(project, 'sub'), { registry }), null, 'a subdirectory is not the root')
     assert.equal(findProject(base, { registry }), null, 'nor is a parent')
 
-    const config = loadConfig({ journalRoot: project, registryDir: registry })
+    const config = loadConfig({ journalRoot: project, registryDir: registry, machineDir: join(base, 'no-machine') })
     assert.equal(config.meta.source.kind, 'project')
     assert.equal(config.meta.source.id, 'demo')
-    assert.equal(loadConfig({ journalRoot: join(project, 'sub'), registryDir: registry }).meta.source.kind, 'built-in')
+    assert.equal(loadConfig({ journalRoot: join(project, 'sub'), registryDir: registry, machineDir: join(base, 'no-machine') }).meta.source.kind, 'built-in')
   } finally {
     rmSync(base, { recursive: true, force: true })
   }
@@ -110,7 +110,7 @@ test('whole-file replacement: a registry file replaces the default entirely, a m
       ]
     }
     const registry = addProject(join(base, 'registry'), 'demo', [project], { 'roles.json': roles, 'agents.json': agents })
-    const config = loadConfig({ journalRoot: project, registryDir: registry })
+    const config = loadConfig({ journalRoot: project, registryDir: registry, machineDir: join(base, 'no-machine') })
 
     assert.deepEqual(config.meta.overridden, {
       capabilities: false,
@@ -152,7 +152,7 @@ test('a registry agents.json cannot change an adapter: the built-in one is used 
       briefing: 'A fourth agent that tries to be launched automatically by the layer.'
     })
     const registry = addProject(join(base, 'registry'), 'demo', [project], { 'agents.json': agents, 'roles.json': FIXTURE_ROLES })
-    const config = loadConfig({ journalRoot: project, registryDir: registry })
+    const config = loadConfig({ journalRoot: project, registryDir: registry, machineDir: join(base, 'no-machine') })
 
     const byId = Object.fromEntries(config.agents.agents.map((a) => [a.id, a]))
     const defaults = Object.fromEntries(builtin('agents.json').agents.map((a) => [a.id, a]))
@@ -228,7 +228,7 @@ test('runners, policy and agents are NEVER read from the project repository', as
     }
     writeJson(join(repo, 'project.json'), { id: 'repo', roots: [repo] })
 
-    const trusted = { registryDir: join(base, 'empty-registry') }
+    const trusted = { registryDir: join(base, 'empty-registry'), machineDir: join(base, 'no-machine') }
     const api = createApi({ agentId: 'claude', cwd: join(repo, 'sub'), ...trusted })
     assert.equal(api.config.meta.source.kind, 'built-in')
     for (const file of Object.values(api.config.meta.files)) {
@@ -246,7 +246,7 @@ test('runners, policy and agents are NEVER read from the project repository', as
     const runners = fixtureRunners()
     runners.runners['tap-check'].command = [process.execPath, 'tap.mjs']
     const registry = addProject(join(base, 'registry'), 'repo', [repo], { 'runners.json': runners })
-    const owned = createApi({ agentId: 'claude', cwd: join(repo, 'sub'), registryDir: registry })
+    const owned = createApi({ agentId: 'claude', cwd: join(repo, 'sub'), registryDir: registry, machineDir: join(base, 'no-machine') })
     assert.deepEqual(owned.listRunners().map((r) => r.id).sort(), ['backend-tests', 'tap-check'])
     const run = await owned.startRun({ runner: 'tap-check', wait_seconds: 30 })
     assert.equal(run.status, 'passed', JSON.stringify(run.result))

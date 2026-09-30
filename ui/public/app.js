@@ -506,7 +506,9 @@ async function setup() {
         if (!c.command.startsWith('collab setup') || !detect.writable || !preview.apply?.available) return body
         return el('details', {}, el('summary', { class: 'muted', text: 'То же самое из терминала (запасной путь)' }), body)
       }),
-      el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck })))
+      el('div', { class: 'toolbar' },
+        el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck }),
+        el('span', { class: 'muted', text: 'Нажимать нужно, только если вы меняли состав в терминале. После «Применить» и «Записать состав» проверка запускается сама.' })))
   }
 
   const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты' }
