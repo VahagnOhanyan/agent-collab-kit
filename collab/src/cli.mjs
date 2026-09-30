@@ -313,6 +313,9 @@ const STANDALONE = {
         port: Number(rawPort),
         token: randomBytes(24).toString('hex'),
         apiFactory,
+        // The one journal write the panel makes (a backlog cleanup task, ADR-0027): as the composition's lead, used
+        // only when allowWrite holds.
+        writeApiFactory: () => createApi({ agentId: panelIdentity(apiOptions), ...apiOptions, readOnly: false }),
         kitRoot: KIT_ROOT,
         registryDir,
         machineDir: options.machineDir || MACHINE_CONFIG_DIR,

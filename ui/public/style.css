@@ -141,3 +141,16 @@ details.stale { margin: 8px 0; }
 details.stale > summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
 details.stale[open] > summary { margin-bottom: 8px; }
 [hidden] { display: none !important; }
+
+/* backlog of small review findings, grouped by feature */
+.group { margin: 10px 0; padding: 0; }
+.group > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.group > summary .name { font-weight: 600; }
+.group > summary .grow { flex: 1; }
+.rec { display: grid; grid-template-columns: minmax(200px, 38%) 1fr; gap: 12px; padding: 6px 12px; border-top: 1px solid var(--line); }
+.rec .file { font-family: ui-monospace, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.meter { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 6px 0 2px; max-width: 360px; }
+.meter > span { display: block; height: 100%; background: #c89b3c; }
+.preview { margin: 10px 12px 12px; }
+.preview .row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 3px 0; }
+@media (max-width: 640px) { .rec { grid-template-columns: 1fr; } }

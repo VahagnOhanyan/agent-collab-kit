@@ -6,7 +6,8 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CODES, CollabError } from '../collab/src/errors.mjs'
-import { isUninitialised } from '../collab/src/api.mjs'
+import { describeProject, isUninitialised } from '../collab/src/api.mjs'
+import { cleanupTask, readBacklog, recordsWord, suggestedRole } from '../collab/src/backlog.mjs'
 import { readKitFiles } from './kit-files.mjs'
 import { applySetup, detectSetup, previewSetup, revertSetup } from './setup-wizard.mjs'
 import { eventsView, overviewView, rosterView, setupCheckView, tasksView, taskView, waitingView } from './views.mjs'
@@ -17,7 +18,7 @@ const CSP = "default-src 'self'; style-src 'self'; script-src 'self'; base-uri '
 const MIME = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' }
 const SAFE_METHODS = new Set(['GET', 'HEAD'])
 // The panel writes exactly two things, both about the lead and the review mode of the machine composition.
-const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert'])
+const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert', '/api/backlog/cleanup'])
 const WRITE_BODY_MAX = 4096
 const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'expect'])
 const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 't'])
@@ -201,11 +202,48 @@ export async function startPanel({
   clock = null,
   allowWrite = false,
   // How the machine's facts are read (collab/src/probe.mjs machineEnv): tests describe a machine, the CLI reads this one.
-  probeEnv = undefined
+  probeEnv = undefined,
+  // A journal API that can write, for the one journal write the panel makes (a backlog cleanup task). Used only when
+  // allowWrite holds; without it that write is refused.
+  writeApiFactory = null
 } = {}) {
   if (host !== '127.0.0.1') throw new CollabError(CODES.INVALID_INPUT, 'the panel only listens on 127.0.0.1')
   if (typeof token !== 'string' || token.length < 16) throw new CollabError(CODES.INVALID_INPUT, 'the panel needs a random token')
   if (typeof apiFactory !== 'function') throw new CollabError(CODES.INVALID_INPUT, 'the panel needs an apiFactory')
+
+  // The project's backlog of small review findings, grouped by feature (collab/src/backlog.mjs). Settings come only
+  // from the trusted registry entry of the project the panel is opened in.
+  const backlogFor = async (api) => {
+    const project = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
+    const projectDir = project.projectId ? join(project.registryDir, project.projectId) : null
+    const openTasks = api ? await api.listTasks({ open: true }) : []
+    const view = readBacklog({ projectDir, projectRoot: project.journalRoot, openTasks })
+    const held = api ? Object.keys(api.registry.roles()).filter((role) => api.registry.find({ role }).length) : []
+    return { ...view, roles: held, groups: view.groups.map((group) => ({ ...group, role: suggestedRole(group.records), count_label: `${group.count} ${recordsWord(group.count)}` })) }
+  }
+
+  // One task for one feature's records, from what the owner saw (`expect`, the backlog file's fingerprint); never a
+  // second one while the first is open; the role must have a holder. The backlog file itself is not touched.
+  // Two requests for the same group at once (two tabs, a double submit) must not both pass the "no open cleanup"
+  // check: creations from this panel run one after the other.
+  let cleanupQueue = Promise.resolve()
+  const createCleanup = (api, input) => {
+    const run = cleanupQueue.then(() => createCleanupNow(api, input))
+    cleanupQueue = run.catch(() => {})
+    return run
+  }
+  const createCleanupNow = async (api, { feature, role, expect }) => {
+    const view = await backlogFor(api)
+    if (!view.configured) return { ok: false, reason: view.reason }
+    if (expect !== view.expect) return { ok: false, reason: 'Бэклог изменился, пока вы смотрели. Обновите страницу.' }
+    const group = view.groups.find((g) => g.feature === feature)
+    if (!group) return { ok: false, reason: `В бэклоге нет группы «${feature}».` }
+    if (group.cleanup) return { ok: false, reason: `Уборка по «${feature}» уже заведена: ${group.cleanup.id} (${group.cleanup.status}).` }
+    if (!view.roles.includes(role)) return { ok: false, reason: `Роль ${role} никто не держит — задачу на неё никто не возьмёт.` }
+    const draft = cleanupTask(group, view.file)
+    const task = await api.createTask({ ...draft, role })
+    return { ok: true, task: { id: task.id, title: task.title, role: task.role } }
+  }
 
   const streams = new Set()
   const envSecrets = Object.values(process.env).filter((value) => typeof value === 'string' && value.length >= 8)
@@ -264,6 +302,14 @@ export async function startPanel({
       }
       // A failure inside a write is an answer, never a crash of the panel.
       try {
+        if (url.pathname === '/api/backlog/cleanup') {
+          if (Object.keys(body).some((key) => !['feature', 'role', 'expect'].includes(key)) || typeof body.feature !== 'string' || typeof body.role !== 'string' || typeof body.expect !== 'string') {
+            return fail(res, 400, 'INVALID_INPUT', 'feature, role and expect are each required, and nothing else', options)
+          }
+          if (typeof writeApiFactory !== 'function') return fail(res, 403, 'READ_ONLY', 'This panel cannot create tasks', options)
+          const created = await createCleanup(await writeApiFactory(), body)
+          return sendJson(res, created.ok ? 200 : 409, created, { ...options, headers: authHeaders })
+        }
         if (url.pathname === '/api/setup/revert') {
           if (Object.keys(body).some((key) => key !== 'expect') || typeof body.expect !== 'string') return fail(res, 400, 'INVALID_INPUT', 'Revert takes exactly expect', options)
           const undone = revertSetup({ expect: body.expect, machineDir, env: probeEnv })
@@ -344,6 +390,7 @@ export async function startPanel({
       }
 
       if (url.pathname === '/api/overview') return sendJson(res, 200, await overviewView(api), { ...options, headers: authHeaders })
+      if (url.pathname === '/api/backlog') return sendJson(res, 200, { ...(await backlogFor(api)), writable: allowWrite && typeof writeApiFactory === 'function' }, { ...options, headers: authHeaders })
       if (url.pathname === '/api/tasks') {
         const open = url.searchParams.get('open')
         const filters = {

@@ -436,6 +436,66 @@ function modelsTable(models) {
       chips((l.models || l.rungs || []).map((m) => (typeof m === 'string' ? m : m.ref || m.id || m.model || JSON.stringify(m)))))))
 }
 
+// ── backlog of small review findings, grouped by feature ──────────────────
+async function backlog() {
+  const data = await api('/api/backlog')
+  if (!data.configured) return page('Бэклог мелочей', data.reason || 'Бэклог мелочей не настроен.', empty('Нечего показать'))
+  const holder = el('div', {})
+  const toastAndReload = async (text) => {
+    toast(text)
+    await route()
+  }
+  const groupCard = (group, open) => {
+    const card = el('details', { class: 'card group', open: open || undefined })
+    const head = el('summary', {}, el('span', { class: 'name', text: group.feature }), el('span', { class: 'pill', text: group.count_label }), el('span', { class: 'grow' }))
+    const records = group.records.map((r) => el('div', { class: 'rec' },
+      el('span', { class: 'file', text: `${r.path.split('/').pop()}${r.file_line ? `:${r.file_line}` : ''}`, title: r.path }),
+      el('span', { text: r.text })))
+    const confirmBox = el('div', { class: 'card preview', hidden: true })
+    if (group.cleanup) {
+      head.append(el('span', { class: 'pill ok', text: `уборка заведена · ${group.cleanup.id} · ${STATUS_RU[group.cleanup.status] || group.cleanup.status}` }))
+    } else if (data.writable) {
+      const roleSelect = el('select', { 'aria-label': 'Роль' }, (data.roles || []).map((role) => el('option', { value: role, selected: role === group.role || undefined, text: role })))
+      confirmBox.append(
+        el('strong', { text: 'Будет создана задача' }),
+        el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Название' }), el('span', { text: `Уборка мелочей: ${group.feature} (${group.count})` })),
+        el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Роль' }), el('span', {}, roleSelect, el('span', { class: 'muted small', text: ' по фиче; можно выбрать другую' }))),
+        el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Что внутри' }), el('span', { text: `${group.count_label} выше с файл:строка` })),
+        el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Ревью' }), el('span', { text: 'один круг на весь пакет; записи убираются из бэклога, когда задача закрыта' })),
+        el('div', { class: 'toolbar' },
+          el('button', { type: 'button', class: 'primary', text: 'Да, завести', onclick: async (e) => {
+            e.target.disabled = true
+            try {
+              const done = await post('/api/backlog/cleanup', { feature: group.feature, role: roleSelect.value, expect: data.expect })
+              await toastAndReload(`Заведена ${done.task.id}`)
+            } catch (error) {
+              e.target.disabled = false
+              confirmBox.append(el('div', { class: 'note bad', text: error.message }))
+            }
+          } }),
+          el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmBox.hidden = true } })))
+      head.append(el('button', { type: 'button', text: 'Завести уборку', onclick: (e) => { e.preventDefault(); card.open = true; confirmBox.hidden = false } }))
+    }
+    card.append(head, ...records, confirmBox)
+    return card
+  }
+  // Set through the CSSOM: the panel's content policy forbids inline style attributes.
+  const fill = el('span', {})
+  fill.style.width = `${Math.round(Math.min(1, data.total / data.threshold) * 100)}%`
+  holder.append(
+    el('div', { class: 'card' },
+      el('strong', { text: `${data.total} из ${data.threshold}` }), el('span', { class: 'muted', text: ' до обязательной уборки мелочей' }),
+      el('div', { class: 'meter' }, fill),
+      el('div', { class: 'muted small', text: data.total >= data.threshold
+        ? 'Порог достигнут: правило требует завести уборку сразу — одна задача на пакет и один круг ревью.'
+        : 'На восьмой записи правило требует завести уборку сразу — одна задача на пакет и один круг ревью.' })),
+    el('h2', { text: 'По фичам' }),
+    ...(data.groups.length ? data.groups.map((group, i) => groupCard(group, i === 0)) : [empty('Бэклог пуст')]),
+    el('p', { class: 'muted small', text: 'Группы берутся из списка фич проекта (шаблоны путей в реестре). Запись, путь которой не подошёл ни к одной фиче, попадает в группу «Без фичи».' }))
+  if (!data.writable) holder.append(el('div', { class: 'note', text: 'Панель запущена без права записи: заводить уборку можно из панели, открытой из вашего терминала.' }))
+  return page('Бэклог мелочей', `${data.file} — мелкие находки ревью, сгруппированные по фичам проекта.`, holder)
+}
+
 async function kit() {
   const data = await api('/api/kit')
   let tab = 'skills'
@@ -765,7 +825,7 @@ function projectCard(p) {
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
-const ROUTES = { overview, tasks, waiting, events, roster, kit, setup }
+const ROUTES = { overview, tasks, waiting, events, roster, kit, backlog, setup }
 
 function closeStream() {
   if (stream) { stream.close(); stream = null }
@@ -790,7 +850,7 @@ async function refreshBadge() {
   } catch { /* the badge is a convenience; the screens report real errors */ }
 }
 
-const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждёт вас', events: 'Лента', roster: 'Состав', kit: 'Скиллы и агенты', setup: 'Мастер настройки' }
+const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждёт вас', events: 'Лента', roster: 'Состав', kit: 'Скиллы и агенты', backlog: 'Бэклог мелочей', setup: 'Мастер настройки' }
 
 async function route() {
   const seq = ++routeSeq
