@@ -266,7 +266,9 @@ const STANDALONE = {
         kitRoot: KIT_ROOT,
         registryDir,
         machineDir: options.machineDir || MACHINE_CONFIG_DIR,
-        cwd
+        cwd,
+        // Same barrier as `collab setup`: a panel started from an agent's shell, or with no terminal, only reads.
+        allowWrite: !process.env.COLLAB_AGENT_ID && Boolean(process.stdin.isTTY && process.stdout.isTTY)
       })
     } catch (error) {
       if (error instanceof CollabError) {

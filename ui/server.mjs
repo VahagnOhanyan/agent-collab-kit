@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from '../collab/src/errors.mjs'
 import { isUninitialised } from '../collab/src/api.mjs'
 import { readKitFiles } from './kit-files.mjs'
-import { detectSetup, previewSetup } from './setup-wizard.mjs'
+import { applySetup, detectSetup, previewSetup, revertSetup } from './setup-wizard.mjs'
 import { eventsView, overviewView, rosterView, setupCheckView, tasksView, taskView, waitingView } from './views.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -16,6 +16,10 @@ const PUBLIC_ROOT = realpathSync(join(HERE, 'public'))
 const CSP = "default-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'"
 const MIME = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' }
 const SAFE_METHODS = new Set(['GET', 'HEAD'])
+// The panel writes exactly two things, both about the lead and the review mode of the machine composition.
+const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert'])
+const WRITE_BODY_MAX = 4096
+const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'expect'])
 const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 't'])
 
 const panelHeaders = () => ({
@@ -40,6 +44,24 @@ function foreignOrigin(req) {
   const origin = req.headers.origin
   if (origin !== undefined && origin !== `http://${req.headers.host}`) return `Origin: ${origin}`
   return null
+}
+
+async function readJsonBody(req) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > WRITE_BODY_MAX) throw Object.assign(new Error('The request body is too large'), { status: 413 })
+    chunks.push(chunk)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    throw new Error('The request body is not valid JSON')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('The request body must be a JSON object')
+  return parsed
 }
 
 function scrub(value, secrets) {
@@ -175,7 +197,8 @@ export async function startPanel({
   registryDir,
   machineDir,
   cwd = process.cwd(),
-  clock = null
+  clock = null,
+  allowWrite = false
 } = {}) {
   if (host !== '127.0.0.1') throw new CollabError(CODES.INVALID_INPUT, 'the panel only listens on 127.0.0.1')
   if (typeof token !== 'string' || token.length < 16) throw new CollabError(CODES.INVALID_INPUT, 'the panel needs a random token')
@@ -191,7 +214,8 @@ export async function startPanel({
     const expectedHosts = new Set([`127.0.0.1:${address.port}`, `localhost:${address.port}`])
     const options = { head: req.method === 'HEAD', secrets }
     if (!expectedHosts.has(req.headers.host || '')) return fail(res, 403, 'FORBIDDEN_HOST', 'Host is not the local panel address', options)
-    if (!SAFE_METHODS.has(req.method)) return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Only GET and HEAD are supported', { ...options, headers: { Allow: 'GET, HEAD' } })
+    const writing = req.method === 'POST' && WRITE_PATHS.has((req.url || '').split('?')[0])
+    if (!SAFE_METHODS.has(req.method) && !writing) return fail(res, 405, 'METHOD_NOT_ALLOWED', 'Only GET and HEAD are supported', { ...options, headers: { Allow: 'GET, HEAD' } })
 
     let url
     try {
@@ -219,9 +243,43 @@ export async function startPanel({
     const supplied = req.headers['x-panel-token'] || (url.pathname === '/api/stream' ? url.searchParams.get('t') : null)
     if (!sameSecret(supplied, token)) return fail(res, 403, 'FORBIDDEN', 'A valid panel token is required', options)
 
+    if (writing) {
+      // A write is driven by the panel's own page and by nothing else: the browser must say so (same-origin, not
+      // "none" — a typed address — and not silence), name this origin, and send JSON, which a form cannot.
+      if (!allowWrite) return fail(res, 403, 'READ_ONLY', 'This panel was started without the right to write', options)
+      if (req.headers['sec-fetch-site'] !== 'same-origin' || req.headers.origin !== `http://${req.headers.host}`) {
+        return fail(res, 403, 'FORBIDDEN_ORIGIN', 'A write must come from the panel page itself', options)
+      }
+      if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
+        return fail(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'A write must be application/json', options)
+      }
+      let body
+      try {
+        body = await readJsonBody(req)
+      } catch (error) {
+        return fail(res, error.status || 400, 'INVALID_INPUT', error.message, options)
+      }
+      // A failure inside a write is an answer, never a crash of the panel.
+      try {
+        if (url.pathname === '/api/setup/revert') {
+          if (Object.keys(body).some((key) => key !== 'expect') || typeof body.expect !== 'string') return fail(res, 400, 'INVALID_INPUT', 'Revert takes exactly expect', options)
+          const undone = revertSetup({ expect: body.expect, machineDir })
+          return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
+        }
+        if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor and expect are accepted', options)
+        if (!Array.isArray(body.agents) || typeof body.lead !== 'string' || typeof body.single_vendor !== 'boolean' || typeof body.expect !== 'string') {
+          return fail(res, 400, 'INVALID_INPUT', 'agents (list), lead, single_vendor (boolean) and expect are each required', options)
+        }
+        const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, expect: body.expect, machineDir })
+        return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
+      } catch (error) {
+        return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
+      }
+    }
+
     try {
       if (url.pathname === '/api/setup/detect') {
-        return sendJson(res, 200, detectSetup({ registryDir, machineDir, cwd }), { ...options, headers: authHeaders })
+        return sendJson(res, 200, { ...detectSetup({ registryDir, machineDir, cwd }), writable: allowWrite }, { ...options, headers: authHeaders })
       }
       if (url.pathname === '/api/setup/preview') {
         if ([...url.searchParams.keys()].some((key) => !PREVIEW_KEYS.has(key))) {

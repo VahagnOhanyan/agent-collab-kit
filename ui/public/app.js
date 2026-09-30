@@ -56,6 +56,25 @@ async function api(path) {
   return body
 }
 
+// The only write the panel makes. `credentials: 'omit'`, the token as a header and a JSON body: the server accepts
+// nothing else (see the write checks in server.mjs).
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'omit',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'x-panel-token': PANEL_TOKEN },
+    body: JSON.stringify(body)
+  })
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+  if (!response.ok) throw new Error(payload?.reason || payload?.error?.message || `HTTP ${response.status}`)
+  return payload
+}
+
 function toast(text) {
   toastBox.textContent = text
   toastBox.hidden = false
@@ -437,10 +456,13 @@ async function kit() {
 
 // ── setup wizard ──────────────────────────────────────────────────────────
 async function setup() {
-  const detect = await api('/api/setup/detect')
-  const chosen = new Set(detect.installed)
-  let lead = detect.installed[0] || null
-  let forceSingle = false
+  let detect = await api('/api/setup/detect')
+  // Start from what is written on this machine, so that "Применить" compares a change of yours against it,
+  // not against the panel's guess; with nothing written, from what is installed.
+  const written = detect.current?.machine?.agents ? detect.current.machine : null
+  const chosen = new Set(written ? written.agents.map((a) => a.id) : detect.installed)
+  let lead = written?.lead && chosen.has(written.lead) ? written.lead : detect.installed[0] || null
+  let forceSingle = written?.review_mode === 'single_vendor'
   let lastPlan = null // the composition the user has chosen right now, for the check
   const out = el('div', {})
   const reviewNote = el('div', { class: 'note' })
@@ -475,9 +497,79 @@ async function setup() {
       el('h2', { id: 'step-5', text: '5. Проект' }),
       projectCard(detect.project),
       el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Панель ничего не записывает: права агентам выдаёт только владелец в своём терминале (в этой сессии — через приставку «!»).' }),
+      el('p', { class: 'sub', text: 'Панель записывает только ведущего и режим ревью, и только после вашего подтверждения. Состав агентов и роли меняются командами ниже в вашем терминале (в этой сессии — через приставку «!»).' }),
+      applyBlock(preview.apply),
       ...preview.commands.map((c) => el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck })))
+  }
+
+  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью' }
+  const valueRu = (field, value) => (field === 'review_mode' ? REVIEW_MODE_RU[value] || value || '—' : value || 'никто')
+  const applyBox = el('div', {})
+  const finish = async (text) => {
+    toast(text)
+    detect = await api('/api/setup/detect')
+    await drawPreview()
+    await runCheck()
+  }
+  // What "Применить" shows: the exact change first, a second click to write it. The fingerprint that goes with it
+  // is the file the owner was looking at, so a composition changed in the meantime is refused, not overwritten.
+  function applyBlock(info) {
+    applyBox.replaceChildren()
+    if (!detect.writable) {
+      applyBox.append(el('div', { class: 'note warn', text: 'Панель запущена без права записи (из оболочки агента или без терминала): пользуйтесь командами ниже.' }))
+      return applyBox
+    }
+    if (!info?.available) {
+      applyBox.append(el('div', { class: 'note warn', text: info?.reason || 'Применить отсюда нельзя.' }))
+      return applyBox
+    }
+    // Putting the saved composition back is a write like any other: what returns is shown first, and a second click
+    // confirms it. Only the lead and the review mode of the saved composition come back.
+    const back = info.revert?.available ? (() => {
+      const row = el('div', { class: 'toolbar', hidden: true })
+      const undo = async () => {
+        row.querySelectorAll('button').forEach((b) => { b.disabled = true })
+        try {
+          await post('/api/setup/revert', { expect: info.revert.expect })
+          await finish('Прежний состав возвращён')
+        } catch (error) {
+          row.querySelectorAll('button').forEach((b) => { b.disabled = false })
+          applyBox.append(el('div', { class: 'note bad', text: error.message }))
+        }
+      }
+      row.append(el('span', { text: 'Вернуть прежнее?' }),
+        el('button', { type: 'button', class: 'primary', text: 'Да, вернуть', onclick: undo }),
+        el('button', { type: 'button', text: 'Отмена', onclick: () => { row.hidden = true } }))
+      return el('div', {},
+        el('div', { class: 'muted', text: `Сохранён прежний состав: ${info.revert.changes.map((c) => `${FIELD_RU[c.field] || c.field}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`).join('; ')}` }),
+        el('button', { type: 'button', text: 'Вернуть прежний', onclick: () => { row.hidden = false } }), row)
+    })() : null
+    if (!info.changes.length) {
+      applyBox.append(...[el('div', { class: 'note ok', text: 'Так уже записано на машине: менять нечего.' }), back].filter(Boolean))
+      return applyBox
+    }
+    const confirmRow = el('div', { class: 'toolbar', hidden: true })
+    const apply = async () => {
+      confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = true })
+      try {
+        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, expect: info.expect })
+        await finish('Записано. Перезапустите открытые сессии агентов.')
+      } catch (error) {
+        confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = false })
+        applyBox.append(el('div', { class: 'note bad', text: error.message }))
+      }
+    }
+    confirmRow.append(
+      el('span', { text: 'Записать это на машину? Прежний состав сохранится, его можно вернуть.' }),
+      el('button', { type: 'button', class: 'primary', text: 'Да, записать', onclick: apply }),
+      el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmRow.hidden = true } }))
+    applyBox.append(
+      el('div', { class: 'card' }, el('strong', { text: 'Что изменится' }), ...info.changes.map((c) =>
+        el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
+      el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: 'Применить', onclick: () => { confirmRow.hidden = false } })),
+      confirmRow, back)
+    return applyBox
   }
 
   // Two separate answers, so that "nothing is broken" is never read as "your
@@ -525,7 +617,7 @@ async function setup() {
 
   const agentsBox = el('div', { class: 'list' }, detect.catalog.map((a) => {
     const installed = detect.installed.includes(a.id)
-    const box = el('input', { type: 'checkbox', id: `ag-${a.id}`, checked: installed, onchange: (e) => {
+    const box = el('input', { type: 'checkbox', id: `ag-${a.id}`, checked: chosen.has(a.id), onchange: (e) => {
       if (e.target.checked) chosen.add(a.id); else chosen.delete(a.id)
       drawLead(); drawPreview()
     } })
@@ -541,10 +633,10 @@ async function setup() {
       leadBox.append(el('label', { class: 'choice', for: `ld-${id}` }, radio, el('span', {}, el('strong', { text: id }), el('span', { class: 'muted', text: agent ? ` · ${agent.provider || ''}` : '' }))))
     }
   }
-  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же агент в отдельной сессии. Сами агенты остаются разными, меняется только режим ревью.' })))
+  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же агент в отдельной сессии. Сами агенты остаются разными, меняется только режим ревью.' })))
   const jump = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' })
   drawLead(); drawPreview()
-  return page('Мастер настройки', 'Соберите состав коллаборации и получите готовые команды. Пока вы не выполнили команду в терминале, на машине ничего не меняется.',
+  return page('Мастер настройки', 'Соберите состав коллаборации и получите готовые команды. Ведущего и режим ревью можно применить кнопкой; остальное запишется, когда вы выполните команду в терминале.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
     el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Роли', 'Проект', 'Команды'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
@@ -594,7 +686,7 @@ const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждё
 async function route() {
   const seq = ++routeSeq
   closeStream()
-  setConn('', 'панель только для чтения')
+  setConn('', 'пишет только ведущего и режим ревью')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
   const screen = ROUTES[name] || overview
   for (const link of document.querySelectorAll('[data-route]')) {
