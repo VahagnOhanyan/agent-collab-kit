@@ -109,6 +109,11 @@ export function probeAgent(agent, capabilityIds, env = machineEnv()) {
     } else {
       answer = { status: 'confirmed', reason: `программа установлена (${installed})` }
     }
+    // What nothing on the machine can tell, the owner can: a capability they confirmed for this agent in the panel
+    // (confirmed_capabilities in the composition) counts as confirmed. A fact that rules it out still wins.
+    if (answer.status === 'unknown' && installed && (agent.confirmed_capabilities || []).includes(capability)) {
+      answer = { status: 'confirmed', reason: 'подтверждено владельцем' }
+    }
     capabilities[capability] = answer
   }
   return { agent: agent.id, installed: Boolean(installed), sandbox, capabilities }
@@ -150,9 +155,13 @@ export function fitConfigToFacts(config, env = machineEnv()) {
     const roles = (agent.roles || []).filter((role) => known.allowed.includes(role))
     const unverified = [...new Set([...(agent.unverified_roles || []), ...roles.filter((role) => known.unverified.includes(role))])].filter((role) => roles.includes(role))
     const unconfirmedCapabilities = capabilities.filter((capability) => known.capabilities[capability]?.status === 'unknown')
-    const { unverified_roles: _old, ...rest } = agent
+    // An owner's confirmation of a capability the facts now rule out goes with the capability: kept, it would name a
+    // capability the agent no longer has and make the whole configuration invalid for every session on the machine.
+    const confirmed = (agent.confirmed_capabilities || []).filter((capability) => capabilities.includes(capability))
+    const { unverified_roles: _old, confirmed_capabilities: _confirmed, ...rest } = agent
     return {
       ...rest,
+      ...(confirmed.length ? { confirmed_capabilities: confirmed } : {}),
       capabilities,
       roles,
       ...(unverified.length ? { unverified_roles: unverified } : {}),

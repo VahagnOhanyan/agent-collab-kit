@@ -266,7 +266,7 @@ test('NO EXPOSED TOOL CAN GRANT AN APPROVAL', () => {
 
 test('destructive-sounding tools are annotated honestly', () => {
   for (const tool of TOOLS) {
-    const mutates = /^(create|claim|assign|update|complete|block|release|send|reply|ack|request|submit|add|resolve|escalate|start)/.test(
+    const mutates = /^(create|claim|assign|update|complete|block|release|send|reply|ack|request|submit|add|resolve|escalate|start|suspend)/.test(
       tool.name
     )
     assert.equal(

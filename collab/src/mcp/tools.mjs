@@ -186,6 +186,25 @@ export const TOOLS = [
     annotations: READ,
     handler: (input, api) => api.findAgents(input)
   },
+  {
+    name: 'suspend_role',
+    title: 'Say you cannot do one of your roles here',
+    description:
+      'When you find you cannot do the work a role asks for on this machine (no simulator, no access, the program ' +
+      'refuses), suspend that role for yourself: it stops being routed to you at once, and your open task that needs ' +
+      'it (task_id) goes back to the queue for somebody else. You cannot give it back to yourself — the owner restores ' +
+      'it or takes it away for good. Say why in one or two sentences: the owner decides from that.',
+    inputSchema: object(
+      {
+        role: str('The role you cannot do here, one of the roles whoami lists.'),
+        reason: str('Why, in one or two sentences — what you tried and what stopped you.'),
+        task_id: str('Your open task that needs the role, if any: it is released back to the queue.')
+      },
+      ['role', 'reason']
+    ),
+    annotations: WRITE,
+    handler: (input, api) => api.suspendRole(input)
+  },
 
   {
     name: 'create_task',

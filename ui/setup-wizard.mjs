@@ -92,7 +92,7 @@ function command(tokens) {
   return tokens.join(' ')
 }
 
-export function previewSetup({ agents, lead, singleVendor, roles = null, registryDir, machineDir, cwd, env = undefined }) {
+export function previewSetup({ agents, lead, singleVendor, roles = null, confirmed = null, registryDir, machineDir, cwd, env = undefined }) {
   if (!Array.isArray(agents) || !agents.length) return { ok: false, reason: 'choose at least one agent' }
   if (!agents.every((id) => ID.test(id)) || !ID.test(lead || '')) return { ok: false, reason: 'agent ids must use lowercase letters, digits, _ or -' }
   if (singleVendor !== '0' && singleVendor !== '1') return { ok: false, reason: 'single_vendor must be 0 or 1' }
@@ -125,7 +125,7 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, registr
       agents: planned.content.agents.map((agent) => ({ id: agent.id, roles: agent.roles || [] }))
     },
     commands,
-    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, machineDir, env }))
+    apply: publicApply(evaluateApply({ agents, lead, singleVendor: singleVendor === '1', roles, confirmed, machineDir, env }))
   }
 }
 
@@ -193,6 +193,48 @@ function settleRoles({ agents, roles, roleDefs, facts }) {
   return { ok: true, agents: next }
 }
 
+// The capabilities the owner confirms for each agent — what nothing on the machine can tell (probe.mjs `unknown`).
+// Applied BEFORE the facts are read, since a confirmation turns "unknown" into "confirmed". `confirmed` is
+// { agentId: [capability] } for exactly the agents in play, or null (keep what is written).
+function settleConfirmed({ agents, confirmed }) {
+  if (confirmed === null || confirmed === undefined) return { ok: true, agents }
+  if (!confirmed || typeof confirmed !== 'object' || Array.isArray(confirmed)) return { ok: false, reason: 'Подтверждения переданы в неверном виде.' }
+  if (!rolesEqual(Object.keys(confirmed), agents.map((agent) => agent.id))) return { ok: false, reason: 'Подтверждения переданы не для тех агентов, что в составе.' }
+  const next = []
+  for (const agent of agents) {
+    const wanted = confirmed[agent.id]
+    if (!Array.isArray(wanted) || !wanted.every((c) => typeof c === 'string' && ID.test(c)) || new Set(wanted).size !== wanted.length) {
+      return { ok: false, reason: `Подтверждения агента ${agent.id} переданы в неверном виде.` }
+    }
+    const foreign = wanted.filter((c) => !(agent.capabilities || []).includes(c))
+    if (foreign.length) return { ok: false, reason: `У агента ${agent.id} нет способностей, которые подтверждаются: ${foreign.join(', ')}.` }
+    const { confirmed_capabilities: _old, ...rest } = agent
+    next.push(wanted.length ? { ...rest, confirmed_capabilities: wanted } : rest)
+  }
+  return { ok: true, agents: next }
+}
+
+// A confirmation cannot override a fact: a capability the machine rules out is not confirmed.
+function confirmedAgainstFacts(agents, facts) {
+  for (const agent of agents) {
+    const ruledOut = (agent.confirmed_capabilities || []).filter((c) => facts[agent.id]?.capabilities[c]?.status === 'missing')
+    if (ruledOut.length) {
+      return { ok: false, reason: `Нельзя подтвердить агенту ${agent.id}: ${ruledOut.map((c) => `${c} (${facts[agent.id].capabilities[c].reason})`).join(', ')}.` }
+    }
+  }
+  return { ok: true }
+}
+
+function confirmedChanges(before, after) {
+  const changes = []
+  for (const agent of after) {
+    const was = before.find((b) => b.id === agent.id)?.confirmed_capabilities || []
+    const now = agent.confirmed_capabilities || []
+    if (!rolesEqual(was, now)) changes.push({ field: 'confirmed', agent: agent.id, from: was, to: now })
+  }
+  return changes
+}
+
 // What the page shows about each agent: what it may hold, what is unconfirmed, what is blocked and why.
 function factsView(facts) {
   return Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, {
@@ -235,15 +277,20 @@ const present = (file) => {
 // written", and a file that appeared meanwhile makes the request stale instead of being overwritten.
 const NOTHING_WRITTEN = 'none'
 
-function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env }) {
+function evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, machineDir, env }) {
   if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id))) return { available: false, reason: 'Отметьте хотя бы одного агента.' }
   if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов.' }
   const roleDefs = machineRoleDefs(machineDir)
   const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
+  const withConfirmed = settleConfirmed({ agents: planned.content.agents, confirmed })
+  if (!withConfirmed.ok) return { available: false, reason: withConfirmed.reason }
   // The proposal is fitted to this machine first: a role the facts block is not proposed, an unconfirmed one is marked.
-  const facts = machineFacts(planned.content.agents, machineDir, env)
-  const settled = settleRoles({ agents: fitToFacts(planned.content.agents, facts), roles, roleDefs, facts })
+  const facts = machineFacts(withConfirmed.agents, machineDir, env)
+  const against = confirmedAgainstFacts(withConfirmed.agents, facts)
+  if (!against.ok) return { available: false, reason: against.reason, facts: factsView(facts) }
+  // Roles are fitted to the facts WITHOUT the owner's word first, so ticking a confirmation shows its roles as added.
+  const settled = settleRoles({ agents: fitToFacts(withConfirmed.agents, facts), roles, roleDefs, facts })
   if (!settled.ok) return { available: false, reason: settled.reason }
   const gate = independenceGate(settled.agents, roleDefs)
   const content = { ...planned.content, agents: settled.agents }
@@ -251,10 +298,12 @@ function evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env
     { field: 'agents', from: null, to: content.agents.map((agent) => agent.id).join(', ') },
     { field: 'lead', from: null, to: content.lead },
     { field: 'review_mode', from: null, to: content.review_mode },
-    ...content.agents.map((agent) => ({ field: 'roles', agent: agent.id, from: [], to: agent.roles }))
+    ...content.agents.map((agent) => ({ field: 'roles', agent: agent.id, from: [], to: agent.roles })),
+    ...confirmedChanges([], content.agents)
   ]
   const shown = {
     roles: Object.fromEntries(content.agents.map((agent) => [agent.id, agent.roles])),
+    confirmed: Object.fromEntries(content.agents.map((agent) => [agent.id, agent.confirmed_capabilities || []])),
     holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])),
     facts: factsView(facts),
     independence: gate.report
@@ -288,9 +337,9 @@ function commitFirstSetup({ content, machineDir }) {
   }
 }
 
-export function evaluateApply({ agents, lead, singleVendor, roles = null, machineDir, env = undefined }) {
+export function evaluateApply({ agents, lead, singleVendor, roles = null, confirmed = null, machineDir, env = undefined }) {
   const file = machineDir ? compositionFile(machineDir) : null
-  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, machineDir, env })
+  if (file && !present(file)) return evaluateFirstSetup({ agents, lead, singleVendor, roles, confirmed, machineDir, env })
   if (!file) return { available: false, reason: 'Каталог настроек машины не задан.' }
   if (lstatSync(file).isSymbolicLink()) return { available: false, reason: 'agents.json — символическая ссылка: панель такой файл не переписывает.' }
   const raw = readFileSync(file)
@@ -310,8 +359,12 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir)), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const written = current.agents || []
-  const facts = machineFacts(written, machineDir, env)
-  const settled = settleRoles({ agents: written, roles, roleDefs, facts })
+  const withConfirmed = settleConfirmed({ agents: written, confirmed })
+  if (!withConfirmed.ok) return { available: false, reason: withConfirmed.reason }
+  const facts = machineFacts(withConfirmed.agents, machineDir, env)
+  const against = confirmedAgainstFacts(withConfirmed.agents, facts)
+  if (!against.ok) return { available: false, reason: against.reason, facts: factsView(facts) }
+  const settled = settleRoles({ agents: withConfirmed.agents, roles, roleDefs, facts })
   // Refused, but the page still gets the facts: they are usually the reason, and the editor needs them to fix it.
   if (!settled.ok) {
     return { available: false, reason: settled.reason, facts: factsView(facts), holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])) }
@@ -319,6 +372,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   const gate = independenceGate(settled.agents, roleDefs)
   const shown = {
     roles: Object.fromEntries(settled.agents.map((agent) => [agent.id, agent.roles || []])),
+    confirmed: Object.fromEntries(settled.agents.map((agent) => [agent.id, agent.confirmed_capabilities || []])),
     holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])),
     // Moving a composition written before "all, then cut by facts" (ADR-0026, stage 3): the roles each agent may hold
     // here but does not. Nothing is added by itself — the page offers them, the owner ticks and confirms.
@@ -330,7 +384,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, machin
   const changes = []
   if ((current.lead || null) !== planned.content.lead) changes.push({ field: 'lead', from: current.lead || null, to: planned.content.lead })
   if ((current.review_mode || null) !== planned.content.review_mode) changes.push({ field: 'review_mode', from: current.review_mode || null, to: planned.content.review_mode })
-  changes.push(...roleChanges(written, settled.agents))
+  changes.push(...roleChanges(written, settled.agents), ...confirmedChanges(written, settled.agents))
   return {
     available: true,
     changes,
@@ -375,16 +429,21 @@ function evaluateRevert(machineDir, env = undefined) {
   }
   // Only what the panel itself writes comes back: the lead, the review mode and each agent's roles. The agents and
   // everything else about them must be as saved, or the owner changed the composition elsewhere since.
-  const withoutRoles = (list = []) => list.map(({ roles: _roles, ...rest }) => rest)
-  if (!sameJson(withoutRoles(current.agents), withoutRoles(before.agents))) {
+  const panelFields = (list = []) => list.map(({ roles: _r, unverified_roles: _u, confirmed_capabilities: _c, ...rest }) => rest)
+  if (!sameJson(panelFields(current.agents), panelFields(before.agents))) {
     return { available: false, reason: 'Состав агентов изменился после применения (вероятно, командой collab setup): отсюда возвращать нельзя.' }
   }
-  // The saved roles go through today's facts like any other change: a role the machine now rules out does not come
-  // back, and which roles are unconfirmed is decided by the facts now, not copied from the saved file.
+  // The saved roles and confirmations go through today's facts like any other change: a role or confirmation the
+  // machine now rules out does not come back, and which roles are unconfirmed is decided by the facts now.
   const roleDefs = machineRoleDefs(machineDir)
-  const facts = machineFacts(current.agents || [], machineDir, env)
-  const savedRoles = Object.fromEntries((current.agents || []).map((agent) => [agent.id, before.agents.find((b) => b.id === agent.id)?.roles || []]))
-  const settled = settleRoles({ agents: current.agents || [], roles: savedRoles, roleDefs, facts })
+  const savedOf = (agent) => before.agents.find((b) => b.id === agent.id) || {}
+  const withConfirmed = settleConfirmed({ agents: current.agents || [], confirmed: Object.fromEntries((current.agents || []).map((agent) => [agent.id, savedOf(agent).confirmed_capabilities || []])) })
+  if (!withConfirmed.ok) return { available: false, reason: `Прежний состав нельзя вернуть: ${withConfirmed.reason}` }
+  const facts = machineFacts(withConfirmed.agents, machineDir, env)
+  const against = confirmedAgainstFacts(withConfirmed.agents, facts)
+  if (!against.ok) return { available: false, reason: `Прежний состав нельзя вернуть на этой машине: ${against.reason}` }
+  const savedRoles = Object.fromEntries((current.agents || []).map((agent) => [agent.id, savedOf(agent).roles || []]))
+  const settled = settleRoles({ agents: withConfirmed.agents, roles: savedRoles, roleDefs, facts })
   if (!settled.ok) return { available: false, reason: `Прежний состав нельзя вернуть на этой машине: ${settled.reason}` }
   const restored = settled.agents
   const gate = independenceGate(restored, roleDefs)
@@ -392,7 +451,7 @@ function evaluateRevert(machineDir, env = undefined) {
   const changes = []
   if ((current.lead || null) !== (before.lead || null)) changes.push({ field: 'lead', from: current.lead || null, to: before.lead || null })
   if ((current.review_mode || null) !== (before.review_mode || null)) changes.push({ field: 'review_mode', from: current.review_mode || null, to: before.review_mode || null })
-  changes.push(...roleChanges(current.agents || [], restored))
+  changes.push(...roleChanges(current.agents || [], restored), ...confirmedChanges(current.agents || [], restored))
   if (!changes.length) return { available: false, reason: 'Прежний состав не отличается от текущего: возвращать нечего.' }
   return {
     available: true,
@@ -421,6 +480,8 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, agent
       const next = { ...agent, roles: chosen.roles }
       if (chosen.unverified_roles?.length) next.unverified_roles = chosen.unverified_roles
       else delete next.unverified_roles
+      if (chosen.confirmed_capabilities?.length) next.confirmed_capabilities = chosen.confirmed_capabilities
+      else delete next.confirmed_capabilities
       return next
     })
     : current.agents
@@ -472,10 +533,10 @@ export const publicApply = ({ _next, _init, revert, ...visible }) => ({
   ...(revert ? { revert: (({ _next: inner, ...shown }) => shown)(revert) } : {})
 })
 
-export function applySetup({ agents, lead, singleVendor, roles = null, expect, machineDir, env = undefined }) {
+export function applySetup({ agents, lead, singleVendor, roles = null, confirmed = null, expect, machineDir, env = undefined }) {
   let evaluated
   try {
-    evaluated = evaluateApply({ agents, lead, singleVendor, roles, machineDir, env })
+    evaluated = evaluateApply({ agents, lead, singleVendor, roles, confirmed, machineDir, env })
   } catch (error) {
     return { ok: false, reason: `Файл состава не читается: ${error.message}` }
   }

@@ -17,6 +17,9 @@
 // mutable database, which is how config stops being reviewable.
 
 import { AGENT_STATUSES } from '../registry.mjs'
+import { CODES, CollabError } from '../errors.mjs'
+import { assertNoSecret } from '../policy.mjs'
+import { TASK_STATUS, TERMINAL, assertTransition } from '../transitions.mjs'
 
 export const DECLARED_STATUSES = AGENT_STATUSES
 
@@ -75,6 +78,67 @@ export function touchAgent(tx, ctx, patch = {}) {
     ...patch
   }
   return tx.put('agents', next)
+}
+
+// ── a role the agent finds it cannot do (ADR-0026, stage 4) ──────────────────
+//
+// The agent says so itself: the role stops counting for it at once (registry.find, hasRole), and its open task
+// that needs the role goes back to the queue. It is kept in the agent's own runtime record — no new journal
+// collection, so existing journals stay valid. Only the owner gives the role back (`collab role restore`, at a
+// terminal); taking it away for good is the owner unticking it in the panel. A suspension of a role the agent no
+// longer holds is simply over.
+
+const SUSPEND_REASON_MAX = 500
+
+export async function suspendRole(ctx, { role, reason = '', task_id = null }) {
+  ctx.registry.role(role)
+  const clean = typeof reason === 'string' ? reason.trim() : ''
+  if (clean.length < 10) {
+    throw new CollabError(CODES.INVALID_INPUT, 'say why the role cannot be done here — the owner decides from this reason whether to give it back', { field: 'reason' })
+  }
+  if (clean.length > SUSPEND_REASON_MAX) {
+    throw new CollabError(CODES.INVALID_INPUT, `the reason is one or two sentences, under ${SUSPEND_REASON_MAX} characters`, { field: 'reason' })
+  }
+  assertNoSecret(clean, 'suspension reason')
+  if (!(ctx.registry.agent(ctx.agentId).roles || []).includes(role)) {
+    throw new CollabError(CODES.NOT_PERMITTED, `${ctx.agentId} does not hold role "${role}", so there is nothing to suspend`, { role })
+  }
+  return ctx.store.transact(async (tx) => {
+    let released = null
+    if (task_id) {
+      const task = tx.get('tasks', task_id)
+      if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+      if (task.owner === ctx.agentId && task.role === role && !TERMINAL.has(task.status)) {
+        assertTransition(task, TASK_STATUS.CREATED, {})
+        tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
+        tx.emit('task.released', { collection: 'tasks', id: task_id }, { by: ctx.agentId, previous_owner: ctx.agentId, reason: `role ${role} suspended: ${clean}` })
+        released = task_id
+      }
+    }
+    const current = tx.get('agents', ctx.agentId) || { id: ctx.agentId, version: 0 }
+    const others = (current.suspended_roles || []).filter((s) => s.role !== role)
+    const suspension = { role, reason: clean, task_id, at: tx.iso() }
+    touchAgent(tx, ctx, { suspended_roles: [...others, suspension], ...(released ? { status: 'available', current_task_id: null } : {}) })
+    tx.emit('agent.role_suspended', { collection: 'agents', id: ctx.agentId }, { role, reason: clean, task_id, released })
+    return { suspended: suspension, released_task: released }
+  })
+}
+
+export function suspendedRoles(ctx, agentId) {
+  const runtime = ctx.store.get('agents', agentId)
+  const held = ctx.registry.has(agentId) ? ctx.registry.agent(agentId).roles || [] : []
+  return (runtime?.suspended_roles || []).filter((s) => held.includes(s.role))
+}
+
+export function restoreRole(ctx, { agent_id, role }) {
+  return ctx.store.transact(async (tx) => {
+    const current = tx.get('agents', agent_id)
+    const had = (current?.suspended_roles || []).some((s) => s.role === role)
+    if (!had) throw new CollabError(CODES.NOT_FOUND, `${agent_id} has no suspended role "${role}"`, { agent_id, role })
+    tx.put('agents', { ...current, suspended_roles: current.suspended_roles.filter((s) => s.role !== role) })
+    tx.emit('agent.role_restored', { collection: 'agents', id: agent_id }, { role, by: ctx.agentId })
+    return { restored: { agent_id, role } }
+  })
 }
 
 export function setStatus(ctx, { status, note = null, taskId = undefined }) {

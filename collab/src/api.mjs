@@ -62,7 +62,9 @@ const WRITING_METHODS = Object.freeze([
   'escalateDecision',
   'requestUserApproval',
   'startRun',
-  'setStatus'
+  'setStatus',
+  'suspendRole',
+  'restoreRole'
 ])
 
 function executableOnPath(binary) {
@@ -223,6 +225,8 @@ export function createApi({
 
   const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy', readOnly })
   const ctx = { store, registry, config, clock, agentId, roots }
+  // Roles an agent suspended itself are out of routing from the next call on, read fresh from the journal.
+  registry.setSuspended((id, role) => (store.get('agents', id)?.suspended_roles || []).some((s) => s.role === role))
 
   let lastSweep = 0
   const maybeSweep = async () => {
@@ -273,6 +277,8 @@ export function createApi({
         // "the UI was verified" on run_application — is not claimed: say what would have to be checked instead.
         unverified_capabilities: declared.unverified_capabilities || [],
         unverified_roles: declared.unverified_roles || [],
+        // Roles this agent suspended itself: not routed to it until the owner restores them.
+        suspended_roles: agents.suspendedRoles(ctx, agentId),
         briefing: declared.briefing,
         briefing_file: registry.briefingPath(agentId),
         // The project's own rules for this agent, from the trusted registry (not the repository): boundaries the
@@ -298,6 +304,9 @@ export function createApi({
         .find({ role, capability, includeSelf: !exclude_self, self: agentId })
         .map((a) => agents.readAgent(ctx, a.id)),
     setStatus: (input) => agents.setStatus(ctx, input),
+    suspendRole: (input) => agents.suspendRole(ctx, input),
+    // The owner's: refused from an agent's shell and without a terminal by the CLI (refuseUnlessHuman).
+    restoreRole: (input) => agents.restoreRole(ctx, input),
 
     // ── tasks ─────────────────────────────────────────────────────────────
     createTask: (input) => tasks.createTask(ctx, input),
@@ -462,6 +471,12 @@ export function createApi({
             fact_conflicts: factConflicts(written, facts)
           }
         })(),
+        // Roles agents suspended themselves, waiting for the owner: give back (the command) or untick in the panel.
+        suspended_roles: registry.agents().flatMap((agent) => agents.suspendedRoles(ctx, agent.id).map((s) => ({
+          agent: agent.id,
+          ...s,
+          restore: `collab role restore ${agent.id} ${s.role}`
+        }))),
         // Work that asks for a role nobody holds any more (the composition changed after it was created): it can
         // never be claimed, so it is named here instead of quietly waiting.
         orphaned_tasks: tasks

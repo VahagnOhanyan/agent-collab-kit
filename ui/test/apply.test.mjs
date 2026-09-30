@@ -516,6 +516,42 @@ test('migration: roles an agent may hold but does not are offered, and nothing i
   assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
 })
 
+test('confirmed: the owner confirms running the application for claude — shown first, written, and it turns the capability confirmed', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const current = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply
+  assert.deepEqual(current.confirmed, { claude: [], codex: [] })
+  assert.equal(current.facts.claude.capabilities.run_application.status, 'unknown')
+  const confirmed = { claude: ['run_application'], codex: [] }
+  const preview = (await send(started, 'GET', `/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0&confirmed=${encodeURIComponent(JSON.stringify(confirmed))}`)).json.apply
+  assert.deepEqual(preview.changes, [{ field: 'confirmed', agent: 'claude', from: [], to: ['run_application'] }])
+  assert.equal(preview.facts.claude.capabilities.run_application.status, 'confirmed')
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, confirmed, expect: await expectOf(started) })
+  assert.equal(done.status, 200, done.text)
+  assert.deepEqual(read(dir).agents.find((a) => a.id === 'claude').confirmed_capabilities, ['run_application'])
+  assert.equal(read(dir).agents.find((a) => a.id === 'codex').confirmed_capabilities, undefined)
+  // And back: revert gives the previous confirmations back too.
+  const info = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=claude&single_vendor=0')).json.apply.revert
+  assert.equal((await send(started, 'POST', '/api/setup/revert', { expect: info.expect })).status, 200)
+  assert.equal(read(dir).agents.find((a) => a.id === 'claude').confirmed_capabilities, undefined)
+})
+
+test('confirmed: the machine\'s "no" beats the owner\'s "yes", and only capabilities the agent has can be confirmed', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir, { probeEnv: machineFacts({ files: READ_ONLY_CODEX }) })
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const expect = await expectOf(started)
+  const ruledOut = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, confirmed: { claude: [], codex: ['modify_code'] }, expect })
+  assert.equal(ruledOut.status, 409)
+  assert.match(ruledOut.json.reason, /Нельзя подтвердить агенту codex: modify_code \(.*read-only/)
+  const foreign = await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, confirmed: { claude: ['telepathy'], codex: [] }, expect })
+  assert.equal(foreign.status, 409)
+  assert.equal((await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'claude', single_vendor: false, confirmed: [], expect })).status, 400)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
 test('roles: the first setup takes the roles the owner ticked', async (t) => {
   const dir = join(tempDir('panel-first-roles-'), 'machine')
   const started = await panel(t, dir)

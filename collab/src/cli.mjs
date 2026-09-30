@@ -936,6 +936,29 @@ const COMMANDS = {
     out(dim('answer with: collab approve <id>   (or: collab reject <id> --note "...")'))
   },
 
+  // `collab role restore <agent> <role>`: give back a role an agent suspended itself. The owner's decision, with the
+  // same two barriers as an approval (not an agent's shell, an interactive terminal); `collab role` alone lists them.
+  async role(api, { args }) {
+    const [verb, agentId, role] = args
+    if (!verb || verb === 'list') {
+      const waiting = api.doctor().suspended_roles || []
+      if (!waiting.length) return out(dim('no suspended roles'))
+      for (const s of waiting) out(`${s.agent.padEnd(10)} ${s.role.padEnd(20)} ${s.at}  ${s.reason}`, dim(`           give back: ${s.restore}   take away for good: untick it in the panel`))
+      return
+    }
+    if (verb !== 'restore' || !agentId || !role) throw new CollabError('INVALID_INPUT', 'usage: collab role [list] | collab role restore <agent> <role>')
+    if (process.env.COLLAB_AGENT_ID) {
+      process.stderr.write(`refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\nRoles are given back by the owner, at their own terminal.\n`)
+      process.exit(3)
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("refusing: collab role restore needs an interactive terminal — it is the owner's decision, not a script's.\n")
+      process.exit(3)
+    }
+    const result = await api.restoreRole({ agent_id: agentId, role })
+    out(`${C.green}restored${C.off}  ${result.restored.agent_id} holds ${result.restored.role} again`)
+  },
+
   approve: (api, parsed) => resolveApprovalInteractively(api, parsed, 'granted'),
   reject: (api, parsed) => resolveApprovalInteractively(api, parsed, 'denied'),
 
@@ -1071,6 +1094,9 @@ const COMMANDS = {
     if (report.unheld_roles.length) {
       out('', dim(`roles nobody holds: ${report.unheld_roles.join(', ')} — register an agent for them when you need one`))
     }
+    for (const s of report.suspended_roles || []) {
+      out('', `${C.yellow}suspended${C.off}   ${s.agent} ${s.role}: ${s.reason} — give back: ${s.restore}`)
+    }
     for (const conflict of report.fact_conflicts || []) {
       out('', `${C.red}cannot${C.off}      ${conflict.agent} holds ${conflict.role}, but on this machine: ${conflict.reasons.join('; ')}`)
     }
@@ -1116,6 +1142,8 @@ const COMMANDS = {
       `  approve <id>           ${C.yellow}authorise a request. Interactive terminal only${C.off}`,
       `  reject <id> --note     ${C.yellow}decline a request${C.off}`,
       '  decide <id> <outcome>  settle a disagreement the agents could not',
+      '  role [list]            roles agents suspended themselves ("cannot do it here")',
+      `  role restore <agent> <role>  ${C.yellow}give a suspended role back. Interactive terminal only${C.off}`,
       '  runs [--failed]        check results',
       '  run <id>               one check result with its log tail',
       '  models [--json]        what each level (L0..L3) means per vendor — ask here instead of naming a model from memory',

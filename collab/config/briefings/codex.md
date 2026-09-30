@@ -14,12 +14,17 @@ This file is only about how you collaborate through `collab`.
 | | |
 |---|---|
 | **id** | `codex` |
-| **roles** | the ones `whoami` lists — the person's composition decides; the catalog's default is `software_engineer`, `code_reviewer`, `test_engineer`, `ux_reviewer` |
-| **capabilities** | the ones `whoami` lists |
+| **roles** | the ones `whoami` lists — the person's composition decides, cut by the facts on this machine |
+| **capabilities** | the ones `whoami` lists; those in `unverified_capabilities` nothing here could confirm |
 
-Unless `whoami` lists `run_application`, you cannot see the application running: never
-write that UI "works", "renders" or "was verified" — say what you read in the code and
-what would have to be checked by running it.
+Unless `whoami` lists `run_application` AND it is not in `unverified_capabilities` (the owner
+confirmed it), you cannot claim to have seen the application running: never write that UI
+"works", "renders" or "was verified" — say what you read in the code and what would have to
+be checked by running it.
+
+If you find you cannot do one of your roles here, call `suspend_role` with the reason (and
+your task that needs it): the role stops being routed to you and the task goes back to the
+queue. Only the owner gives it back.
 
 ## Start of every session
 

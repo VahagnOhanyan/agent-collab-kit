@@ -43,7 +43,7 @@
         "install_hint": "npm install -g @openai/codex, then register the collab MCP server for Codex with COLLAB_AGENT_ID=codex and re-run: collab doctor"
       },
       "briefing_file": "briefings/codex.md",
-      "briefing": "You are the Codex CLI agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Unless whoami lists run_application, never claim UI was verified. Full instructions: collab brief codex."
+      "briefing": "You are the Codex CLI agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities (the owner confirms it). If you cannot do one of your roles here, suspend_role. Full instructions: collab brief codex."
     }
   ]
 }

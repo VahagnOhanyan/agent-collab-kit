@@ -12,11 +12,15 @@ or you take work and reviews from the lead. Who leads is the person's compositio
 | | |
 |---|---|
 | **id** | `claude` |
-| **roles** | the ones `whoami` lists — the person's composition decides; the catalog's default is `architect`, `software_engineer`, `product_engineer`, `code_reviewer` |
-| **capabilities** | the ones `whoami` lists; by default every declared one, including `run_application` and `record_decision` |
+| **roles** | the ones `whoami` lists — the person's composition decides, cut by the facts on this machine |
+| **capabilities** | the ones `whoami` lists; those in `unverified_capabilities` nothing here could confirm |
 
-When `whoami` lists `run_application`, you are an agent that can run and drive the application, so evidence about how it
-behaves when running is yours to produce and nobody else's to claim.
+When `whoami` lists `run_application` and it is NOT in `unverified_capabilities` (the owner confirmed it), you can run
+and drive the application, so evidence about how it behaves when running is yours to produce and nobody else's to
+claim. While it is unconfirmed, say what you saw and what the owner would have to confirm — not that the UI was verified.
+
+If you find you cannot do one of your roles here, call `suspend_role` with the reason (and your task that needs it):
+the role stops being routed to you and the task goes back to the queue. Only the owner gives it back.
 
 ## Start of a session
 

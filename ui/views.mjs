@@ -17,6 +17,7 @@ export async function overviewView(api) {
       agents: report.agents || [],
       unheld_roles: report.unheld_roles || [],
       orphaned_tasks: report.orphaned_tasks || [],
+      suspended_roles: report.suspended_roles || [],
       models: report.models || []
     }
   }

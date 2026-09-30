@@ -123,6 +123,13 @@ export function validateRegistry(config) {
       }
       roleHolders.set(roleId, (roleHolders.get(roleId) || 0) + 1)
     }
+    // Capabilities the owner confirmed for this agent: they must be ones it has.
+    if (agent.confirmed_capabilities !== undefined) {
+      if (!Array.isArray(agent.confirmed_capabilities)) problems.push(`${where} confirmed_capabilities must be a list of capabilities`)
+      else for (const capability of agent.confirmed_capabilities) {
+        if (!caps.has(capability)) problems.push(`${where} confirms "${capability}" but does not have it`)
+      }
+    }
     // Roles held on a capability nothing on this machine could confirm (probe.mjs): routed to last.
     if (agent.unverified_roles !== undefined) {
       if (!Array.isArray(agent.unverified_roles)) problems.push(`${where} unverified_roles must be a list of roles`)
@@ -802,6 +809,7 @@ export function createRegistry(config) {
   if (problems.length) throw new CollabConfigError(problems)
 
   const byId = new Map(config.agents.agents.map((a) => [a.id, a]))
+  let suspended = () => false
   const roleDefs = config.roles.roles
   const capDefs = config.capabilities.capabilities
 
@@ -836,7 +844,13 @@ export function createRegistry(config) {
       }
       return capDefs[id]
     },
-    hasRole: (agentId, roleId) => (byId.get(agentId)?.roles || []).includes(roleId),
+    // A role the agent itself suspended ("I cannot do this here", journal) does not count until the owner restores
+    // it. Set once the journal is open (api.mjs); until then nothing is suspended.
+    setSuspended(lookup) {
+      suspended = typeof lookup === 'function' ? lookup : () => false
+    },
+    isSuspended: (agentId, roleId) => suspended(agentId, roleId),
+    hasRole: (agentId, roleId) => (byId.get(agentId)?.roles || []).includes(roleId) && !suspended(agentId, roleId),
     hasCapability: (agentId, capId) => (byId.get(agentId)?.capabilities || []).includes(capId),
     briefingPath: (agentId) => briefingPath(config, byId.get(agentId)),
     projectBriefing: (agentId) => (byId.has(agentId) ? projectBriefing(config, agentId) : null),
@@ -850,6 +864,7 @@ export function createRegistry(config) {
         if (exclude.includes(agent.id)) return false
         if (!includeSelf && self && agent.id === self) return false
         if (role && !(agent.roles || []).includes(role)) return false
+        if (role && suspended(agent.id, role)) return false
         if (capability && !(agent.capabilities || []).includes(capability)) return false
         return true
       })

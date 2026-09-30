@@ -163,7 +163,9 @@ async function overview() {
     el(href ? 'a' : 'div', { class: `tile${hot ? ' hot' : ''}${href ? ' link' : ''}`, href }, el('div', { class: 'n', text: n }), el('div', { class: 'l', text: label }))
   const problems = [
     ...(data.doctor?.problems || []),
-    ...(data.doctor?.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`)
+    ...(data.doctor?.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`),
+    // A role an agent suspended itself: the owner gives it back in the terminal, or takes it away in the wizard.
+    ...(data.doctor?.suspended_roles || []).map((s) => `${s.agent} приостановил роль ${s.role}: ${s.reason}. Вернуть: ${s.restore}. Отобрать насовсем: снимите роль в мастере настройки.`)
   ]
   return page(
     'Обзор',
@@ -471,6 +473,8 @@ async function setup() {
   // The roles ticked in step 4, { agentId: [role] }. null until the server has said what is written (or proposed):
   // the page never invents roles, it only changes the ones it was shown.
   let chosenRoles = null
+  // The capabilities the owner confirms per agent — what the machine cannot check (running the application).
+  let chosenConfirmed = null
   const sameKeys = (object, ids) => Boolean(object) && [...Object.keys(object)].sort().join(',') === [...ids].sort().join(',')
   const rolesSame = (a, b) => Object.keys(a).every((id) => [...(a[id] || [])].sort().join(',') === [...(b[id] || [])].sort().join(','))
   const out = el('div', {})
@@ -490,11 +494,14 @@ async function setup() {
     const query = new URLSearchParams({ agents: [...chosen].join(','), lead, single_vendor: forceSingle ? '1' : '0' })
     if (!sameKeys(chosenRoles, [...chosen])) chosenRoles = null
     if (chosenRoles) query.set('roles', JSON.stringify(chosenRoles))
+    if (!sameKeys(chosenConfirmed, [...chosen])) chosenConfirmed = null
+    if (chosenConfirmed) query.set('confirmed', JSON.stringify(chosenConfirmed))
     let preview
     try { preview = await api(`/api/setup/preview?${query}`) } catch (error) { return seq === previewSeq ? out.append(el('div', { class: 'note bad', text: error.message })) : undefined }
     if (seq !== previewSeq) return
     if (!preview.ok) return out.append(el('div', { class: 'note bad', text: preview.reason }))
     const apply = preview.apply || {}
+    if (!chosenConfirmed && apply.confirmed && sameKeys(apply.confirmed, [...chosen])) chosenConfirmed = structuredClone(apply.confirmed)
     if (!chosenRoles && apply.roles && sameKeys(apply.roles, [...chosen])) {
       // A written role the machine now rules out starts unticked: it shows as "−" in the change, so the owner sees it
       // go and confirms it, and it no longer blocks every other change (lead, review mode).
@@ -553,7 +560,20 @@ async function setup() {
         } }), ` ${role}${unverified.has(role) ? ' · не проверено' : ''}`))
       // Roles the facts rule out are named with the reason, never offered as a checkbox.
       const blocked = (facts?.blocked || []).map((b) => el('div', { class: 'muted small', text: `${b.role} недоступна: ${b.reasons.join('; ')}` }))
-      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, el('span', { class: 'chips' }, boxes), ...blocked))
+      // What nothing on the machine can check, the owner confirms: running the application is the usual one. A
+      // confirmed capability counts as checked, and only then may the agent say it verified the UI.
+      const confirmable = Object.entries(facts?.capabilities || {})
+        .filter(([, answer]) => answer.status === 'unknown' || answer.reason === 'подтверждено владельцем')
+        .map(([capability]) => capability)
+      const confirmBoxes = chosenConfirmed ? confirmable.map((capability) => el('label', { class: 'chip', title: 'Машина этого проверить не может: подтверждаете вы' },
+        el('input', { type: 'checkbox', checked: (chosenConfirmed[a.id] || []).includes(capability), onchange: (e) => {
+          const next = new Set(chosenConfirmed[a.id] || [])
+          if (e.target.checked) next.add(capability); else next.delete(capability)
+          chosenConfirmed = { ...chosenConfirmed, [a.id]: confirmable.filter((c) => next.has(c)) }
+          drawPreview()
+        } }), ` подтверждаю: ${capability}`)) : []
+      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, el('span', { class: 'chips' }, boxes),
+        confirmBoxes.length ? el('span', { class: 'chips' }, confirmBoxes) : null, ...blocked))
     })))
     if (editable) box.append(el('div', { class: 'muted', text: 'Показаны только роли, для которых у агента есть нужные способности. Изменения записываются кнопкой «Применить» ниже.' }))
     // Roles an agent may hold here but does not (a composition written before "all, then cut by facts"): offered in
@@ -576,16 +596,17 @@ async function setup() {
     return box
   }
 
-  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты', roles: 'роли' }
+  const FIELD_RU = { lead: 'ведущий', review_mode: 'режим ревью', agents: 'агенты', roles: 'роли', confirmed: 'подтверждено вами' }
   const valueRu = (field, value) => (field === 'review_mode'
     ? REVIEW_MODE_RU[value] || value || 'не записано'
-    : Array.isArray(value) ? value.join(', ') || 'нет ролей' : value || 'не записано')
-  // A roles change reads as what is added and taken away, not as two long lists.
+    : Array.isArray(value) ? value.join(', ') || 'ничего' : value || 'не записано')
+  // A list change (roles, confirmations) reads as what is added and taken away, not as two long lists.
+  const isListDiff = (c) => (c.field === 'roles' || c.field === 'confirmed') && c.from?.length
   const changeText = (c) => {
-    if (c.field !== 'roles' || !c.from?.length) return `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`
+    if (!isListDiff(c)) return `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`
     const added = c.to.filter((r) => !c.from.includes(r))
     const removed = c.from.filter((r) => !c.to.includes(r))
-    return `роли ${c.agent}: ${[added.length ? `+ ${added.join(', ')}` : '', removed.length ? `− ${removed.join(', ')}` : ''].filter(Boolean).join('; ')}`
+    return `${FIELD_RU[c.field]} ${c.agent}: ${[added.length ? `+ ${added.join(', ')}` : '', removed.length ? `− ${removed.join(', ')}` : ''].filter(Boolean).join('; ')}`
   }
   const applyBox = el('div', {})
   const finish = async (text) => {
@@ -635,7 +656,7 @@ async function setup() {
     const apply = async () => {
       confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = true })
       try {
-        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, ...(chosenRoles ? { roles: chosenRoles } : {}), expect: info.expect })
+        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, ...(chosenRoles ? { roles: chosenRoles } : {}), ...(chosenConfirmed ? { confirmed: chosenConfirmed } : {}), expect: info.expect })
         await finish('Записано. Перезапустите открытые сессии агентов.')
       } catch (error) {
         confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = false })
@@ -650,7 +671,7 @@ async function setup() {
       el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmRow.hidden = true } }))
     applyBox.append(
       el('div', { class: 'card' }, el('strong', { text: info.first_setup ? 'Состав ещё не записан. Будет записано' : 'Что изменится' }), ...info.changes.map((c) =>
-        c.field === 'roles' && c.from?.length
+        isListDiff(c)
           ? el('div', { class: 'row' }, el('strong', { text: changeText(c) }))
           : el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: info.first_setup ? 'Записать состав' : 'Применить', onclick: () => { confirmRow.hidden = false } })),
@@ -691,7 +712,8 @@ async function setup() {
     try {
       const [now, doc] = await Promise.all([api('/api/setup/detect'), api('/api/setup/check')])
       const problems = [...(doc.unheld_roles || []).map((r) => `Роль без исполнителя: ${r}`),
-        ...(doc.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`), ...(doc.agents || []).filter((a) => a.available === false || a.ok === false).map((a) => `Агент ${a.id}: ${a.reason || a.how || 'недоступен'}`)]
+        ...(doc.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`),
+        ...(doc.suspended_roles || []).map((s) => `${s.agent} приостановил роль ${s.role}: ${s.reason}. Вернуть: ${s.restore}. Отобрать насовсем: снимите роль выше и примените.`), ...(doc.agents || []).filter((a) => a.available === false || a.ok === false).map((a) => `Агент ${a.id}: ${a.reason || a.how || 'недоступен'}`)]
       checkOut.replaceChildren(
         el('h3', { text: 'Записан ли выбранный состав' }), ...compareBlock(now.current?.machine),
         el('h3', { text: 'Общее состояние набора (не зависит от выбора выше)' }),
