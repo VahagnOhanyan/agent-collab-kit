@@ -177,13 +177,14 @@ test('revert never puts back agents or roles: a composition the owner re-set in 
   await send(started, 'POST', '/api/setup/apply', { agents: IDS, lead: 'codex', single_vendor: false, expect: await expectOf(started) })
   // The owner runs `collab setup` in a terminal: the roles of an agent change and the saved copy is left behind.
   const reset = read(dir)
-  reset.agents[0].roles = ['code_reviewer']
+  // Both reviewing roles stay, so the composition still passes the independence check and only the revert is judged.
+  reset.agents[0].roles = ['code_reviewer', 'ux_reviewer']
   writeFileSync(join(dir, 'agents.json'), `${JSON.stringify(reset, null, 2)}\n`)
   const info = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex&lead=codex&single_vendor=0')).json.apply.revert
   assert.equal(info.available, false)
   const undone = await send(started, 'POST', '/api/setup/revert', { expect: await expectOf(started) })
   assert.equal(undone.status, 409)
-  assert.deepEqual(read(dir).agents[0].roles, ['code_reviewer'])
+  assert.deepEqual(read(dir).agents[0].roles, ['code_reviewer', 'ux_reviewer'])
 })
 
 test('a write that blows up halfway is answered, not fatal, and both files are put back', async (t) => {
@@ -442,11 +443,23 @@ test('facts: a role the machine rules out is shown with the reason and cannot be
   assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
 })
 
+// The two tests below judge how the facts mark a role, on a machine whose roles.json leaves usability reviews to one
+// agent. The independence check would refuse that composition outright (ux_reviewer is in reviewed_by of user-facing
+// work since 2026-10-01; collab/test/independence.test.mjs proves it), so their machine roles.json asks only for a
+// code reviewer — the facts are what is under test here, not independence.
+function withoutUxIndependence(roles) {
+  for (const role of Object.values(roles.roles)) {
+    if (Array.isArray(role.reviewed_by)) role.reviewed_by = role.reviewed_by.filter((r) => r !== 'ux_reviewer')
+  }
+  return roles
+}
+
 test('facts: the first setup leaves out what the machine rules out and marks what it cannot confirm', async (t) => {
   const dir = join(tempDir('panel-facts-first-'), 'machine')
   // On this machine reviewing usability means running the application — which nothing can confirm.
   const roles = structuredClone(loadConfigFrom().roles)
   roles.roles.ux_reviewer.requires = [...roles.roles.ux_reviewer.requires, 'run_application']
+  withoutUxIndependence(roles)
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
   const agents = JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'utf8'))
@@ -473,6 +486,7 @@ test('facts: a role kept on an unconfirmed capability is written with its mark',
   const dir = machineWith()
   const roles = structuredClone(loadConfigFrom().roles)
   roles.roles.ux_reviewer.requires = [...roles.roles.ux_reviewer.requires, 'run_application']
+  withoutUxIndependence(roles)
   writeFileSync(join(dir, 'roles.json'), `${JSON.stringify(roles, null, 2)}\n`)
   const started = await panel(t, dir)
   if (!started) return

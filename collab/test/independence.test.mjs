@@ -219,3 +219,16 @@ test('doctor reports independence from the composition it runs with', () => {
     sbx.cleanup()
   }
 })
+
+test('with the built-in roles, user-facing work whose only ux_reviewer is its author is a problem with two vendors', () => {
+  const { roles } = loadConfigFrom().roles
+  const agents = [
+    { id: 'a', provider: 'p1', roles: ['ios_engineer', 'code_reviewer', 'ux_reviewer'] },
+    { id: 'b', provider: 'p2', roles: ['code_reviewer'] }
+  ]
+  const report = independenceReport({ agents, roleDefs: roles })
+  assert.ok(report.problems.some((p) => p.role === 'ios_engineer' && p.reviewer_role === 'ux_reviewer' && p.only_the_author))
+  // Once the other vendor holds ux_reviewer, nothing is left.
+  agents[1].roles.push('ux_reviewer')
+  assert.deepEqual(independenceReport({ agents, roleDefs: roles }).problems, [])
+})
