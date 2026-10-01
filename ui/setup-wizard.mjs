@@ -90,7 +90,7 @@ export function detectSetup({ registryDir, machineDir, cwd }) {
   }
   const project = describeProject({ cwd, registryDir })
   return {
-    catalog: (catalog.agents || []).map((agent) => ({ id: agent.id, name: agent.name, provider: agent.provider, roles: agent.roles || [] })),
+    catalog: (catalog.agents || []).map((agent) => ({ id: agent.id, name: agent.name, provider: agent.provider, roles: agent.roles || [], install_hint: agent.adapter?.install_hint || null })),
     installed: (catalog.agents || []).filter((agent) => agentInstalled(agent, { which: executableOnPath, exists: existsSync, home: homedir() })).map((agent) => agent.id),
     roles,
     roles_problem: rolesProblem,

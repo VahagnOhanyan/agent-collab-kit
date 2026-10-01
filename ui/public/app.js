@@ -1140,14 +1140,31 @@ async function setup() {
     }
   }
 
-  const agentsBox = el('div', { class: 'list' }, detect.catalog.map((a) => {
+  // An agent whose program is not on this machine is not offered: the composition is this machine's, and an agent
+  // ticked here that cannot run here only confuses the routing. It is listed, folded, with how to install it — so a
+  // program the kit failed to find is still visible. One already written in the composition stays tickable, so it can
+  // be taken out.
+  const writtenIds = new Set(written ? written.agents.map((a) => a.id) : [])
+  const choice = (a) => {
     const installed = detect.installed.includes(a.id)
     const box = el('input', { type: 'checkbox', id: `ag-${a.id}`, checked: chosen.has(a.id), onchange: (e) => {
       if (e.target.checked) chosen.add(a.id); else chosen.delete(a.id)
       drawLead(); drawPreview()
     } })
-    return el('label', { class: 'choice', for: `ag-${a.id}` }, box, el('span', {}, el('strong', { text: a.name || a.id }), ' ', el('span', { class: `pill ${installed ? 'ok' : ''}`, text: installed ? 'найден на машине' : 'не найден' }), el('div', { class: 'muted', text: `${a.provider || ''} · ${(a.roles || []).join(', ')}` })))
-  }))
+    const pill = installed
+      ? el('span', { class: 'pill ok', text: 'найден на машине' })
+      : el('span', { class: 'pill warn', text: 'записан в составе, но на машине не найден' })
+    return el('label', { class: 'choice', for: `ag-${a.id}` }, box, el('span', {}, el('strong', { text: a.name || a.id }), ' ', pill, el('div', { class: 'muted', text: a.provider || '' })))
+  }
+  const offered = detect.catalog.filter((a) => detect.installed.includes(a.id) || writtenIds.has(a.id))
+  const absent = detect.catalog.filter((a) => !offered.includes(a))
+  const agentsBox = el('div', {},
+    offered.length ? el('div', { class: 'list' }, offered.map(choice)) : el('div', { class: 'note warn', text: 'На этой машине не найден ни один агент из каталога. Установите хотя бы одного (подсказки ниже), откройте его один раз и обновите страницу.' }),
+    absent.length
+      ? el('details', { class: 'stale' }, el('summary', { text: `Не найдены на этой машине (${absent.length}): ${absent.map((a) => a.name || a.id).join(', ')}` }),
+          el('div', { class: 'list' }, absent.map((a) => el('div', { class: 'row' },
+            el('span', { class: 'grow' }, el('strong', { text: a.name || a.id }), el('div', { class: 'muted small', text: a.install_hint || 'Установите программу этого агента и откройте её один раз, потом обновите страницу.' }))))))
+      : null)
   const leadBox = el('div', { class: 'list' })
   function drawLead() {
     leadBox.replaceChildren()

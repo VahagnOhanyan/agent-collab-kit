@@ -16,7 +16,8 @@
       "adapter": {
         "kind": "manual",
         "session": "interactive",
-        "cannot": []
+        "cannot": [],
+        "install_hint": "Install Claude Code (https://claude.com/claude-code) so that `claude` is on PATH, sign in once, then run the kit's installer again."
       },
       "briefing_file": "briefings/claude.md",
       "briefing": "You are the Claude Code agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. Read the project's own instructions (CLAUDE.md, AGENTS.md or README). Before you call your own work done, ask for an independent review by ROLE (code_reviewer), not by name. Record anything that should bind later work as a decision. Full instructions: collab brief claude."
@@ -72,7 +73,8 @@
         "kind": "manual",
         "session": "interactive",
         "cannot": [],
-        "note": "Added 2026-10-01 (owner): Cursor's editor agent reads the journal through ~/.cursor/mcp.json, which the installer writes. No CLI adapter yet: without the Cursor CLI (`agent`) nothing can start it on a task, so work reaches it through the inbox. On Windows the editor need not put a `cursor` command on PATH, so ~/.cursor counts as installed (detect_home)."
+        "note": "Added 2026-10-01 (owner): Cursor's editor agent reads the journal through ~/.cursor/mcp.json, which the installer writes. No CLI adapter yet: without the Cursor CLI (`agent`) nothing can start it on a task, so work reaches it through the inbox. On Windows the editor need not put a `cursor` command on PATH, so ~/.cursor counts as installed (detect_home).",
+        "install_hint": "Install Cursor (https://cursor.com) and open it once (that creates ~/.cursor), then run the kit's installer again so collab is registered in ~/.cursor/mcp.json."
       },
       "briefing_file": "briefings/cursor.md",
       "briefing": "You are the Cursor agent (in the editor) on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. Nothing launches you from outside: work arrives in your inbox. Ask for an independent review by ROLE (code_reviewer), not by name; with one vendor it is the same agent in a separate session on another model. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. Full instructions: collab brief cursor."
