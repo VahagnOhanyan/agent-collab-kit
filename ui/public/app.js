@@ -112,7 +112,7 @@ const STATUS_RU = {
   completed: 'завершена', cancelled: 'отменена', created: 'создана', approved: 'одобрена', changes_requested: 'нужны правки',
   blocked: 'заблокирована', waiting_for_user: 'ждёт вас', waiting_for_agent: 'ждёт агента', in_progress: 'в работе', review: 'на ревью',
   pending: 'ожидает', available: 'доступен', offline: 'не в сети', busy: 'занят', waiting: 'ждёт', failed: 'упало', granted: 'выдано',
-  rejected: 'отклонено', open: 'открыто', disputed: 'спор', escalated: 'передано владельцу', decided: 'решено', resolved: 'решено'
+  rejected: 'отклонено', released: 'снято', denied: 'отклонено', open: 'открыто', disputed: 'спор', escalated: 'передано владельцу', decided: 'решено', resolved: 'решено'
 }
 // Why an unfinished task is still unfinished (computed by the panel server, never stored).
 const STANDSTILL_RU = {
@@ -183,7 +183,50 @@ const dataTable = (heads, rows) => el('table', { class: 'data' },
   el('thead', {}, el('tr', {}, heads.map((h) => el('th', { text: h })))),
   el('tbody', {}, rows))
 // A row that opens a page: the whole row is clickable, and the link inside it keeps the keyboard and the middle click.
-const linkRow = (href, cells) => el('tr', { class: 'link', onclick: (e) => { if (!e.target.closest('a')) location.hash = href.replace(/^#/, '') } }, cells)
+const linkRow = (href, cells) => el('tr', { class: 'link', onclick: (e) => { if (!e.target.closest('a, input, label, td.check')) location.hash = href.replace(/^#/, '') } }, cells)
+
+// Whether this panel may write (started from the owner's terminal): asked once, and the write controls are drawn only
+// when it may — a read-only panel shows no button that would only fail.
+let writableOnce = null
+const panelWritable = () => (writableOnce ||= api('/api/panel').then((d) => Boolean(d.writable)).catch(() => false))
+
+// The owner closing or reopening tasks (collab/src/domain/owner.mjs): a reason is required — without one nothing is
+// sent — and the button inside the form is the second, deliberate click.
+function ownerForm({ title, lines = [], warning = null, confirmText, onConfirm, onCancel }) {
+  const reason = el('textarea', { rows: '2', placeholder: 'Причина — обязательно', 'aria-label': 'Причина' })
+  const error = el('div', { class: 'note bad', hidden: true })
+  const ok = el('button', { type: 'button', class: 'primary', text: confirmText, onclick: async () => {
+    const text = reason.value.trim()
+    if (!text) {
+      error.textContent = 'Напишите причину: без неё действие не выполняется.'
+      error.hidden = false
+      reason.focus()
+      return
+    }
+    ok.disabled = true
+    try {
+      await onConfirm(text)
+    } catch (failure) {
+      error.textContent = failure.message
+      error.hidden = false
+      ok.disabled = false
+    }
+  } })
+  const box = el('div', { class: 'card owner-form' }, el('strong', { text: title }),
+    lines.map((line) => el('div', { class: 'muted small', text: line })),
+    warning ? el('div', { class: 'note warn', text: warning }) : null,
+    reason, error,
+    el('div', { class: 'toolbar' }, ok, el('button', { type: 'button', text: 'Отмена', onclick: onCancel })))
+  setTimeout(() => reason.focus(), 0)
+  return box
+}
+const OWNER_CLOSE_LINES = [
+  'Ждущие ревью по задаче снимаются, поручения субагентам без итога закрываются, ждущее одобрение отклоняется.',
+  'Исполнителю придёт письмо с вашей причиной; в задаче останется пометка «закрыта владельцем».'
+]
+const OWNER_OUTCOME_RU = { completed: 'завершена', cancelled: 'отменена' }
+// The note a closed-by-owner task carries, on its page and in the list.
+const ownerClosedNote = (c) => `${OWNER_OUTCOME_RU[c.outcome] || c.outcome} владельцем ${when(c.at)} (была «${statusText(c.from_status)}»): ${c.reason}`
 
 function failure(error) {
   if (error.status === 403) {
@@ -304,16 +347,74 @@ async function tasks(param) {
   // "Not started" and "in work" only repeat the status and the owner beside them; the line under the title is kept
   // for reasons the row does not already show (blocked, changes requested, ready to close, ...).
   const QUIET = new Set(['not_started', 'in_work'])
-  const rows = list.map((t) => ({
-    text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
-    node: linkRow(`#/tasks/${encodeURIComponent(t.id)}`, [
-      td(pill(t.status), 'nw'),
-      td([el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
-        t.standstill && !QUIET.has(t.standstill.code)
-          ? el('div', { class: 'muted small' }, STANDSTILL_RU[t.standstill.code] === statusText(t.status) ? null : [standstillPill(t.standstill), ' '], t.standstill.detail)
-          : null]),
-      td(t.owner ? el('span', { class: 'mono', text: t.owner }) : el('span', { class: 'muted', text: '—' }), 'nw')])
-  }))
+  // The owner closes open tasks in batches from here (a ticked row, one reason for all). Only a panel that may write
+  // shows the boxes; a closed task has none — it is reopened from its own page.
+  const canWrite = await panelWritable()
+  const selected = new Set()
+  // Always there while the panel may write, its buttons greyed until a row is ticked: a bar that appeared on the first
+  // tick pushed the table down, and the next click landed on the row above the one aimed at.
+  const bar = el('div', { class: 'toolbar', hidden: !canWrite })
+  const formBox = el('div', {})
+  const rows = list.map((t) => {
+    const box = canWrite && isOpen(t) ? el('input', { type: 'checkbox', 'aria-label': `Выбрать: ${t.title}`, onchange: (e) => {
+      if (e.target.checked) selected.add(t.id); else selected.delete(t.id)
+      drawBar()
+    } }) : null
+    return {
+      id: t.id,
+      box,
+      text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
+      node: linkRow(`#/tasks/${encodeURIComponent(t.id)}`, [
+        // The whole cell is the box's label: a click a little beside the box ticks it rather than opening the task.
+        canWrite ? td(box ? el('label', { class: 'checkcell' }, box) : null, 'nw check') : null,
+        td([pill(t.status), t.closed_by_owner ? [' ', el('span', { class: 'pill warn', title: ownerClosedNote(t.closed_by_owner), text: 'владельцем' })] : null], 'nw'),
+        td([el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
+          t.standstill && !QUIET.has(t.standstill.code)
+            ? el('div', { class: 'muted small' }, STANDSTILL_RU[t.standstill.code] === statusText(t.status) ? null : [standstillPill(t.standstill), ' '], t.standstill.detail)
+            : null]),
+        td(t.owner ? el('span', { class: 'mono', text: t.owner }) : el('span', { class: 'muted', text: '—' }), 'nw')])
+    }
+  })
+  function closeSelected(outcome) {
+    const ids = [...selected]
+    formBox.replaceChildren(ownerForm({
+      title: `${outcome === 'completed' ? 'Завершить' : 'Отменить'} выбранные задачи: ${ids.length}`,
+      lines: OWNER_CLOSE_LINES,
+      warning: outcome === 'completed' ? 'Задачи будут помечены завершёнными без проверок: обязательное ревью, если оно не пройдено, пропускается. Если работа не сделана — выберите «Отменить».' : null,
+      confirmText: `Да, ${outcome === 'completed' ? 'завершить' : 'отменить'} ${ids.length}`,
+      onCancel: () => formBox.replaceChildren(),
+      onConfirm: async (reason) => {
+        const done = await post('/api/tasks/close', { task_ids: ids, outcome, reason })
+        toast(`${OWNER_OUTCOME_RU[outcome]}: ${done.closed.length}`)
+        await route()
+      }
+    }))
+  }
+  function drawBar() {
+    const none = selected.size === 0
+    if (none) formBox.replaceChildren()
+    bar.replaceChildren(el('span', { class: none ? 'muted' : '', text: none ? 'Отметьте задачи, чтобы отменить или завершить их разом' : `Выбрано: ${selected.size}` }),
+      el('button', { type: 'button', disabled: none, text: 'Отменить выбранные', onclick: () => closeSelected('cancelled') }),
+      el('button', { type: 'button', disabled: none, text: 'Завершить выбранные', onclick: () => closeSelected('completed') }),
+      el('button', { type: 'button', disabled: none, text: 'Снять выбор', onclick: () => {
+        selected.clear()
+        for (const row of rows) if (row.box) row.box.checked = false
+        if (selectAll) selectAll.checked = false
+        formBox.replaceChildren()
+        drawBar()
+      } }))
+  }
+  // "Select all" picks the rows the search leaves visible, never hidden ones.
+  const selectAll = canWrite && rows.some((row) => row.box) ? el('input', { type: 'checkbox', 'aria-label': 'Выбрать все видимые', onchange: (e) => {
+    for (const row of rows) {
+      if (!row.box || row.node.hidden) continue
+      row.box.checked = e.target.checked
+      if (e.target.checked) selected.add(row.id); else selected.delete(row.id)
+    }
+    drawBar()
+  } }) : null
+  if (canWrite && rows.some((row) => row.box)) drawBar()
+  else bar.hidden = true
   const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
   const noun = status ? `«${statusText(status)}»` : all ? 'всего' : 'открытых'
   const count = el('span', { class: 'muted small', text: `${list.length} ${noun}` })
@@ -327,8 +428,10 @@ async function tasks(param) {
     none.hidden = shown > 0
     count.textContent = query ? `${shown} из ${list.length}` : `${list.length} ${noun}`
   } })
+  const table = list.length ? dataTable([...(canWrite ? [''] : []), 'Статус', 'Задача', 'Исполнитель'], rows.map((row) => row.node)) : empty('Задач нет')
+  if (selectAll && table.tagName === 'TABLE') table.querySelector('th').append(selectAll)
   return page('Задачи', status ? `Задачи со статусом «${statusText(status)}»` : all ? 'Все задачи' : 'Открытые задачи', toggle, el('div', { class: 'toolbar' }, search, count),
-    list.length ? dataTable(['Статус', 'Задача', 'Исполнитель'], rows.map((row) => row.node)) : empty('Задач нет'), none)
+    bar, formBox, table, none)
 }
 
 const TERMINAL = new Set(['completed', 'cancelled'])
@@ -337,9 +440,50 @@ async function taskDetail(id) {
   const data = await api(`/api/tasks/${encodeURIComponent(id)}`)
   const t = data.task
   const section = (title, heads, items, render) => [el('h2', { text: title }), items?.length ? dataTable(heads, items.map(render)) : empty('—')]
+  // The owner's buttons (collab/src/domain/owner.mjs), only on a panel that may write: an open task can be completed
+  // or cancelled around its gates; a closed one can be put back in the pool.
+  const canWrite = await panelWritable()
+  const formBox = el('div', {})
+  const closed = TERMINAL.has(t.status)
+  const reviewPassed = (data.reviews || []).some((r) => r.verdict === 'approved')
+  const closeForm = (outcome) => formBox.replaceChildren(ownerForm({
+    title: outcome === 'completed' ? 'Завершить задачу' : 'Отменить задачу',
+    lines: OWNER_CLOSE_LINES,
+    warning: outcome === 'completed' && t.needs_review !== false && !reviewPassed
+      ? 'Ревью не пройдено — задача будет помечена завершённой без проверки. Если работа не сделана, выберите «Отменить».'
+      : null,
+    confirmText: outcome === 'completed' ? 'Да, завершить' : 'Да, отменить',
+    onCancel: () => formBox.replaceChildren(),
+    onConfirm: async (reason) => {
+      await post('/api/tasks/close', { task_ids: [t.id], outcome, reason })
+      toast(`Задача ${OWNER_OUTCOME_RU[outcome]}`)
+      await route()
+    }
+  }))
+  const reopenForm = () => formBox.replaceChildren(ownerForm({
+    title: 'Вернуть в открытые',
+    lines: [`Задача станет «создана», без исполнителя: её возьмёт ${t.role ? `агент с ролью ${t.role}` : 'любой агент'}. Прежний итог и ревью останутся в истории.`,
+      ...(t.needs_review !== false ? ['Чтобы завершить её снова, понадобится пройденное ревью.'] : [])],
+    confirmText: 'Да, вернуть',
+    onCancel: () => formBox.replaceChildren(),
+    onConfirm: async (reason) => {
+      await post('/api/tasks/reopen', { task_id: t.id, reason })
+      toast('Задача снова открыта')
+      await route()
+    }
+  }))
+  const ownerButtons = !canWrite ? [] : closed
+    ? [el('button', { type: 'button', text: 'Вернуть в открытые', onclick: reopenForm })]
+    : [el('button', { type: 'button', text: 'Завершить', onclick: () => closeForm('completed') }),
+       el('button', { type: 'button', text: 'Отменить', onclick: () => closeForm('cancelled') })]
+  const lastReopen = [...(t.owner_history || [])].reverse().find((h) => h.action === 'reopened')
   return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'} · ${t.role || 'роль не указана'}`,
     // Back goes to the list the task can be found in: a closed task is not in the open-only list.
-    el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: TERMINAL.has(t.status) ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' })),
+    el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: closed ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' }),
+      ownerButtons.length ? el('span', { class: 'grow' }) : null, ...ownerButtons),
+    formBox,
+    t.closed_by_owner ? el('div', { class: 'note warn', text: `Закрыта мимо проверок: ${ownerClosedNote(t.closed_by_owner)}` }) : null,
+    lastReopen && !closed ? el('div', { class: 'note', text: `Возвращена владельцем ${when(lastReopen.at)} (была «${statusText(lastReopen.from_status)}»): ${lastReopen.reason}` }) : null,
     data.standstill
       ? el('div', { class: `note ${STANDSTILL_TONE[data.standstill.code] === 'bad' ? 'bad' : 'warn'}` },
           el('strong', { text: `Почему не завершена: ${STANDSTILL_RU[data.standstill.code] || data.standstill.code}` }), el('br'),
@@ -347,7 +491,13 @@ async function taskDetail(id) {
           ...(data.standstill.obstacles || []).filter((o) => o !== data.standstill.detail).flatMap((o) => [el('br'), `Мешает закрытию: ${o}`]))
       : null,
     t.blocked_reason ? el('div', { class: 'note bad', text: `Заблокирована: ${plain(t.blocked_reason)}` }) : null,
-    t.waiting_on && !TERMINAL.has(t.status) ? el('div', { class: 'note warn', text: `Ждёт: ${plain(t.waiting_on)}` }) : null,
+    // What the task waits on, in words; a review it waits on is already named in "Почему не завершена" above.
+    (() => {
+      const w = t.waiting_on
+      if (!w || TERMINAL.has(t.status)) return null
+      const text = typeof w === 'string' ? w : w.kind === 'user' ? `вашего ответа на одобрение ${w.ref || ''}` : w.kind === 'agent' && data.standstill ? null : plain(w)
+      return text ? el('div', { class: 'note warn', text: `Ждёт: ${text}` }) : null
+    })(),
     t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'card' }, prose(t.completion_summary))] : null,
     t.description ? el('div', { class: 'card' }, prose(t.description)) : null,
     t.spec?.acceptance_criteria?.length ? [el('h2', { text: 'Критерии приёмки' }), el('div', { class: 'card' }, t.spec.acceptance_criteria.map((c) => el('div', { text: `• ${c}` })))] : null,

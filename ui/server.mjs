@@ -6,6 +6,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CODES, CollabError } from '../collab/src/errors.mjs'
+import { ownerCloseTasks, ownerReopenTask } from '../collab/src/domain/owner.mjs'
 import { describeProject, isUninitialised } from '../collab/src/api.mjs'
 import { cleanupTask, readBacklog, recordsWord, suggestedRole } from '../collab/src/backlog.mjs'
 import { listProjects } from '../collab/src/projects.mjs'
@@ -19,13 +20,15 @@ const PUBLIC_ROOT = realpathSync(join(HERE, 'public'))
 const CSP = "default-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'"
 const MIME = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' }
 const SAFE_METHODS = new Set(['GET', 'HEAD'])
-// The panel writes exactly two things, both about the lead and the review mode of the machine composition.
-const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert', '/api/backlog/cleanup'])
-const WRITE_BODY_MAX = 4096
+// What the panel writes: the machine composition (the wizard), a backlog cleanup task, and the owner closing or
+// reopening tasks (collab/src/domain/owner.mjs). Every one only from a panel started at the owner's terminal.
+const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert', '/api/backlog/cleanup', '/api/tasks/close', '/api/tasks/reopen'])
+// Room for closing a few hundred tasks at once (an id is ~20 bytes) plus the reason; still a small, bounded read.
+const WRITE_BODY_MAX = 16384
 const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 'expect'])
 const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 't', 'project'])
 const PROJECT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
-const MACHINE_SCREENS = new Set(['/api/kit', '/api/vendors', '/api/setup/detect', '/api/projects'])
+const MACHINE_SCREENS = new Set(['/api/kit', '/api/vendors', '/api/setup/detect', '/api/projects', '/api/panel'])
 const ROLES_PARAM_MAX = 2048
 
 const panelHeaders = () => ({
@@ -361,6 +364,25 @@ export async function startPanel({
       }
       // A failure inside a write is an answer, never a crash of the panel.
       try {
+        // The owner closing tasks (one or a batch, all or nothing) or reopening one. The reason is required by the domain.
+        if (url.pathname === '/api/tasks/close' || url.pathname === '/api/tasks/reopen') {
+          if (typeof writeApiFactory !== 'function') return fail(res, 403, 'READ_ONLY', 'This panel cannot change tasks', options)
+          const closing = url.pathname === '/api/tasks/close'
+          const keys = closing ? ['task_ids', 'outcome', 'reason'] : ['task_id', 'reason']
+          const badShape = Object.keys(body).some((key) => !keys.includes(key)) || typeof body.reason !== 'string' ||
+            (closing ? !Array.isArray(body.task_ids) || !body.task_ids.every((id) => typeof id === 'string') || body.task_ids.length > 500 || typeof body.outcome !== 'string' : typeof body.task_id !== 'string')
+          if (badShape) return fail(res, 400, 'INVALID_INPUT', closing ? 'task_ids, outcome and reason are each required, and nothing else' : 'task_id and reason are each required, and nothing else', options)
+          const ctx = (await writeApiFor(where)).ctx
+          try {
+            const done = closing
+              ? await ownerCloseTasks(ctx, { task_ids: body.task_ids, outcome: body.outcome, reason: body.reason })
+              : await ownerReopenTask(ctx, { task_id: body.task_id, reason: body.reason })
+            return sendJson(res, 200, { ok: true, ...done }, { ...options, headers: authHeaders })
+          } catch (error) {
+            if (error instanceof CollabError) return sendJson(res, 409, { ok: false, reason: error.message }, { ...options, headers: authHeaders })
+            throw error
+          }
+        }
         if (url.pathname === '/api/backlog/cleanup') {
           if (Object.keys(body).some((key) => !['feature', 'role', 'expect'].includes(key)) || typeof body.feature !== 'string' || typeof body.role !== 'string' || typeof body.expect !== 'string') {
             return fail(res, 400, 'INVALID_INPUT', 'feature, role and expect are each required, and nothing else', options)
@@ -452,6 +474,8 @@ export async function startPanel({
       if (url.pathname === '/api/vendors') return sendJson(res, 200, { unadapted: await vendorsLookup() }, { ...options, headers: authHeaders })
       // The switcher's list: the connected projects of the trusted registry, whether each has a journal yet, and which
       // one the panel was started in (shown when nothing is chosen).
+      // What this panel may do: the page shows write controls (close/reopen tasks) only when the answer is yes.
+      if (url.pathname === '/api/panel') return sendJson(res, 200, { writable: allowWrite && typeof writeApiFactory === 'function' }, { ...options, headers: authHeaders })
       if (url.pathname === '/api/projects') {
         const started = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
         // No root in the answer: the page does not need it, and a root outside the home would not be scrubbed.

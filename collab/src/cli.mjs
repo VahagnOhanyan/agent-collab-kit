@@ -26,6 +26,7 @@ import { findProject, listProjects } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { restoreRole } from './domain/agents.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
+import { ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
 import { catalogFor, loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
@@ -985,6 +986,28 @@ const COMMANDS = {
     if (!settled.adr_ref) out(dim("if this binds everyone, write it into the project's decision records and re-run with --adr <path>"))
   },
 
+  // The owner closing tasks around the review gate, or reopening a closed one (domain/owner.mjs). The domain functions
+  // directly, as approvals are answered: the agents' API has neither on purpose. Same barriers as an approval.
+  async close(api, { args, flags }) {
+    const outcome = flags.cancel ? 'cancelled' : flags.complete ? 'completed' : null
+    if (!args.length || !outcome || flags.cancel === flags.complete || typeof flags.reason !== 'string') {
+      throw new CollabError('INVALID_INPUT', 'usage: collab close <task-id>… (--complete | --cancel) --reason "why"')
+    }
+    refuseUnlessOwnerAtTerminal('collab close')
+    const result = await ownerCloseTasks(api.ctx, { task_ids: args, outcome, reason: flags.reason })
+    for (const r of result.closed) {
+      out(`${paint(r.status)}  ${r.id}  (was ${r.from_status})` +
+        dim(`${r.released_reviews.length ? `  reviews released: ${r.released_reviews.length}` : ''}${r.closed_delegations ? `  delegations closed: ${r.closed_delegations}` : ''}${r.denied_approval ? `  approval denied: ${r.denied_approval}` : ''}`))
+    }
+  },
+
+  async reopen(api, { args, flags }) {
+    if (args.length !== 1 || typeof flags.reason !== 'string') throw new CollabError('INVALID_INPUT', 'usage: collab reopen <task-id> --reason "why"')
+    refuseUnlessOwnerAtTerminal('collab reopen')
+    const result = await ownerReopenTask(api.ctx, { task_id: args[0], reason: flags.reason })
+    out(`${paint(result.status)}  ${result.id}  (was ${result.from_status}); nobody holds it, any agent with its role may take it`)
+  },
+
   async runs(api, { flags }) {
     const list = api.listRuns({ failed_only: Boolean(flags.failed) })
     if (!list.length) return out(dim('no runs'))
@@ -1161,6 +1184,8 @@ const COMMANDS = {
       `  approve <id>           ${C.yellow}authorise a request. Interactive terminal only${C.off}`,
       `  reject <id> --note     ${C.yellow}decline a request${C.off}`,
       '  decide <id> <outcome>  settle a disagreement the agents could not',
+      '  close <id>… (--complete|--cancel) --reason "…"  close tasks around the review gate, marked as closed by the owner; owner only',
+      '  reopen <id> --reason "…"  put a completed or cancelled task back in the pool (created, nobody holds it); owner only',
       '  role [list]            roles agents suspended themselves ("cannot do it here")',
       `  role restore <agent> <role>  ${C.yellow}give a suspended role back. Interactive terminal only${C.off}`,
       '  runs [--failed]        check results',
@@ -1182,6 +1207,17 @@ function describeTo(to) {
   if (to.role) return `role:${to.role}`
   if (to.capability) return `capability:${to.capability}`
   return '?'
+}
+
+function refuseUnlessOwnerAtTerminal(what) {
+  if (process.env.COLLAB_AGENT_ID) {
+    process.stderr.write(`refusing: COLLAB_AGENT_ID is set to "${process.env.COLLAB_AGENT_ID}", so this is an agent's shell.\n${what} is the owner's, at their own terminal.\n`)
+    process.exit(3)
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write(`refusing: ${what} needs an interactive terminal — it is the owner's decision, not a script's.\n`)
+    process.exit(3)
+  }
 }
 
 async function resolveApprovalInteractively(api, { args, flags }, decision) {

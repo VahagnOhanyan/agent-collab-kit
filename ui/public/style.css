@@ -102,6 +102,11 @@ button.primary { background: var(--accent); color: #0b1220; border-color: var(--
 button:disabled { opacity: .5; cursor: default; }
 input[type="search"], input[type="text"] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; min-width: 240px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; flex-wrap: wrap; }
+.toolbar .grow { flex: 1; }
+table.data td.check { padding: 0; }
+table.data td.check label.checkcell { display: block; padding: 7px 12px; cursor: pointer; }
+.owner-form textarea { display: block; width: 100%; box-sizing: border-box; margin: 8px 0; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; resize: vertical; }
+.owner-form .toolbar { margin: 0; }
 .tabs { display: flex; gap: 4px; }
 .tabs button[aria-pressed="true"] { border-color: var(--accent); background: var(--surface); }
 

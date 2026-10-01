@@ -246,7 +246,7 @@ test('every way of getting a write past the panel is refused and leaves the file
     ['a string instead of a boolean', { ...good, single_vendor: 'true' }, {}, 400],
     ['not JSON', '{nope', {}, 400],
     ['a JSON array', '[]', {}, 400],
-    ['an oversized body', { ...good, lead: 'a'.repeat(5000) }, {}, 413],
+    ['an oversized body', { ...good, lead: 'a'.repeat(20000) }, {}, 413],
     ['a lead that is not an agent', { ...good, lead: 'gemini' }, {}, 409],
     ['another set of agents', { ...good, agents: ['claude'] }, {}, 409],
     ['a stale fingerprint', { ...good, expect: '0'.repeat(64) }, {}, 409]
