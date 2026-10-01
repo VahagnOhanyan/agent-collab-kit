@@ -777,7 +777,10 @@ async function setup() {
     // `collab setup` writes what steps 1–3 choose (agents, lead, review mode), so it sits under step 3. When the
     // panel can write the same thing itself, the command is only the fallback and stays folded.
     terminalBox.replaceChildren(...preview.commands.filter((c) => c.command.startsWith('collab setup')).map((c) => {
-      const body = el('div', {}, command(c.command, 'команду настройки состава'), c.note ? el('div', { class: 'muted small', text: c.note }) : null)
+      // After "Применить" the check runs by itself; after the command in a terminal the panel cannot know, so the
+      // owner asks for it here, next to the command.
+      const body = el('div', {}, command(c.command, 'команду настройки состава'), c.note ? el('div', { class: 'muted small', text: c.note }) : null,
+        el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Команда выполнена — проверить', onclick: runCheck })))
       const folded = detect.writable && preview.apply?.available
       return el('details', { class: 'stale', open: folded ? undefined : true }, el('summary', { text: 'Шаги 1–3 из терминала (запасной путь)' }), body)
     }))
@@ -790,10 +793,7 @@ async function setup() {
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
       el('h2', { id: 'step-6', text: '6. Применить' }),
-      el('p', { class: 'sub', text: 'Панель записывает выбранное только после вашего подтверждения.' }),
-      applyBlock(preview.apply),
-      el('div', { class: 'toolbar' },
-        el('button', { type: 'button', text: 'Проверить, что получилось', title: 'Нужно, только если вы меняли состав в терминале: после «Применить» и «Записать состав» проверка запускается сама', onclick: runCheck })))
+      applyBlock(preview.apply))
   }
 
   // Step 4: a checkbox for every role the agent can hold (its capabilities allow it), ticked when it holds it.
@@ -919,15 +919,20 @@ async function setup() {
           applyBox.append(el('div', { class: 'note bad', text: error.message }))
         }
       }
-      row.append(el('span', { text: 'Вернуть прежнее?' }),
-        el('button', { type: 'button', class: 'primary', text: 'Да, вернуть', onclick: undo }),
-        el('button', { type: 'button', text: 'Отмена', onclick: () => { row.hidden = true } }))
-      return el('div', {},
-        el('div', { class: 'muted', text: `Сохранён прежний состав: ${info.revert.changes.map(changeText).join('; ')}` }),
-        el('button', { type: 'button', text: 'Вернуть прежний', onclick: () => { row.hidden = false } }), row)
+      row.append(el('span', { text: 'Отменить прошлое изменение?' }),
+        el('button', { type: 'button', class: 'primary', text: 'Да, отменить', onclick: undo }),
+        el('button', { type: 'button', text: 'Нет', onclick: () => { row.hidden = true } }))
+      return el('div', { class: 'card' },
+        el('strong', { text: 'Отменить прошлое изменение' }),
+        el('div', { class: 'muted', text: `Вернётся: ${info.revert.changes.map(changeText).join('; ')}.` }),
+        el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Отменить', onclick: () => { row.hidden = false } })), row)
     })() : null
+    // Nothing chosen differs from what is written: the button stays, greyed, and says why — no separate sentence.
     if (!info.changes.length) {
-      applyBox.append(...[el('div', { class: 'note ok', text: 'Так уже записано на машине: менять нечего.' }), back].filter(Boolean))
+      applyBox.append(
+        el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', disabled: true, text: 'Применить' }),
+          el('span', { class: 'muted', text: 'Нечего применять: выбор выше совпадает с тем, что записано.' })),
+        ...(back ? [back] : []))
       return applyBox
     }
     const confirmRow = el('div', { class: 'toolbar', hidden: true })
@@ -966,7 +971,7 @@ async function setup() {
   // chosen above, then the general health of the kit.
   const compareBlock = (machine) => {
     if (!lastPlan) return [el('div', { class: 'note warn', text: 'Выбор выше неполный, сравнивать не с чем.' })]
-    if (!machine) return [el('div', { class: 'note warn', text: 'Не применено: на этой машине состав ещё не записан. Выполните команду из шага 7 в терминале и нажмите «Проверить» снова.' })]
+    if (!machine) return [el('div', { class: 'note warn', text: 'Не применено: на этой машине состав ещё не записан. Выполните команду под шагом 3 в терминале и проверьте снова.' })]
     if (machine.problem) return [el('div', { class: 'note bad', text: `Файл состава на машине не читается: ${machine.problem}` })]
     const want = new Set(lastPlan.agents.map((a) => a.id))
     const have = new Set(machine.agents.map((a) => a.id))
@@ -992,6 +997,8 @@ async function setup() {
 
   const runCheck = async () => {
     checkOut.replaceChildren(el('h2', { text: 'Проверка' }), el('div', { class: 'muted', text: 'Проверяю…' }))
+    // The answer lands at the bottom of the wizard, far from the button that asked for it.
+    checkOut.scrollIntoView({ behavior: 'auto', block: 'start' })
     try {
       const [now, doc] = await Promise.all([api('/api/setup/detect'), api('/api/setup/check')])
       const problems = [...(doc.unheld_roles || []).map((r) => `Роль без исполнителя: ${r}`),
