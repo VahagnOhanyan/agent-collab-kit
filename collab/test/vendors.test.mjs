@@ -79,7 +79,7 @@ test('an adopted vendor joins the catalog the wizard offers and is no longer nam
     const machineDir = join(m.base, 'machine')
     mkdirSync(join(machineDir, 'adapters'), { recursive: true })
     const adapter = { id: 'grok', provider: 'xai', binary: 'grok', registration: { kind: 'json-file' } }
-    // As agent-kit-install --adopt-profile writes it: the file and the owner's approval mark beside it.
+    // As agent-collab-kit-install --adopt-profile writes it: the file and the owner's approval mark beside it.
     const approved = (name, value) => {
       const file = join(machineDir, 'adapters', name)
       writeFileSync(file, JSON.stringify(value))

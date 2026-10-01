@@ -117,9 +117,9 @@ test('detect видит PATH и регистрацию в agents.json', { skip: 
   } finally { w.cleanup(); }
 });
 
-// The installed copy is reached through the `~/.agent-kit/current` link: run that way the script used to exit 0 with
+// The installed copy is reached through the `~/.agent-collab-kit/current` link: run that way the script used to exit 0 with
 // no output at all, so an agent read "nothing found".
-test('запуск через символическую ссылку на каталог (как из ~/.agent-kit/current) печатает результат', { skip: skipWindows }, () => {
+test('запуск через символическую ссылку на каталог (как из ~/.agent-collab-kit/current) печатает результат', { skip: skipWindows }, () => {
   const w = world();
   try {
     const link = join(w.base, 'current');

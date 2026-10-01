@@ -55,7 +55,7 @@ above L0 with no plan is worth a question before work, not a guess.
    exits 0 and proves nothing.
 4. **Say what you did not check.** "Tests not run" is a better report than "should work".
 5. **User-facing work follows the UX guidance.** If the task's `spec.ux_impact` is LOW or
-   higher, read `~/.agent-kit/current/skills/ux-guidance/SKILL.md` before the first edit,
+   higher, read `~/.agent-collab-kit/current/skills/ux-guidance/SKILL.md` before the first edit,
    plus only the references its table names for the task's `spec.ux_domains`. For LOW that
    is the five-line check; for MEDIUM/HIGH answer the questions that apply and keep the
    answers as acceptance criteria. HIGH (or MEDIUM with `needs_ux_critic`) is not completed

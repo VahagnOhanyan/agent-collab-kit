@@ -42,8 +42,8 @@ function claimingEntry(cwd, home, registryDir, { anyEntry = false } = {}) {
   // Оба места, которые collab выбирает по умолчанию (defaultRegistryDir): постоянный реестр и реестр релиза.
   const roots = [
     typeof registryDir === 'string' && registryDir,
-    path.join(home, '.agent-kit', 'projects'),
-    path.join(home, '.agent-kit', 'current', 'projects'),
+    path.join(home, '.agent-collab-kit', 'projects'),
+    path.join(home, '.agent-collab-kit', 'current', 'projects'),
   ].filter(Boolean);
   const here = realpathLoose(cwd);
   for (const root of new Set(roots)) {

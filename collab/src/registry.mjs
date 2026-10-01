@@ -694,7 +694,7 @@ export function catalogFor(config, machineDir = MACHINE_CONFIG_DIR) {
 
 // ── machine adapters (vendor-probe, stage 2) ─────────────────────────────────
 // A vendor this kit has no built-in adapter for, adopted on THIS machine from a checked profile
-// (`agent-kit-install --adopt-profile`): <machineDir>/adapters/<id>.json, outside git. It joins the catalog as an
+// (`agent-collab-kit-install --adopt-profile`): <machineDir>/adapters/<id>.json, outside git. It joins the catalog as an
 // ordinary agent — the wizard offers it, `collab setup` accepts it — and never as anything more: no process is started
 // for it (adapter kind manual), what it may do is cut by the facts like any agent's, and a built-in agent with the
 // same id always wins.
@@ -715,7 +715,7 @@ export function machineAdapterAgents(machineDir = MACHINE_CONFIG_DIR) {
       const file = join(dir, name)
       if (!lstatSync(file).isFile()) continue
       const bytes = readFileSync(file)
-      // Only what the owner approved (agent-kit-install writes <file>.approved = its sha-256): an adapter edited by
+      // Only what the owner approved (agent-collab-kit-install writes <file>.approved = its sha-256): an adapter edited by
       // hand or dropped in without adoption is not offered — the installer refuses it the same way.
       const mark = `${file}.approved`
       if (!existsSync(mark) || !lstatSync(mark).isFile() || readFileSync(mark, 'utf8').trim() !== createHash('sha256').update(bytes).digest('hex')) continue

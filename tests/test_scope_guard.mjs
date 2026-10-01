@@ -1,7 +1,7 @@
-// Тесты hooks/scope-guard.mjs. Хук запускается как у хоста — через bin/agent-kit-hook, отдельным
+// Тесты hooks/scope-guard.mjs. Хук запускается как у хоста — через bin/agent-collab-kit-hook, отдельным
 // процессом: важны код выхода (2 = блок, всё остальное хост пропускает) и русское сообщение в stderr.
 //
-// Чёрного хода в хуке нет: заглушка `collab` кладётся по боевому пути <HOME>/.agent-kit/current/bin/collab
+// Чёрного хода в хуке нет: заглушка `collab` кладётся по боевому пути <HOME>/.agent-collab-kit/current/bin/collab
 // во временном HOME. Фикстуры живут в каталоге временных файлов ОС, который на macOS НЕ под /tmp
 // (/var/folders/…): под /tmp хук даёт особое исключение, его тесты создают каталоги под /tmp явно.
 import assert from 'node:assert/strict';
@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 const WINDOWS = process.platform === 'win32';
 const GIT = ['/usr/bin/git', '/opt/homebrew/bin/git'].find((g) => !WINDOWS && spawnSync(g, ['--version']).status === 0) ?? (WINDOWS ? 'git' : null);
 const skipNoSymlink = WINDOWS ? 'symlink на Windows требует прав' : false;
@@ -47,7 +47,7 @@ function world() {
       writeFileSync(join(dirs.registry, 'demo', 'scopes.json'), raw ?? JSON.stringify(scopes));
     },
     collab({ json, raw, exitCode = 0, hang = false, home = dirs.home } = {}) {
-      const binDir = join(home, '.agent-kit', 'current', 'bin');
+      const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
       mkdirSync(binDir, { recursive: true });
       const payload = join(binDir, 'collab.payload');
       writeFileSync(payload, raw ?? JSON.stringify(json ?? {}));
@@ -134,7 +134,7 @@ scenario('корень кода сам может лежать под .claude/wo
 });
 
 scenario('защищённые каталоги HOME блокируются раньше запуска collab', (w) => {
-  for (const name of ['agent-kit', '.agent-kit', '.claude', '.codex']) {
+  for (const name of ['agent-collab-kit', '.agent-collab-kit', '.claude', '.codex']) {
     const r = w.run({ tool_name: 'Edit', tool_input: { file_path: join(w.home, name, 'secret.py') }, cwd: w.home });
     assert.equal(r.code, 2, name);
     assert.match(r.err, /защищённого каталога/, name);
@@ -406,7 +406,7 @@ scenario('KIT_COLLAB_BIN ничего не значит', async (w) => {
   w.scopes({ implementer: { allow: ['App/', 'shared/'], deny: [] } });
   const otherHome = join(w.base, 'other-home');
   w.collabOk({ home: otherHome });
-  const forged = join(otherHome, '.agent-kit', 'current', 'bin', 'collab');
+  const forged = join(otherHome, '.agent-collab-kit', 'current', 'bin', 'collab');
   assert.equal(w.run(w.event('shared/x.swift'), { extraEnv: { KIT_COLLAB_BIN: forged } }).code, 2);
   const { readFileSync } = await import('node:fs');
   assert.ok(!readFileSync(join(dirname(LAUNCHER), '..', 'hooks', 'scope-guard.mjs'), 'utf8').includes('KIT_COLLAB_BIN'));

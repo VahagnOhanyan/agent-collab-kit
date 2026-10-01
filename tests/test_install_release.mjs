@@ -70,7 +70,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.ok(r.stdout.includes(`node for registrations: ${NODE}\n`), r.stdout)
   assert.match(r.stdout, new RegExp(`installed: ${SHA1}`))
   assert.match(r.stdout, /previous: {2}none/)
-  assert.match(r.stdout, /rollback: {2}.*agent-kit-install --rollback/)
+  assert.match(r.stdout, /rollback: {2}.*agent-collab-kit-install --rollback/)
   assert.match(r.stdout, /перезапустите открытые сессии Claude, Codex и Gemini/)
 
   assert.equal(readLink(A.kit('current')), currentTarget(A.home, SHA1))
@@ -87,7 +87,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   // Skills and agents: a symlinked directory/file under ~/.claude/skills or
   // ~/.claude/agents is invisible to Claude Code's own discovery (confirmed
   // 2026-09-16), so on POSIX these four are real copies refreshed from
-  // `current` on every install/rollback (posixCopy in agent-kit-install's
+  // `current` on every install/rollback (posixCopy in agent-collab-kit-install's
   // linkSpecs) — not symlinks, unlike everything else user-level here.
   // Windows was always a copy for the agents (no admin-free file symlink);
   // this only changes POSIX and adds the same treatment for directories.
@@ -118,7 +118,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   const launcher = spawnSync(join(A.bindir, LAUNCHER_NAME), ['check-config'], { encoding: 'utf8', env: cleanEnv(), shell: IS_WINDOWS })
   assert.equal(launcher.status, 0, launcher.stderr)
 
-  const server = join(A.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
+  const server = join(A.home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
   assert.deepEqual(mutating(A.claudeCalls()), [['mcp', 'add', '-s', 'user', 'collab', '-e', 'COLLAB_AGENT_ID=claude', '--', NODE, server]])
   assert.deepEqual(A.claudeState().collab, { scope: 'user', command: NODE, args: [server], env: { COLLAB_AGENT_ID: 'claude' } })
 
@@ -128,7 +128,7 @@ test('clean install: kit tests green, release activated, links, Claude and Codex
   assert.equal(backups.length, 1)
   assert.equal(readFileSync(join(A.home, '.codex', backups[0]), 'utf8'), CODEX_FIXTURE)
   assert.equal(A.codexCalls(), '', 'codex itself is never run')
-  assert.ok(!existsSync(join(A.home, '.agent-kit.lock')))
+  assert.ok(!existsSync(join(A.home, '.agent-collab-kit.lock')))
 })
 
 test('a gitignored project registry on disk is copied into the release, not just projects/README.md from the archive', () => {

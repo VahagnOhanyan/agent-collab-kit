@@ -1,4 +1,4 @@
-// Agent Kit panel: read-only views over the collab journal and the kit files.
+// Agent Collab Kit panel: read-only views over the collab journal and the kit files.
 // Everything the journal contains was written by agents, so it is untrusted:
 // every value goes into the page through textContent, never as markup.
 'use strict'
@@ -1030,7 +1030,7 @@ async function route() {
   // Somebody navigated again while this screen was loading: its result is stale.
   if (seq !== routeSeq) return
   main.replaceChildren(...[nodes].flat(3).filter(Boolean))
-  document.title = `${TITLES[name] || TITLES.overview} · Agent Kit`
+  document.title = `${TITLES[name] || TITLES.overview} · Agent Collab Kit`
   main.focus({ preventScroll: true })
   refreshBadge()
 }

@@ -23,8 +23,8 @@ function withHome(body, { link = true } = {}) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'agent-cmd-')));
   try {
     const home = join(base, 'home');
-    mkdirSync(join(home, '.agent-kit'), { recursive: true });
-    if (link) symlinkSync(ROOT, join(home, '.agent-kit', 'current'));
+    mkdirSync(join(home, '.agent-collab-kit'), { recursive: true });
+    if (link) symlinkSync(ROOT, join(home, '.agent-collab-kit', 'current'));
     return body(home, base);
   } finally {
     rmSync(base, { recursive: true, force: true });
@@ -42,7 +42,7 @@ const bash = (command, tool = 'Bash') => ({ tool_name: tool, tool_input: { comma
 for (const [agent, hook, matcher] of [['verifier', 'readonly-guard', 'Bash'], ['implementer', 'scope-guard', 'Edit|Write|NotebookEdit']]) {
   test(`${agent}: строка хука — node + лаунчер, без python, с || exit 2 и таймаутом больше сторожа`, () => {
     const { front, command } = frontmatter(agent);
-    assert.ok(command.includes(`node "$HOME/.agent-kit/current/bin/agent-kit-hook" ${hook}`), command);
+    assert.ok(command.includes(`node "$HOME/.agent-collab-kit/current/bin/agent-collab-kit-hook" ${hook}`), command);
     assert.doesNotMatch(command, /python/);
     assert.ok(command.trimEnd().endsWith('|| exit 2'), command);
     assert.ok(front.includes(`matcher: "${matcher}"`));

@@ -12,7 +12,7 @@
 # set …/XCTestDevices", "Channel disconnected"). A lock that only the test
 # script took did not help — everything else ran past it.
 #
-# What goes through here (regulation: ~/agent-kit/rules/apple-toolchain.md):
+# What goes through here (regulation: ~/agent-collab-kit/rules/apple-toolchain.md):
 # `xcodebuild` build/test, `simctl boot|shutdown|erase|install|launch|clone`,
 # `devicectl … install|launch`, and any script that runs them.
 #

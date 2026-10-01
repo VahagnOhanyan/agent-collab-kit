@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// agent-kit-install — install the COMMITTED state of ~/agent-kit as a release.
+// agent-collab-kit-install — install the COMMITTED state of ~/agent-collab-kit as a release.
 //
-//   ~/.agent-kit/releases/<sha>/   one directory per installed commit (git archive)
-//   ~/.agent-kit/current           symlink to the active release, switched atomically
-//   ~/.agent-kit/history.jsonl     {at, sha, previous, commit, action} per switch
+//   ~/.agent-collab-kit/releases/<sha>/   one directory per installed commit (git archive)
+//   ~/.agent-collab-kit/current           symlink to the active release, switched atomically
+//   ~/.agent-collab-kit/history.jsonl     {at, sha, previous, commit, action} per switch
 //
 // Everything user-level is tied to `current`, never to a release, so a
 // rollback is one symlink switch: the `collab` launcher and the MCP
@@ -24,7 +24,7 @@
 // releases is the only irreversible step and runs last, after success.
 //
 // Deliberately stdlib only and CommonJS (no extension, no package.json), like
-// bin/collab. Usage: agent-kit-install --help
+// bin/collab. Usage: agent-collab-kit-install --help
 'use strict'
 
 const fs = require('node:fs')
@@ -57,6 +57,17 @@ const BINDIR_CANDIDATES = Object.freeze(
     : ['/opt/homebrew/bin', '/usr/local/bin']
 )
 const SERVER_REL = 'collab/src/mcp/server.mjs'
+
+// The kit was called agent-kit until 01.10.2026. A machine installed under the old name is moved on the next install
+// (~/.agent-kit -> ~/.agent-collab-kit, a link left at the old path), and what the old name registered — hooks,
+// the Claude MCP entry, the managed block of Codex's AGENTS.md — is recognised as this kit's, so it is replaced in
+// place, never duplicated or refused. These are the only places the old name is written on purpose.
+const LEGACY_KIT_DIR = '.agent-kit'
+const LEGACY_SOURCE_DIR = 'agent-kit'
+const LEGACY_HOOK = 'agent-kit-hook'
+// Exactly what the old installer wrote — not a prefix, so a person's own "agent-kit" note is never taken for ours.
+const LEGACY_RULES_BEGIN = '<!-- agent-kit: begin — managed by agent-kit-install; edit ~/agent-kit, not this block -->'
+const LEGACY_RULES_END = '<!-- agent-kit: end -->'
 const REQUIRED_PATHS = Object.freeze([
   'agents/implementer.md',
   'agents/verifier.md',
@@ -85,7 +96,7 @@ const REQUIRED_PATHS = Object.freeze([
   'hooks/lib/plan-gate.mjs',
   'hooks/lib/project.mjs',
   'hooks/lib/shellparse.mjs',
-  'bin/agent-kit-hook',
+  'bin/agent-collab-kit-hook',
   'bin/collab',
   'bin/apple-lock',
   'collab/src/mcp/server.mjs',
@@ -139,6 +150,15 @@ const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex')
 // exact string compare of two "identical" paths can spuriously fail there.
 const samePath = (a, b) => (IS_WINDOWS ? path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase() : a === b)
 const isInside = (child, parent) => samePath(child, parent) || (IS_WINDOWS ? path.normalize(child).toLowerCase() : child).startsWith((IS_WINDOWS ? path.normalize(parent).toLowerCase() : parent) + path.sep)
+// Inside this kit's directory — under its name, its real path, or its old name (LEGACY_KIT_DIR: a link written before
+// the rename still points there, and after the move that path is a link to the new one).
+// The old path counts only while it is the link this kit left there (it resolves to the kit's own directory): a
+// ~/.agent-kit pointing anywhere else is somebody else's.
+const legacyIsOurLink = (ctx) => {
+  const old = path.join(ctx.home, LEGACY_KIT_DIR)
+  return Boolean(lstatOrNull(old)?.isSymbolicLink()) && (samePath(realpathOr(old), ctx.kitDirReal) || samePath(realpathOr(old), realpathOr(ctx.kitDir)))
+}
+const insideKit = (ctx, p) => isInside(p, ctx.kitDir) || isInside(p, ctx.kitDirReal) || (legacyIsOurLink(ctx) && isInside(p, path.join(ctx.home, LEGACY_KIT_DIR)))
 // This string is only ever printed as a paste-and-run hint (rollbackCommand),
 // never executed by this process — POSIX single-quote escaping is simply
 // invalid syntax in cmd.exe/PowerShell, so Windows gets its own quoting.
@@ -339,7 +359,7 @@ function ensureDir(dir, journal) {
 // directory, and guesses wrong. Every Windows call site below passes an
 // explicit type and an absolute target for exactly that reason.
 function atomicSymlink(target, dest, type) {
-  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.agent-kit-tmp-${process.pid}-${rand()}`)
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.agent-collab-kit-tmp-${process.pid}-${rand()}`)
   fs.symlinkSync(target, tmp, type)
   try {
     fs.renameSync(tmp, dest)
@@ -357,7 +377,7 @@ function atomicSymlink(target, dest, type) {
 // set; on a personal single-user Windows machine that gap is accepted, not
 // fixed, and is called out here rather than left silent.
 function writeFileAtomic(file, buffer, mode) {
-  const tmp = `${file}.agent-kit-tmp-${process.pid}-${rand()}`
+  const tmp = `${file}.agent-collab-kit-tmp-${process.pid}-${rand()}`
   const fd = fs.openSync(tmp, 'wx', mode)
   try {
     fs.writeSync(fd, buffer)
@@ -376,13 +396,13 @@ function writeFileAtomic(file, buffer, mode) {
 
 // ── arguments ──────────────────────────────────────────────────────────────
 
-const HELP = `usage: agent-kit-install [options]
+const HELP = `usage: agent-collab-kit-install [options]
 
-Installs the committed HEAD of the source repository as ~/.agent-kit/releases/<sha>,
-switches ~/.agent-kit/current to it, links skills/agents/rules/collab and registers the
+Installs the committed HEAD of the source repository as ~/.agent-collab-kit/releases/<sha>,
+switches ~/.agent-collab-kit/current to it, links skills/agents/rules/collab and registers the
 collab MCP server with Claude Code (user scope) and Codex.
 
-  --source <dir>       source git repository (default: <home>/agent-kit)
+  --source <dir>       source git repository (default: <home>/agent-collab-kit)
   --home <dir>         home directory to install into (default: $HOME)
   --bindir <dir>       where the collab launcher is linked (default: first of ${BINDIR_CANDIDATES.join(', ')} that exists)
   --claude-bin <path>  Claude Code executable (default: claude)
@@ -398,7 +418,7 @@ collab MCP server with Claude Code (user scope) and Codex.
   --adopt-profile <profile.json>
                        connect a vendor the kit has no adapter for, from the profile its
                        vendor-probe reconnaissance wrote: shows what it will write, asks
-                       "да" at a terminal, writes ~/.agent-kit/collab/adapters/<id>.json and
+                       "да" at a terminal, writes ~/.agent-collab-kit/collab/adapters/<id>.json and
                        the vendor's MCP settings (with a backup), then checks them with the
                        vendor's own command — and puts everything back if the check fails
   -h, --help           this text
@@ -563,7 +583,7 @@ function makeContext(opts) {
     }
   }
 
-  const kitDir = path.join(home, '.agent-kit')
+  const kitDir = path.join(home, '.agent-collab-kit')
   const currentPath = path.join(kitDir, 'current')
   return {
     opts,
@@ -572,18 +592,18 @@ function makeContext(opts) {
     realHome,
     bindir,
     kitDir,
-    kitDirReal: path.join(realpathOr(home), '.agent-kit'),
+    kitDirReal: path.join(realpathOr(home), '.agent-collab-kit'),
     releasesDir: path.join(kitDir, 'releases'),
     tmpDir: path.join(kitDir, 'tmp'),
     currentPath,
     historyPath: path.join(kitDir, 'history.jsonl'),
-    lockPath: path.join(home, '.agent-kit.lock'),
+    lockPath: path.join(home, '.agent-collab-kit.lock'),
     serverPath: path.join(currentPath, SERVER_REL),
     codexConfig: path.join(home, '.codex', 'config.toml'),
     geminiConfig: path.join(home, '.gemini', 'config', 'mcp_config.json'),
     claudeBin: opts.claudeBin || 'claude',
     claudeDirs: resolveClaudeConfigDirs(opts, home),
-    source: path.resolve(opts.source || path.join(home, 'agent-kit'))
+    source: path.resolve(opts.source || path.join(home, 'agent-collab-kit'))
   }
 }
 
@@ -616,7 +636,7 @@ function acquireLock(ctx) {
       } catch (e) {
         alive = e.code === 'EPERM'
       }
-      if (alive) throw new InstallError(`another agent-kit-install is running (pid ${pid}, lock ${ctx.lockPath})`)
+      if (alive) throw new InstallError(`another agent-collab-kit-install is running (pid ${pid}, lock ${ctx.lockPath})`)
       fs.rmSync(ctx.lockPath, { force: true })
     }
   }
@@ -627,6 +647,9 @@ function acquireLock(ctx) {
 
 function inspectSource(ctx) {
   const dir = ctx.source
+  if (!lstatOrNull(dir) && !ctx.opts.source && lstatOrNull(path.join(ctx.home, LEGACY_SOURCE_DIR))) {
+    throw new InstallError(`source ${dir} does not exist, but ${path.join(ctx.home, LEGACY_SOURCE_DIR)} does: the kit was renamed agent-collab-kit — move the repository (mv ~/${LEGACY_SOURCE_DIR} ~/agent-collab-kit) or pass --source`)
+  }
   if (!lstatOrNull(dir) || !fs.statSync(dir).isDirectory()) throw new InstallError(`source ${dir} is not a directory`)
   const real = fs.realpathSync(dir)
   const top = git(real, ['rev-parse', '--show-toplevel'])
@@ -725,7 +748,7 @@ function runKitTests(dir, node) {
   const verdict = tapVerdict({ status: r.error ? -1 : r.status, signal: r.signal, stdout: r.stdout || '' })
   if (r.error) verdict.problems.unshift(r.error.message)
   if (!verdict.ok || r.error) {
-    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-tap-'))
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-collab-kit-tap-'))
     const log = path.join(logDir, 'kit-tests.tap')
     fs.writeFileSync(log, `${r.stdout || ''}\n--- stderr ---\n${r.stderr || ''}`)
     throw new InstallError(
@@ -844,7 +867,7 @@ function mcpHandshake(node, server, cwd, expectedNames) {
       const init = await request(1, 'initialize', {
         protocolVersion: '2025-06-18',
         capabilities: {},
-        clientInfo: { name: 'agent-kit-install', version: '1.0.0' }
+        clientInfo: { name: 'agent-collab-kit-install', version: '1.0.0' }
       })
       if (init.error || init.result?.serverInfo?.name !== 'collab') {
         throw new InstallError(`initialize did not return serverInfo.name "collab": ${JSON.stringify(init)}`)
@@ -883,7 +906,7 @@ function mcpHandshake(node, server, cwd, expectedNames) {
 }
 
 async function smoke(dir, node) {
-  const empty = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-smoke-')))
+  const empty = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-collab-kit-smoke-')))
   try {
     if (git(empty, ['rev-parse', '--git-dir']).status === 0) throw new InstallError(`smoke folder ${empty} is inside a git repository`)
     const journal = walkUpFor(empty, '.collab')
@@ -958,7 +981,7 @@ function copyLivePersonalLayer(sourceDir, buildDir) {
 
 async function build(ctx, source, journal) {
   let parent
-  if (ctx.opts.dryRun) parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-dry-')))
+  if (ctx.opts.dryRun) parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-collab-kit-dry-')))
   else {
     ensureDir(ctx.tmpDir, journal)
     parent = ctx.tmpDir
@@ -1281,11 +1304,11 @@ function writeDirBuffers(dir, files) {
 // buffering them a real cost, and it avoids leaving an orphan backup
 // directory around for the journal's undo to depend on later.
 function copyDirAtomic(source, dest, journal) {
-  const tmp = `${dest}.agent-kit-tmp-${process.pid}-${rand()}`
+  const tmp = `${dest}.agent-collab-kit-tmp-${process.pid}-${rand()}`
   fs.cpSync(source, tmp, { recursive: true })
   const existed = lstatOrNull(dest)
   const before = existed ? readDirBuffers(dest) : null
-  const backup = existed ? `${dest}.agent-kit-backup-${process.pid}-${rand()}` : null
+  const backup = existed ? `${dest}.agent-collab-kit-backup-${process.pid}-${rand()}` : null
   try {
     if (backup) fs.renameSync(dest, backup)
     fs.renameSync(tmp, dest)
@@ -1318,7 +1341,7 @@ function planLinksPosix(ctx) {
         continue
       }
       if (st.isSymbolicLink()) {
-        // A machine that already ran an older agent-kit-install has exactly
+        // A machine that already ran an older agent-collab-kit-install has exactly
         // this as a real symlink-through-`current` (the mechanism this spec
         // replaces, see linkSpecs' posixCopy comment) — recognised the same
         // way the plain-symlink branch below recognises "ours": it resolves
@@ -1326,7 +1349,7 @@ function planLinksPosix(ctx) {
         // real copy, not a foreign conflict to refuse.
         const raw = fs.readlinkSync(spec.dest)
         const resolved = path.resolve(path.dirname(spec.dest), raw)
-        if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) {
+        if (insideKit(ctx, resolved)) {
           plan.push({ ...spec, action: 'migrate' })
           continue
         }
@@ -1335,7 +1358,7 @@ function planLinksPosix(ctx) {
       }
       const wantsDir = spec.kind === 'dir'
       if (wantsDir ? !st.isDirectory() : !st.isFile()) {
-        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a ${wantsDir ? 'directory' : 'file'} agent-kit manages`)
+        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a ${wantsDir ? 'directory' : 'file'} agent-collab-kit manages`)
         continue
       }
       const onDiskHash = wantsDir ? dirTreeHash(spec.dest) : sha256(fs.readFileSync(spec.dest))
@@ -1356,18 +1379,18 @@ function planLinksPosix(ctx) {
       continue
     }
     if (!st.isSymbolicLink()) {
-      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-kit symlink`)
+      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-collab-kit symlink`)
       continue
     }
     const raw = fs.readlinkSync(spec.dest)
     const resolved = path.resolve(path.dirname(spec.dest), raw)
     if (resolved === spec.target) plan.push({ ...spec, action: 'ok', old: raw })
-    else if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) plan.push({ ...spec, action: 'repoint', old: raw })
+    else if (insideKit(ctx, resolved)) plan.push({ ...spec, action: 'repoint', old: raw })
     else refused.push(`${spec.dest} is a symlink to ${raw}, which is not inside ${ctx.kitDir}`)
   }
   if (refused.length) {
     throw new InstallError(
-      `refusing to overwrite files that agent-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
+      `refusing to overwrite files that agent-collab-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
         'Move them away (or delete them) yourself and run the installer again.'
     )
   }
@@ -1537,13 +1560,13 @@ function planLinksWindows(ctx) {
         continue
       }
       if (!st.isSymbolicLink()) {
-        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-kit link`)
+        refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not an agent-collab-kit link`)
         continue
       }
       const raw = normaliseLinkTarget(fs.readlinkSync(spec.dest))
       const resolved = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(path.dirname(spec.dest), raw)
       if (samePath(resolved, spec.target)) plan.push({ ...spec, action: 'ok', old: raw })
-      else if (isInside(resolved, ctx.kitDir) || isInside(resolved, ctx.kitDirReal)) plan.push({ ...spec, action: 'repoint', old: raw })
+      else if (insideKit(ctx, resolved)) plan.push({ ...spec, action: 'repoint', old: raw })
       else refused.push(`${spec.dest} is a link to ${raw}, which is not inside ${ctx.kitDir}`)
       continue
     }
@@ -1568,7 +1591,7 @@ function planLinksWindows(ctx) {
       continue
     }
     if (!st.isFile()) {
-      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a file agent-kit manages`)
+      refused.push(`${spec.dest} exists and is a ${describeEntry(st)}, not a file agent-collab-kit manages`)
       continue
     }
     const onDiskHash = sha256(fs.readFileSync(spec.dest))
@@ -1582,7 +1605,7 @@ function planLinksWindows(ctx) {
   }
   if (refused.length) {
     throw new InstallError(
-      `refusing to overwrite files that agent-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
+      `refusing to overwrite files that agent-collab-kit did not create:\n  - ${refused.join('\n  - ')}\n` +
         'Move them away (or delete them) yourself and run the installer again.'
     )
   }
@@ -1800,7 +1823,7 @@ const CODEX_TABLE = 'mcp_servers.collab'
 function codexBlock(serverPath, nodePath) {
   return [
     `[${CODEX_TABLE}]`,
-    '# Managed by agent-kit-install: the active agent-kit release, through ~/.agent-kit/current.',
+    '# Managed by agent-collab-kit-install: the active agent-collab-kit release, through ~/.agent-collab-kit/current.',
     `command = ${JSON.stringify(nodePath)}`,
     `args = [${JSON.stringify(serverPath)}]`,
     'env = { COLLAB_AGENT_ID = "codex" }',
@@ -1931,8 +1954,8 @@ function applyCodex(ctx, plan, journal, changes) {
 // (a Claude Code skill, here plain text) to read for which job, by absolute
 // path into the installed release. The person's text outside the block is
 // never touched.
-const CODEX_RULES_BEGIN = '<!-- agent-kit: begin — managed by agent-kit-install; edit ~/agent-kit, not this block -->'
-const CODEX_RULES_END = '<!-- agent-kit: end -->'
+const CODEX_RULES_BEGIN = '<!-- agent-collab-kit: begin — managed by agent-collab-kit-install; edit ~/agent-collab-kit, not this block -->'
+const CODEX_RULES_END = '<!-- agent-collab-kit: end -->'
 const CODEX_RULES_SOURCES = ['rules/orchestration.md', 'rules/modules.md', 'rules/terminology.md', 'rules/apple-toolchain.md']
 const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review', 'vendor-probe']
 
@@ -1955,7 +1978,7 @@ function codexRulesBlock(ctx) {
   const lines = [
     CODEX_RULES_BEGIN,
     '',
-    '# agent-kit — orchestration rules and procedures',
+    '# agent-collab-kit — orchestration rules and procedures',
     '',
     'These files are the rules you work by on this machine, the same ones a Claude Code lead gets. They are not inlined here: Codex reads at most 32 KiB of all AGENTS.md files combined and they are larger. Before any task above L0 in a session, read these whole (once per session; again if they change):',
     '',
@@ -1975,6 +1998,10 @@ function replaceManagedBlock(text, block) {
   const start = text.indexOf(CODEX_RULES_BEGIN)
   const end = text.indexOf(CODEX_RULES_END, start)
   if (start !== -1 && end !== -1) return text.slice(0, start) + block + text.slice(end + CODEX_RULES_END.length).replace(/^\n/, '')
+  // The block as written under the old name: replaced where it stands, not left beside a second one.
+  const legacyStart = text.indexOf(LEGACY_RULES_BEGIN)
+  const legacyEnd = text.indexOf(LEGACY_RULES_END, legacyStart)
+  if (legacyStart !== -1 && legacyEnd !== -1) return text.slice(0, legacyStart) + block + text.slice(legacyEnd + LEGACY_RULES_END.length).replace(/^\n/, '')
   if (!text) return block
   return `${text.replace(/\n*$/, '\n\n')}${block}`
 }
@@ -2002,11 +2029,11 @@ function applyCodexRules(ctx, plan, journal, changes) {
     writeFileAtomic(plan.file, next, 0o644)
     journal.add(`created ${plan.file}`, () => fs.rmSync(plan.file, { force: true }))
   }
-  changes.push(`codex: ${plan.exists ? 'updated' : 'created'} the agent-kit block in ${plan.file}`)
+  changes.push(`codex: ${plan.exists ? 'updated' : 'created'} the agent-collab-kit block in ${plan.file}`)
 }
 
 function summarizeCodexRules(ctx, plan) {
-  return `codex: sync the agent-kit block in ${plan.file}`
+  return `codex: sync the agent-collab-kit block in ${plan.file}`
 }
 
 // ── Codex as the lead: its hooks (~/.codex/hooks.json) ──────────────────────
@@ -2020,15 +2047,29 @@ function summarizeCodexRules(ctx, plan) {
 
 // Ours means the WHOLE command has one of the two shapes the installer ever wrote — never a substring:
 // a person's wrapper that merely calls our launcher is theirs and stays.
-function hookMarks(name) {
-  return [
-    new RegExp(`^(?:\\S*python3?(?:\\.exe)?"?\\s+)?"?[^"\\s]*\\.agent-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py"?(?:\\s*\\|\\|\\s*exit\\s+2)?\\s*$`),
-    new RegExp(`^"[^"]+"\\s+"[^"]*\\.agent-kit[\\\\/]+current[\\\\/]+bin[\\\\/]+agent-kit-hook"\\s+${name}\\s*$`)
+// A hook written before the rename (see LEGACY_*) is this kit's too — but only the exact shape the old installer
+// wrote, through THIS home's old path (`legacyCurrent` = <home>/.agent-kit/current): another tool's ".agent-kit"
+// somewhere else is never taken for ours.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function hookMarks(name, legacyCurrent = null) {
+  const marks = [
+    new RegExp(`^(?:\\S*python3?(?:\\.exe)?"?\\s+)?"?[^"\\s]*\\.agent-collab-kit[\\\\/]+current[\\\\/]+hooks[\\\\/]+${name}\\.py"?(?:\\s*\\|\\|\\s*exit\\s+2)?\\s*$`),
+    new RegExp(`^"[^"]+"\\s+"[^"]*\\.agent-collab-kit[\\\\/]+current[\\\\/]+bin[\\\\/]+agent-collab-kit-hook"\\s+${name}\\s*$`)
   ]
+  if (legacyCurrent) {
+    const old = escapeRegExp(legacyCurrent)
+    marks.push(
+      new RegExp(`^(?:\\S*python3?(?:\\.exe)?"?\\s+)?"?${old}[\\\\/]+hooks[\\\\/]+${name}\\.py"?(?:\\s*\\|\\|\\s*exit\\s+2)?\\s*$`),
+      new RegExp(`^"[^"]+"\\s+"${old}[\\\\/]+bin[\\\\/]+${LEGACY_HOOK}"\\s+${name}\\s*$`)
+    )
+  }
+  return marks
 }
+// <home>/.agent-kit/current, from this kit's <home>/.agent-collab-kit/current.
+const legacyCurrentOf = (currentPath) => path.join(path.dirname(path.dirname(currentPath)), LEGACY_KIT_DIR, 'current')
 
 function hookCommand(nodePath, currentPath, name) {
-  return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-kit-hook')}" ${name}`
+  return `"${nodePath}" "${path.join(currentPath, 'bin', 'agent-collab-kit-hook')}" ${name}`
 }
 
 // Our PreToolUse entry, recognised by its whole command, is replaced where it stands (a person's hooks
@@ -2070,10 +2111,10 @@ function mergePreToolUseHook(existing, marks, group, event = 'PreToolUse') {
 
 const codexHookCommand = (nodePath, currentPath) => hookCommand(nodePath, currentPath, 'codex-guard')
 
-function mergeCodexHooks(existing, command) {
-  return mergePreToolUseHook(existing, hookMarks('codex-guard'), {
+function mergeCodexHooks(existing, command, currentPath = null) {
+  return mergePreToolUseHook(existing, hookMarks('codex-guard', currentPath ? legacyCurrentOf(currentPath) : null), {
     matcher: '^(Bash|apply_patch)$',
-    hooks: [{ type: 'command', command, timeout: 30, statusMessage: 'agent-kit: explicit model, plan before code' }]
+    hooks: [{ type: 'command', command, timeout: 30, statusMessage: 'agent-collab-kit: explicit model, plan before code' }]
   })
 }
 
@@ -2097,7 +2138,7 @@ function mergeClaudeHooks(existing, nodePath, currentPath, available = () => tru
     (settings, { name, event = 'PreToolUse', matcher, timeout }) =>
       mergePreToolUseHook(
         settings,
-        hookMarks(name),
+        hookMarks(name, legacyCurrentOf(currentPath)),
         available(name)
           ? {
               ...(matcher ? { matcher } : {}),
@@ -2171,7 +2212,7 @@ function planCodexHooks(ctx) {
   if (ctx.opts.skipCodex) return { skipped: true, reason: 'requested with --skip-codex' }
   if (!codexAdapterWanted(ctx)) return { skipped: true, reason: 'codex is not installed' }
   const command = codexHookCommand(ctx.node.path, ctx.currentPath)
-  return planJsonHooks(path.join(path.dirname(ctx.codexConfig), 'hooks.json'), (parsed) => mergeCodexHooks(parsed, command))
+  return planJsonHooks(path.join(path.dirname(ctx.codexConfig), 'hooks.json'), (parsed) => mergeCodexHooks(parsed, command, ctx.currentPath))
 }
 
 function applyCodexHooks(ctx, plan, journal, changes) {
@@ -2200,7 +2241,7 @@ function detailAppliedCodex(ctx, plan) {
 function runClaude(ctx, args, configDir = null) {
   // A neutral cwd: `claude mcp get` resolves local and project scopes from it,
   // and a project's .mcp.json must not be mistaken for the user registration.
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-kit-claude-'))
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-collab-kit-claude-'))
   try {
     // On Windows an npm-installed `claude` is a .cmd shim, which CreateProcess
     // refuses to launch directly (only true .exe/.com binaries qualify) —
@@ -2300,6 +2341,10 @@ function planClaudeDir(ctx, dir) {
     )
   }
   if (claudeMatches(ctx, reg)) return { dir, action: 'ok', existing: reg }
+  // Registered by this kit under its old name: replaced like any other update of ours, no flag needed.
+  const legacyServer = path.join(ctx.home, LEGACY_KIT_DIR, 'current', SERVER_REL)
+  const legacyShape = (reg.type === null || reg.type === 'stdio') && reg.args === legacyServer && Object.keys(reg.env).length === 1 && reg.env.COLLAB_AGENT_ID === 'claude'
+  if (legacyShape) return { dir, action: 'replace', existing: reg }
   if (!ctx.opts.replaceClaude) {
     throw new InstallError(
       `a different user-scope "collab" MCP server is registered with Claude Code in ${dir} (${describeRegistration(reg)}).\n` +
@@ -2506,7 +2551,7 @@ function applyFileRegistration(plan, journal, changes, describe) {
 }
 
 // ── machine adapters: vendors adopted from a vendor-probe profile ────────────
-// ~/.agent-kit/collab/adapters/<id>.json, outside git, written only by `--adopt-profile` after the owner's "да". Every
+// ~/.agent-collab-kit/collab/adapters/<id>.json, outside git, written only by `--adopt-profile` after the owner's "да". Every
 // install keeps their registration in sync like the built-in vendors'; a changed registration is checked with the
 // vendor's own command right after the write, and a check that fails undoes the install.
 
@@ -2627,7 +2672,7 @@ function adapterTomlBlock(ctx, adapter) {
   const reg = adapter.registration
   return [
     `[${reg.servers_key}.collab]`,
-    `# Managed by agent-kit-install: machine adapter ${adapter.id}, adopted from its vendor-probe profile.`,
+    `# Managed by agent-collab-kit-install: machine adapter ${adapter.id}, adopted from its vendor-probe profile.`,
     `command = ${JSON.stringify(ctx.node.path)}`,
     `args = [${JSON.stringify(ctx.serverPath)}]`,
     `env = { COLLAB_AGENT_ID = ${JSON.stringify(adapter.id)} }`,
@@ -2700,7 +2745,7 @@ function summarizeAdapters(ctx, plan) {
 // check before anything is written, and answers at a terminal — without one nothing is written.
 async function adoptProfile(ctx) {
   const skillDir = path.join(ctx.currentPath, 'skills', 'vendor-probe')
-  if (!lstatOrNull(path.join(skillDir, 'probe.mjs'))) throw new InstallError(`agent-kit is not installed at ${ctx.currentPath} yet: install it first, then adopt the profile`)
+  if (!lstatOrNull(path.join(skillDir, 'probe.mjs'))) throw new InstallError(`agent-collab-kit is not installed at ${ctx.currentPath} yet: install it first, then adopt the profile`)
   const profileFile = path.resolve(ctx.opts.adoptProfile)
   let profile
   try {
@@ -2719,7 +2764,7 @@ async function adoptProfile(ctx) {
     throw new InstallError(`${profile.id} (${profile.binary}) уже подключается самим установщиком как встроенный вендор: адаптер машины для него не нужен`)
   }
   const adapter = {
-    '//': 'Machine adapter adopted from a vendor-probe profile by agent-kit-install --adopt-profile. Change it by adopting a new profile, not by hand.',
+    '//': 'Machine adapter adopted from a vendor-probe profile by agent-collab-kit-install --adopt-profile. Change it by adopting a new profile, not by hand.',
     id: profile.id,
     name: profile.id,
     provider: profile.vendor || profile.id,
@@ -2884,7 +2929,7 @@ const MCP_CLIENTS = [
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
   { id: 'claude-hooks', plan: planClaudeHooks, apply: applyClaudeHooks, summary: summarizeClaudeHooks },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini },
-  // Vendors adopted on this machine from a vendor-probe profile (~/.agent-kit/collab/adapters/).
+  // Vendors adopted on this machine from a vendor-probe profile (~/.agent-collab-kit/collab/adapters/).
   { id: 'adapters', plan: planAdapters, apply: applyAdapters, summary: summarizeAdapters }
 ]
 
@@ -2892,14 +2937,70 @@ function planAll(ctx) {
   return { current: readCurrent(ctx), links: planLinks(ctx), clients: Object.fromEntries(MCP_CLIENTS.map((c) => [c.id, c.plan(ctx)])) }
 }
 
+// A machine installed under the old name (see LEGACY_*): ~/.agent-kit becomes ~/.agent-collab-kit in one rename —
+// releases, the machine composition, machine adapters, copy manifests and history all move with it — and a link is
+// left at the old path, so sessions still running and settings not yet rewritten keep resolving until the steps
+// below rewrite them and the sessions restart. Undone with the rest of the run if the install fails. Both present
+// is refused: there is no telling which one is real.
+function migrateLegacyKit(ctx, journal) {
+  const old = path.join(ctx.home, LEGACY_KIT_DIR)
+  const st = lstatOrNull(old)
+  if (!st || st.isSymbolicLink()) return
+  if (!st.isDirectory()) throw new InstallError(`${old} exists and is not a directory: move it away and install again`)
+  if (lstatOrNull(ctx.kitDir)) {
+    throw new InstallError(`both ${old} (the kit's old name) and ${ctx.kitDir} exist: keep the one in use, move the other away, install again`)
+  }
+  if (ctx.opts.dryRun) {
+    // Nothing moves in a dry run, so it plans against the old directory — its copy manifests and release are there —
+    // as the real run will after the move.
+    out(`would move ${old} -> ${ctx.kitDir} (the kit was renamed agent-collab-kit) and leave a link at the old path`)
+    Object.assign(ctx, kitPaths(ctx.home, old))
+    return
+  }
+  fs.renameSync(old, ctx.kitDir)
+  // Registered before the link is made: a link that cannot be created must still put the directory back.
+  journal.add(`moved ${old} -> ${ctx.kitDir}`, () => {
+    if (lstatOrNull(old)?.isSymbolicLink()) fs.rmSync(old, { force: true })
+    fs.renameSync(ctx.kitDir, old)
+  })
+  // A directory link: a junction on Windows (no administrator needed), a symlink elsewhere.
+  fs.symlinkSync(ctx.kitDir, old, IS_WINDOWS ? 'junction' : 'dir')
+  out(`moved ${old} -> ${ctx.kitDir}; a link is left at the old path for sessions still running`)
+}
+
+// Every path the installer derives from the kit's directory (see makeContext).
+function kitPaths(home, kitDir) {
+  const currentPath = path.join(kitDir, 'current')
+  return {
+    kitDir,
+    kitDirReal: path.join(realpathOr(home), path.basename(kitDir)),
+    releasesDir: path.join(kitDir, 'releases'),
+    tmpDir: path.join(kitDir, 'tmp'),
+    currentPath,
+    historyPath: path.join(kitDir, 'history.jsonl'),
+    serverPath: path.join(currentPath, SERVER_REL)
+  }
+}
+
 async function install(ctx) {
   const source = inspectSource(ctx)
   out(`source: ${source.dir} at ${source.sha} (${source.commit})`)
   out(`node for registrations: ${ctx.node.path}`)
   if (ctx.node.warning) out(`warning: ${ctx.node.warning}`)
-  planAll(ctx) // refuse early, before the long build
-
   const journal = new Journal()
+  // The move comes first: everything planned below reads the kit's directory (copy manifests, the release in force).
+  try {
+    migrateLegacyKit(ctx, journal)
+    // Every Claude config directory an earlier install wrote to (history) is kept in step, flag or not — otherwise an
+    // account installed with --claude-config-dir and updated without it keeps hooks and an MCP entry on old paths.
+    ctx.claudeDirs = claudeDirsFromHistory(ctx, readHistory(ctx))
+    planAll(ctx) // refuse early, before the long build
+  } catch (error) {
+    const undone = journal.rollback()
+    if (undone.length) error.message += `\nthis run was rolled back:\n${undone.map((u) => `  ${u}`).join('\n')}`
+    throw error
+  }
+
   let built = null
   try {
     built = await build(ctx, source, journal)
@@ -3053,12 +3154,22 @@ function claudeDirsFromHistory(ctx, history) {
 }
 
 function rollback(baseCtx) {
+  const legacy = path.join(baseCtx.home, LEGACY_KIT_DIR)
+  const legacyStat = lstatOrNull(legacy)
+  if (legacyStat?.isDirectory() && !legacyStat.isSymbolicLink() && !lstatOrNull(baseCtx.kitDir)) {
+    throw new InstallError(`the kit is still installed under its old name (${legacy}): install first — that moves it to ${baseCtx.kitDir} — or roll back with the old installer`)
+  }
   const current = readCurrent(baseCtx)
   if (!current) throw new InstallError(`nothing is installed: ${baseCtx.currentPath} does not exist`)
   const history = readHistory(baseCtx)
   const ctx = { ...baseCtx, claudeDirs: claudeDirsFromHistory(baseCtx, history) }
   const target = rollbackTarget(ctx, history, current.sha)
   if (!target) throw new InstallError(`no earlier release to roll back to from ${current.sha} (history: ${ctx.historyPath})`)
+  // A release from before the rename has only bin/agent-kit-hook, while the hooks in settings.json and Codex's
+  // hooks.json call bin/agent-collab-kit-hook: rolled back to, every hooked call would fail. Refused, not half-done.
+  if (!lstatOrNull(path.join(ctx.releasesDir, target, 'bin', 'agent-collab-kit-hook'))) {
+    throw new InstallError(`release ${target} predates the rename to agent-collab-kit: its hook launcher has the old name, so the hooks would stop working. To go back that far, install that commit with its own installer.`)
+  }
   const links = planLinks(ctx)
   const missing = REQUIRED_PATHS.filter((rel) => !lstatOrNull(path.join(ctx.releasesDir, target, rel)))
 
@@ -3119,7 +3230,7 @@ function rollback(baseCtx) {
   out(`changed:\n${changes.map((c) => `  - ${c}`).join('\n')}`)
   const broken = brokenLinks(ctx)
   if (broken.length) out(`warning: these links do not resolve in ${target}: ${broken.join(', ')}`)
-  out('registrations (Claude, Codex) point at ~/.agent-kit/current and need no change.')
+  out('registrations (Claude, Codex) point at ~/.agent-collab-kit/current and need no change.')
   out(`to return to ${current.sha}: run the installer on that commit, or --rollback again to go further back.`)
   out(RESTART)
 }
@@ -3192,7 +3303,7 @@ if (require.main === module) {
       process.exitCode = code
     },
     (error) => {
-      process.stderr.write(`agent-kit-install: ${error instanceof InstallError ? error.message : error.stack || error}\n`)
+      process.stderr.write(`agent-collab-kit-install: ${error instanceof InstallError ? error.message : error.stack || error}\n`)
       process.exitCode = 1
     }
   )

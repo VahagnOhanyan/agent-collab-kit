@@ -124,7 +124,7 @@ export function runCapped(argv, { cwd, env, timeoutMs }) {
 // collab есть, но не ответил, ответил не JSON или с `error`; { state: 'ok', info }.
 export function collabProjectAnswer(cwd, home, timeoutMs = 5000) {
   if (!path.isAbsolute(home)) return { state: 'absent' };
-  const script = path.join(home, '.agent-kit', 'current', 'bin', 'collab');
+  const script = path.join(home, '.agent-collab-kit', 'current', 'bin', 'collab');
   if (!existsSync(script)) return { state: 'absent' };
   try {
     const out = spawnSync(process.execPath, [script, 'project', '--json'], {

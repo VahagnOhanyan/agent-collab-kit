@@ -14,10 +14,10 @@ import { MACHINE_ADAPTERS_DIR } from './registry.mjs'
 const PROBE = join(DEFAULT_CONFIG_DIR, '..', '..', 'skills', 'vendor-probe', 'probe.mjs')
 const RELEASE_SKILL = join(DEFAULT_CONFIG_DIR, '..', '..', 'skills', 'vendor-probe', 'SKILL.md')
 
-// The path an agent is told to read: through ~/.agent-kit/current when that is this same file — a release directory
+// The path an agent is told to read: through ~/.agent-collab-kit/current when that is this same file — a release directory
 // is replaced by the next install, the link is not.
 function stableSkillPath() {
-  const current = join(homedir(), '.agent-kit', 'current', 'skills', 'vendor-probe', 'SKILL.md')
+  const current = join(homedir(), '.agent-collab-kit', 'current', 'skills', 'vendor-probe', 'SKILL.md')
   try {
     if (realpathSync(current) === realpathSync(RELEASE_SKILL)) return current
   } catch { /* not installed through the link: the release path is what there is */ }

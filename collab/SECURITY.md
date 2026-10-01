@@ -64,7 +64,7 @@ PreToolUse hooks), outside the agents' reach.
   non-terminal, and asks for the id to be typed — the same barriers as approvals.
   A same-user process that wants to can still forge them: allocate a pty, unset the
   variable, import `main()` with the tests' `assumeHuman`, or simply write
-  `~/.agent-kit/projects/<id>/` itself. Only separate OS users would close that.
+  `~/.agent-collab-kit/projects/<id>/` itself. Only separate OS users would close that.
   What the layer does hold: git failures refuse instead of widening scopes, a
   directory without git gets no write scope, an entry is published with one rename
   (never half-written, never mixed into an id that appeared meanwhile), and a

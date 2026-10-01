@@ -1,4 +1,4 @@
-# Codex registration for the collab layer (agent-kit), one entry for every project.
+# Codex registration for the collab layer (agent-collab-kit), one entry for every project.
 #
 # Merge this into ~/.codex/config.toml. `node collab/codex/install.mjs` does it
 # idempotently and keeps a backup; this file is the source it copies, so the
@@ -18,6 +18,6 @@
 
 [mcp_servers.collab]
 command = "node"
-args = ["/absolute/path/to/agent-kit/collab/src/mcp/server.mjs"]
+args = ["/absolute/path/to/agent-collab-kit/collab/src/mcp/server.mjs"]
 env = { COLLAB_AGENT_ID = "codex" }
 startup_timeout_sec = 20

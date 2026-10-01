@@ -1,4 +1,4 @@
-// Stage 2 of vendor-probe: a checked profile becomes a machine adapter (agent-kit-install --adopt-profile). What must
+// Stage 2 of vendor-probe: a checked profile becomes a machine adapter (agent-collab-kit-install --adopt-profile). What must
 // hold: nothing is written without the owner's "да"; only a registration the probe proved is used; the vendor's other
 // settings survive byte for byte where they are not ours; the vendor's own check runs after the write, and a failed
 // check puts everything back. A fake `grok` on PATH prints the settings file, so the check sees what was really written.
@@ -13,7 +13,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const lib = createRequire(import.meta.url)(join(ROOT, 'bin', 'agent-kit-install'))
+const lib = createRequire(import.meta.url)(join(ROOT, 'bin', 'agent-collab-kit-install'))
 const skipWindows = process.platform === 'win32'
 
 function world({ checkPrints = 'settings' } = {}) {
@@ -36,17 +36,17 @@ function world({ checkPrints = 'settings' } = {}) {
   const ctx = (profileFile, answer) => ({
     opts: { adoptProfile: profileFile },
     home,
-    kitDir: join(home, '.agent-kit'),
+    kitDir: join(home, '.agent-collab-kit'),
     currentPath: ROOT, // the skill's checker and the built-in catalog, read from this source tree
     node: { path: '/usr/bin/node' },
-    serverPath: join(home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs'),
+    serverPath: join(home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs'),
     ...(answer === undefined ? {} : { confirm: async () => answer })
   })
   return {
     base,
     home,
     ctx,
-    adapter: join(home, '.agent-kit', 'collab', 'adapters', 'grok.json'),
+    adapter: join(home, '.agent-collab-kit', 'collab', 'adapters', 'grok.json'),
     cleanup: () => { process.env.PATH = savedPath; rmSync(base, { recursive: true, force: true }) }
   }
 }
@@ -129,7 +129,7 @@ test('toml: collab gets its own table; the tables around it stay byte for byte',
     assert.equal(await lib.adoptProfile(w.ctx(writeProfile(w, profile(reg)), true)), 0)
     const text = readFileSync(settings, 'utf8')
     assert.ok(text.startsWith(before), 'what was there is kept as it was')
-    assert.match(text, /\[mcp_servers\.collab\]\n# Managed by agent-kit-install: machine adapter grok/)
+    assert.match(text, /\[mcp_servers\.collab\]\n# Managed by agent-collab-kit-install: machine adapter grok/)
     assert.match(text, /env = \{ COLLAB_AGENT_ID = "grok" \}\ntimeout = 20\n$/)
   } finally {
     w.cleanup()

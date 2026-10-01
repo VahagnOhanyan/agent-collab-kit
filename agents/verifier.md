@@ -9,7 +9,7 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: "node \"$HOME/.agent-kit/current/bin/agent-kit-hook\" readonly-guard || exit 2"
+          command: "node \"$HOME/.agent-collab-kit/current/bin/agent-collab-kit-hook\" readonly-guard || exit 2"
           timeout: 10
 ---
 
@@ -24,7 +24,7 @@ hooks:
 - **Чтение файлов и вывода:** `ls`, `cat`, `head`, `tail`, `wc`, `file`, `stat`, `du`, `df`, `pwd`, `which`, `command -v`, `echo`, `printf`, `date`, `uname`, `whoami`, `id`, `env` (без аргументов), `grep`/`egrep`/`/usr/bin/grep`, `rg`, `find` (без `-delete`/`-exec`/`-ok`/`-fprint*`/`-fls`), `sort` (без `-o`), `uniq`, `cut`, `tr`, `jq`, `diff`, `cmp`, `comm`, `basename`, `dirname`, `realpath`, `readlink`, `shasum`, `md5`, `sw_vers`.
 - **git — только чтение, без глобальных опций** (`-c`, `-C`, `--git-dir`, `-p` запрещены; `--no-pager` можно): `git status`, `diff`, `log`, `show`, `blame`, `ls-files`, `ls-tree`, `cat-file`, `rev-parse`, `rev-list`, `describe`, `shortlog`, `grep`, `merge-base`, `branch` (без аргументов, `--list`, `-a`, `-r`, `-v`, `--show-current`), `worktree list`, `remote [-v]`, `config --get/--get-all/--list`, `stash list`/`stash show`, `tag [-l]`. Алиасы и всё остальное — блок. У `diff`/`log`/`show` запрещены `--output`, `--ext-diff`, `--textconv`.
 - **Гейт и тесты проекта:** `collab project --json` (узнать гейт), `collab reviews [--task <id>] [--reviewer <агент>] [--pending] [--json]` (ревью задачи), гейт по относительному пути к исполняемому файлу внутри рабочего каталога (`scripts/preflight.sh`, `./check.sh`), `bash`/`sh <относительный путь к файлу внутри cwd>` (без `-c`), `node --test …`, `node --check <файл>`, `python3 -m unittest …`, `python3 -m pytest …` (обычные опции), `npm test`, `npm run <script>`, `pnpm test`, `yarn test`.
-- **Платформенные команды — только если проект их включил** (`~/agent-kit/projects/<id>/readonly-guard.json`, `"platforms"`; иначе блок). Группа `apple`: `swift test`/`build`, `xcodebuild … build`/`build-for-testing`/`-list`/`-showBuildSettings` (не `test`, не `-resolvePackageDependencies`, не `-derivedDataPath`), `xcrun simctl list …`/`--find`/`--show-sdk-path`, `xcode-select -p`, `plutil -p`/`-lint`.
+- **Платформенные команды — только если проект их включил** (`~/agent-collab-kit/projects/<id>/readonly-guard.json`, `"platforms"`; иначе блок). Группа `apple`: `swift test`/`build`, `xcodebuild … build`/`build-for-testing`/`-list`/`-showBuildSettings` (не `test`, не `-resolvePackageDependencies`, не `-derivedDataPath`), `xcrun simctl list …`/`--find`/`--show-sdk-path`, `xcode-select -p`, `plutil -p`/`-lint`.
 - **Синтаксис:** простые команды, соединённые `;`, `&&`, `||`, `|`, переводом строки; из перенаправлений — только `>/dev/null`, `2>/dev/null`, `2>&1`. Подстановки (`$…`, `` `…` ``, `$(…)`), `(…)`, `{…}`, `~`, `<`, `&`, heredoc, функции, `VAR=x cmd`, глоб в имени команды — блок. Аргумент с глобом начинай с буквы или `./` (`cat ./*.md`, не `cat *.md`).
 
 Раннеры, сборка и гейт исполняют код проекта — это доверие к проекту, а не песочница. Не запускай через них ничего, кроме того, что документирует сам проект.

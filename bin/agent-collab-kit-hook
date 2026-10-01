@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Лаунчер хуков: `node <путь>/bin/agent-kit-hook <имя>` запускает hooks/<имя>.mjs тем же Node.
+// Лаунчер хуков: `node <путь>/bin/agent-collab-kit-hook <имя>` запускает hooks/<имя>.mjs тем же Node.
 // Одна и та же команда на macOS и Windows: без оболочки, без $HOME, без /usr/bin/python3.
 // Сбой запуска самого хука — код 2 (блок): сломанная установка не должна молча снимать границу.
 // Хук, который сам граница, экспортирует `failClosed = true`: если stdin не закрылся за STDIN_SECONDS,
@@ -13,7 +13,7 @@ const NAME = /^[a-z][a-z-]*$/;
 const STDIN_SECONDS = 4;
 const name = process.argv[2] ?? '';
 const fail = (message) => {
-  process.stderr.write(`agent-kit-hook: ${message}\n`);
+  process.stderr.write(`agent-collab-kit-hook: ${message}\n`);
   process.exit(2);
 };
 

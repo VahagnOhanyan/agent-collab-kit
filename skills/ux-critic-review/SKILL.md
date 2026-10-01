@@ -19,7 +19,7 @@ Argument: a `tsk_…` id. No journal (`collab project --json` → `initialized: 
 
 - **Diff**: the tree and range the change lives in — exactly one tree touching the task's files, or ask the owner.
 - **Screenshots** — when `needs_visual_verification` is true or the change is visual: capture the affected states with the project's own screenshot procedure (its screenshot/simulator skill; a physical device only with the owner's word). Name every PNG by state (`empty.png`, `loading.png`, `error.png`, `after-return.png`) — the reviewer sees pixels, not your intent. No screenshots possible → say so in the request; the reviewer then judges from the diff only and must mark visual claims as hypotheses.
-- **Knowledge**: only the `ux-guidance` references matching `spec.ux_domains` (see that skill's table). Pass their absolute paths under `$HOME/.agent-kit/current/skills/ux-guidance/references/`, not their content.
+- **Knowledge**: only the `ux-guidance` references matching `spec.ux_domains` (see that skill's table). Pass their absolute paths under `$HOME/.agent-collab-kit/current/skills/ux-guidance/references/`, not their content.
 
 ## 3. Request the review in collab
 

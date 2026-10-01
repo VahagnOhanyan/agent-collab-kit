@@ -26,7 +26,7 @@ test('installs into every config directory and registers each one separately', (
   const r = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(r.status, 0, r.all)
 
-  const cur = join(W.home, '.agent-kit', 'current')
+  const cur = join(W.home, '.agent-collab-kit', 'current')
   for (const dir of [join(W.home, '.claude'), second]) {
     for (const skill of ['codex-review', 'ui-review']) {
       const dest = join(dir, 'skills', skill)
@@ -44,7 +44,7 @@ test('installs into every config directory and registers each one separately', (
   assert.equal(readFileSync(join(W.home, '.claude', 'rules', 'my-own-rule.md'), 'utf8'), 'mine\n')
 
   // One registration per directory, each in that directory's own settings.
-  const server = join(W.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
+  const server = join(W.home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
   const expected = { scope: 'user', command: NODE, args: [server], env: { COLLAB_AGENT_ID: 'claude' } }
   assert.deepEqual(W.claudeState().collab, expected, 'primary directory registered')
   assert.deepEqual(W.claudeStateIn('.claude-account-2').collab, expected, 'second directory registered')
@@ -129,7 +129,7 @@ test('rollback to a release without a hook module drops that hook from settings.
   const args = ['--skip-kit-tests']
   const settingsFile = join(W.home, '.claude', 'settings.json')
   assert.equal(W.run(['--source', source, ...args]).status, 0)
-  const cur = join(W.home, '.agent-kit', 'current')
+  const cur = join(W.home, '.agent-collab-kit', 'current')
   // Make the installed release look like one from before these three hooks existed.
   for (const name of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
   const own = { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }
@@ -160,7 +160,7 @@ function twoReleasesWithSecondDir(name) {
   const second = accountDir(W, '.claude-account-2')
   const source = makeSource(name)
   assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
-  const cur = join(W.home, '.agent-kit', 'current')
+  const cur = join(W.home, '.agent-collab-kit', 'current')
   for (const hook of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${hook}.mjs`))
   commitChange(source, 'rules/orchestration.md', 'rule v2\n')
   assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
@@ -297,7 +297,7 @@ test('the config-directory boundary is re-checked before writing, not only when 
 })
 
 
-const readHistory = (W) => readFileSync(join(W.home, '.agent-kit', 'history.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+const readHistory = (W) => readFileSync(join(W.home, '.agent-collab-kit', 'history.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
 
 test('re-installing the same release with a new config directory records that directory in the history', () => {
   const W = makeWorld('history-same-sha')
@@ -318,7 +318,7 @@ test('a remembered config directory is not a release switch: rollback after A, B
   const W = makeWorld('record-dirs-not-a-step')
   const source = makeSource('record-dirs-not-a-step')
   assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
-  const cur = join(W.home, '.agent-kit', 'current')
+  const cur = join(W.home, '.agent-collab-kit', 'current')
   const first = realpathSync(cur)
   commitChange(source, 'rules/orchestration.md', 'rule v2\n')
   assert.equal(W.run(['--source', source, '--skip-kit-tests']).status, 0)
@@ -355,7 +355,7 @@ test('rollback --dry-run reports the hook changes and fails on a broken settings
   const state = () => ({
     second: readFileSync(join(second, 'settings.json'), 'utf8'),
     first: readFileSync(join(W.home, '.claude', 'settings.json'), 'utf8'),
-    history: readFileSync(join(W.home, '.agent-kit', 'history.jsonl'), 'utf8'),
+    history: readFileSync(join(W.home, '.agent-collab-kit', 'history.jsonl'), 'utf8'),
     current: realpathSync(cur),
   })
   const before = state()

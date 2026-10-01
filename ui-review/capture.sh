@@ -24,7 +24,7 @@
 # is a clear error: the owner supplies screenshots by hand for that project.
 #
 # Env:
-#   KIT_COLLAB_BIN     path to the collab binary (default: $HOME/.agent-kit/current/bin/collab);
+#   KIT_COLLAB_BIN     path to the collab binary (default: $HOME/.agent-collab-kit/current/bin/collab);
 #                      override in tests only.
 #   UI_REVIEW_DEVICE   overrides the "device" field from ui-review.json.
 #
@@ -73,14 +73,14 @@ fi
 
 # --- resolve the project from the trusted registry (never from this repo) ---
 
-collab_bin="${KIT_COLLAB_BIN:-$HOME/.agent-kit/current/bin/collab}"
+collab_bin="${KIT_COLLAB_BIN:-$HOME/.agent-collab-kit/current/bin/collab}"
 [ -x "$collab_bin" ] || {
-  echo "capture.sh: collab binary not found (or not executable) at '$collab_bin' — is agent-kit installed?" >&2
+  echo "capture.sh: collab binary not found (or not executable) at '$collab_bin' — is agent-collab-kit installed?" >&2
   exit 69
 }
 
 if ! project_json="$("$collab_bin" project --json)"; then
-  echo "capture.sh: '$collab_bin project --json' failed — is agent-kit installed and collab initialized?" >&2
+  echo "capture.sh: '$collab_bin project --json' failed — is agent-collab-kit installed and collab initialized?" >&2
   exit 69
 fi
 

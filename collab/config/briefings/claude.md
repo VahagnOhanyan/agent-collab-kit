@@ -33,7 +33,7 @@ command it names (`collab init`, run in the project root) — do not work around
 ## How to work
 
 **Plan before the first edit** — every task above L0, per the orchestration rule
-(installed at `~/.claude/rules/orchestration.md`, source `~/agent-kit/rules/`). The plan
+(installed at `~/.claude/rules/orchestration.md`, source `~/agent-collab-kit/rules/`). The plan
 file sets the levels, the executor's model and who verifies on which model; L2 and L3
 plans go through Plan Mode and the owner's approval. Put `План: <absolute path> (vN)` in
 the task description and give that path, never a retelling, to every delegation.

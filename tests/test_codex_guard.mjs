@@ -1,4 +1,4 @@
-// Тесты hooks/codex-guard.mjs: модель и план до правки. Запуск — как у хоста, через bin/agent-kit-hook.
+// Тесты hooks/codex-guard.mjs: модель и план до правки. Запуск — как у хоста, через bin/agent-collab-kit-hook.
 // Вход — как у codex-cli 0.154: Bash → tool_input.command; apply_patch → tool_input.command — текст патча.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,9 +9,9 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { modelProblem } from '../hooks/codex-guard.mjs';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 
-function run(event, home = join(tmpdir(), 'agent-kit-no-such-home')) {
+function run(event, home = join(tmpdir(), 'agent-collab-kit-no-such-home')) {
   const env = { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' };
   const proc = spawnSync(process.execPath, [LAUNCHER, 'codex-guard'], { input: JSON.stringify(event), env, encoding: 'utf8', timeout: 30_000 });
   return { code: proc.status, err: proc.stderr };
@@ -62,7 +62,7 @@ function world() {
   };
   writeProject({ plans_dir: 'plans', paths: ['src/'] });
   const home = join(base, 'home');
-  const binDir = join(home, '.agent-kit', 'current', 'bin');
+  const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: 'demo', registryDir: registry, codeRoot: root }));

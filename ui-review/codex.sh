@@ -23,7 +23,7 @@
 # design/rendering run can never read or write this project's collab journal.
 #
 # Env:
-#   KIT_COLLAB_BIN     path to the collab binary (default: $HOME/.agent-kit/current/bin/collab);
+#   KIT_COLLAB_BIN     path to the collab binary (default: $HOME/.agent-collab-kit/current/bin/collab);
 #                      override in tests only.
 #   UI_REVIEW_MODEL    default: gpt-6-astra (rendering needs it). This is a paid, non-default
 #                       model — the ui-review SKILL states its cost and waits for the owner's
@@ -52,7 +52,7 @@ echo "codex.sh: model=$model effort=$effort (default model is gpt-6-astra — co
 
 # --- project context (best-effort: a project without ui-review.md still works) ---
 
-collab_bin="${KIT_COLLAB_BIN:-$HOME/.agent-kit/current/bin/collab}"
+collab_bin="${KIT_COLLAB_BIN:-$HOME/.agent-collab-kit/current/bin/collab}"
 project_context_file="$run/.project-context.md"
 project_context_found=0
 if [ -x "$collab_bin" ] && project_json="$("$collab_bin" project --json 2>/dev/null)"; then

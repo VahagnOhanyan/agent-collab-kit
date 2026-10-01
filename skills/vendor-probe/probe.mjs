@@ -40,7 +40,7 @@ async function findBinary(binary, env = process.env) {
   return null;
 }
 
-// A vendor adopted on this machine (agent-kit-install --adopt-profile) has an adapter file in `adaptersDir`: it counts
+// A vendor adopted on this machine (agent-collab-kit-install --adopt-profile) has an adapter file in `adaptersDir`: it counts
 // as registered like one in the catalog.
 async function machineAdapters(adaptersDir) {
   if (!adaptersDir) return [];
@@ -83,7 +83,7 @@ export function installerClientAdvice(found) {
 
 // What to tell the found agent itself: on a machine where it is the only agent, it studies itself by this skill.
 export function probePhrase(binary, skillFile = join(HERE, 'SKILL.md')) {
-  return `Прочитай ${skillFile} и выполни разведку вендора для ${binary}: профиль и отчёт, без правок в ~/agent-kit, платный вызов — только после моего «да».`;
+  return `Прочитай ${skillFile} и выполни разведку вендора для ${binary}: профиль и отчёт, без правок в ~/agent-collab-kit, платный вызов — только после моего «да».`;
 }
 
 export async function sandboxTest({ bin, args, cwd, target = 'probe-write-test.txt', passEnv = [], timeoutMs = 120000, env = process.env } = {}) {
@@ -173,7 +173,7 @@ function scanStrings(value, at, problems) {
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) scanStrings(item, pathAt(at, key), problems);
 }
 
-// mcp.registration is what the installer later WRITES into the agent's own settings (agent-kit-install
+// mcp.registration is what the installer later WRITES into the agent's own settings (agent-collab-kit-install
 // --adopt-profile), so beyond the schema: it rests only on a check by running, the check runs the agent's own
 // program and nothing else, and the entry cannot replace what collab itself puts there.
 const RESERVED_ENTRY_KEYS = new Set(['command', 'args', 'env', 'type', 'url']);
@@ -226,8 +226,8 @@ export async function main(argv = process.argv.slice(2)) {
       let binary;
       let agentsFile = DEFAULT_AGENTS;
       let candidatesFile = DEFAULT_CANDIDATES;
-      // Vendors adopted on this machine count as registered (agent-kit-install --adopt-profile).
-      let adaptersDir = join(homedir(), '.agent-kit', 'collab', 'adapters');
+      // Vendors adopted on this machine count as registered (agent-collab-kit-install --adopt-profile).
+      let adaptersDir = join(homedir(), '.agent-collab-kit', 'collab', 'adapters');
       for (let index = 0; index < args.length; index += 1) {
         if (args[index] === '--agents') agentsFile = args[++index] ?? (() => { throw new Error('usage'); })();
         else if (args[index] === '--candidates') candidatesFile = args[++index] ?? (() => { throw new Error('usage'); })();
@@ -273,6 +273,6 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 // Run as a script, not when imported. Both sides as real paths: the installed copy is reached through the
-// `~/.agent-kit/current` link, and a link-vs-real comparison made the script exit silently with no output.
+// `~/.agent-collab-kit/current` link, and a link-vs-real comparison made the script exit silently with no output.
 const invokedAs = (() => { try { return realpathSync(resolve(process.argv[1] ?? '')); } catch { return null; } })();
 if (invokedAs && invokedAs === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = await main();

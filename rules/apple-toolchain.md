@@ -1,6 +1,6 @@
 # Xcode, симуляторы и телефон — общий ресурс машины (правило для всех проектов и агентов)
 
-Уровень пользователя, как `orchestration.md`: источник — `~/agent-kit/rules/apple-toolchain.md`,
+Уровень пользователя, как `orchestration.md`: источник — `~/agent-collab-kit/rules/apple-toolchain.md`,
 установщик кладёт копию в `rules/` каждого конфига Claude Code. Действует для **всех** сессий
 всех проектов машины, для их субагентов и для внешних агентов. **Правила проекта важнее**, но ни
 одно не отменяет замок.
@@ -28,7 +28,7 @@
 ## Замок машины — одна очередь на всё
 
 Любая **работа с Apple-инструментами** идёт только через обёртку
-`~/agent-kit/bin/apple-lock <команда…>` (один замок `/tmp/apple-dev.lock` на машину):
+`~/agent-collab-kit/bin/apple-lock <команда…>` (один замок `/tmp/apple-dev.lock` на машину):
 
 - `xcodebuild` — сборка, `build-for-testing`, `test`, `test-without-building`, `archive`;
 - `xcrun simctl boot | shutdown | erase | install | launch | clone | delete`;

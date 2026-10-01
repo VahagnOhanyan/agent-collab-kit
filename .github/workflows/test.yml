@@ -35,7 +35,7 @@ jobs:
       - name: installer test suite
         run: node --test tests/test_install_*.mjs
         env:
-          AGENT_KIT_TEST_SOURCE: ${{ github.workspace }}
+          AGENT_COLLAB_KIT_TEST_SOURCE: ${{ github.workspace }}
 
       # A real dry-run against this checkout itself, outside the test
       # harness's own temp-world fixtures — the thing an owner would actually
@@ -46,9 +46,9 @@ jobs:
       - name: real dry-run against this checkout
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/agent-kit-dryrun-home" "$RUNNER_TEMP/agent-kit-dryrun-bin"
-          node bin/agent-kit-install --dry-run \
+          mkdir -p "$RUNNER_TEMP/agent-collab-kit-dryrun-home" "$RUNNER_TEMP/agent-collab-kit-dryrun-bin"
+          node bin/agent-collab-kit-install --dry-run \
             --source "$PWD" \
-            --home "$RUNNER_TEMP/agent-kit-dryrun-home" \
-            --bindir "$RUNNER_TEMP/agent-kit-dryrun-bin" \
+            --home "$RUNNER_TEMP/agent-collab-kit-dryrun-home" \
+            --bindir "$RUNNER_TEMP/agent-collab-kit-dryrun-bin" \
             --claude-bin claude

@@ -1,12 +1,12 @@
-// Shared world for the bin/agent-kit-install tests. The suite is split into
+// Shared world for the bin/agent-collab-kit-install tests. The suite is split into
 // several files (tests/test_install_*.mjs) so `node --test` runs them in
 // parallel processes: each file builds its own temp HOME, fake CLIs and source
 // repository through setup() below.
 //
 // Every test builds its own world in a temp directory: a temp HOME, a temp
 // bindir, a fake `claude` and a fake `codex` that record their argv, and a temp
-// source git repository made from a file copy of ~/agent-kit (never modified).
-// Nothing here touches the real ~/.agent-kit, ~/.claude, ~/.codex or bindir.
+// source git repository made from a file copy of ~/agent-collab-kit (never modified).
+// Nothing here touches the real ~/.agent-collab-kit, ~/.claude, ~/.codex or bindir.
 //
 // Only two installs run the kit's own test suite (about a minute each): the
 // clean install, and the one proving a failing kit test refuses the install.
@@ -42,7 +42,7 @@ const LAUNCHER_NAME = IS_WINDOWS ? 'collab.cmd' : 'collab'
 
 // Strips the noise a Windows junction's target can read back with (an
 // extended-length "\\?\" prefix, a trailing separator) — mirrors
-// agent-kit-install's own normaliseLinkTarget, so these tests compare
+// agent-collab-kit-install's own normaliseLinkTarget, so these tests compare
 // like-for-like with what the installer itself considers equal.
 function normaliseTarget(raw) {
   if (!IS_WINDOWS) return raw
@@ -54,12 +54,12 @@ function normaliseTarget(raw) {
 const readLink = (dest) => normaliseTarget(readlinkSync(dest))
 // What `current` should point at right now: a relative "releases/<sha>" on
 // POSIX, an absolute release path on Windows (junctions need one) — see
-// switchCurrent's comment in agent-kit-install.
-const currentTarget = (home, sha) => (IS_WINDOWS ? join(home, '.agent-kit', 'releases', sha) : `releases/${sha}`)
+// switchCurrent's comment in agent-collab-kit-install.
+const currentTarget = (home, sha) => (IS_WINDOWS ? join(home, '.agent-collab-kit', 'releases', sha) : `releases/${sha}`)
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const INSTALLER = join(HERE, '..', '..', 'bin', 'agent-kit-install')
-const KIT = process.env.AGENT_KIT_TEST_SOURCE || join(homedir(), 'agent-kit')
+const INSTALLER = join(HERE, '..', '..', 'bin', 'agent-collab-kit-install')
+const KIT = process.env.AGENT_COLLAB_KIT_TEST_SOURCE || join(homedir(), 'agent-collab-kit')
 const lib = createRequire(import.meta.url)(INSTALLER)
 // What both registrations must use on this machine (independent of the installer's own resolution).
 const NODE = ['/opt/homebrew/bin/node', '/usr/local/bin/node'].find((p) => existsSync(p)) ?? lib.resolveNode().path
@@ -200,7 +200,7 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
   for (const d of [home, bindir, fakebin]) mkdirSync(d, { recursive: true })
   // Windows cannot execute an extension-less shebang file at all — write the
   // fake's JS logic to its own file and front it with a .cmd shim, the same
-  // shape a real npm-installed CLI takes there (see agent-kit-install's own
+  // shape a real npm-installed CLI takes there (see agent-collab-kit-install's own
   // cmdShimContent). POSIX keeps the original single shebang-script shape.
   const claude = join(fakebin, IS_WINDOWS ? 'claude.cmd' : 'claude')
   const codexBin = join(fakebin, IS_WINDOWS ? 'codex.cmd' : 'codex')
@@ -224,7 +224,7 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
   // An unrelated user skill that must survive everything.
   mkdirSync(join(home, '.claude', 'skills', 'my-own-skill'), { recursive: true })
   writeFileSync(join(home, '.claude', 'skills', 'my-own-skill', 'SKILL.md'), 'mine\n')
-  // And an unrelated user rule beside the one agent-kit installs.
+  // And an unrelated user rule beside the one agent-collab-kit installs.
   mkdirSync(join(home, '.claude', 'rules'), { recursive: true })
   writeFileSync(join(home, '.claude', 'rules', 'my-own-rule.md'), 'mine\n')
 
@@ -258,8 +258,8 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
     },
     codexCalls: () => (existsSync(codexLog) ? readFileSync(codexLog, 'utf8') : ''),
     snapshot: () => ({ home: snapshot(home), bindir: snapshot(bindir), claude: existsSync(claudeStateFile) ? readFileSync(claudeStateFile, 'utf8') : null }),
-    kit: (...p) => join(home, '.agent-kit', ...p),
-    history: () => readFileSync(join(home, '.agent-kit', 'history.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    kit: (...p) => join(home, '.agent-collab-kit', ...p),
+    history: () => readFileSync(join(home, '.agent-collab-kit', 'history.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
   }
 }
 
@@ -284,27 +284,27 @@ const mutating = (calls) => calls.filter((argv) => argv[1] === 'add' || argv[1] 
 const expectedBlock = (home) =>
   [
     '[mcp_servers.collab]',
-    '# Managed by agent-kit-install: the active agent-kit release, through ~/.agent-kit/current.',
+    '# Managed by agent-collab-kit-install: the active agent-collab-kit release, through ~/.agent-collab-kit/current.',
     `command = "${NODE}"`,
-    `args = ["${home}/.agent-kit/current/collab/src/mcp/server.mjs"]`,
+    `args = ["${home}/.agent-collab-kit/current/collab/src/mcp/server.mjs"]`,
     'env = { COLLAB_AGENT_ID = "codex" }',
     'startup_timeout_sec = 20'
   ].join('\n')
 
 export function setup() {
   before(() => {
-    BASE = realpathSync(mkdtempSync(join(tmpdir(), 'agent-kit-install-test-')))
+    BASE = realpathSync(mkdtempSync(join(tmpdir(), 'agent-collab-kit-install-test-')))
     TEMPLATE = join(BASE, 'template')
     // 'projects': this machine's own registries (e.g. projects/<id>) are
     // exactly the kind of local, un-reproducible runtime state '.collab' is
     // excluded for — a real one leaking into TEMPLATE would ride along into
-    // every built release once copyLiveProjectRegistries (agent-kit-install)
+    // every built release once copyLiveProjectRegistries (agent-collab-kit-install)
     // starts reading projects/ from disk, and its real policy config can trip
     // kit-test assertions that have nothing to do with the test being run
     // (found 2026-09-16 writing the project-registry copy test below).
     const skip = new Set(['.git', 'node_modules', '.collab', 'projects', '.DS_Store', '__pycache__'])
     cpSync(KIT, TEMPLATE, { recursive: true, verbatimSymlinks: true, filter: (src) => !skip.has(src.split('/').pop()) })
-    // ~/agent-kit/agents may still be empty while Ф4 is in progress.
+    // ~/agent-collab-kit/agents may still be empty while Ф4 is in progress.
     mkdirSync(join(TEMPLATE, 'agents'), { recursive: true })
     for (const agent of ['implementer', 'verifier']) {
       const file = join(TEMPLATE, 'agents', `${agent}.md`)

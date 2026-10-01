@@ -9,11 +9,11 @@ description: Human-in-the-loop visual improvement of ONE screen with Codex as th
 
 **Hard gate.** No edit to production UI until the owner explicitly approves a direction in chat. Silence, "ok looks nice", or a question is not approval.
 
-Scripts: `$HOME/.agent-kit/current/ui-review/` — `capture.sh` (deterministic screenshot, iOS Simulator only), `codex.sh explore|evaluate` (Codex stages, any platform), `compare.sh` (side-by-side sheet). All project parameters come from the trusted registry, never from the repo — see Project config below.
+Scripts: `$HOME/.agent-collab-kit/current/ui-review/` — `capture.sh` (deterministic screenshot, iOS Simulator only), `codex.sh explore|evaluate` (Codex stages, any platform), `compare.sh` (side-by-side sheet). All project parameters come from the trusted registry, never from the repo — see Project config below.
 
 ## Project config
 
-Run `collab project --json` (the `collab` binary is `$HOME/.agent-kit/current/bin/collab`) to get `registryDir` and `projectId`. Project data then lives at `<registryDir>/<projectId>/`:
+Run `collab project --json` (the `collab` binary is `$HOME/.agent-collab-kit/current/bin/collab`) to get `registryDir` and `projectId`. Project data then lives at `<registryDir>/<projectId>/`:
 - `ui-review.json` — `{ platform, project, scheme, bundleId, product, device, appearanceNote? }`. `capture.sh` reads this itself; you don't need to parse it by hand except to explain it to the owner.
 - `ui-review.md` — everything project-specific this skill needs: how to reach screen states (launch flags/env), where the design system and confirmed-decisions docs live, where the design-decisions log is, project quirks (e.g. an in-app appearance setting that ignores the OS/simulator appearance), how to fetch any IDs needed to reach a state, copy rules, anything else worth knowing before touching this project's UI. Read it fully before step 0.
 
@@ -22,7 +22,7 @@ Run `collab project --json` (the `collab` binary is `$HOME/.agent-kit/current/bi
 - bundle id: `PRODUCT_BUNDLE_IDENTIFIER` from the `.xcodeproj/project.pbxproj`;
 - product name: the target/scheme name (verify against the built product name if a build exists);
 - device: ask the owner, or default to a reasonable current simulator and ask them to confirm.
-Show the drafted JSON in chat and ask for confirmation ("да"). Agents cannot write the registry — `~/agent-kit` (and `~/.agent-kit`) is hard-denied by the scope-guard hook regardless of any project's `scopes.json` — so after confirmation, ask the owner (or hand them the exact JSON and path) to add `<registryDir>/<projectId>/ui-review.json` themselves. Do the same for `ui-review.md` if useful project knowledge surfaces during the run and there's nowhere else to put it; otherwise record it in the run's `decision.md` (see step 9).
+Show the drafted JSON in chat and ask for confirmation ("да"). Agents cannot write the registry — `~/agent-collab-kit` (and `~/.agent-collab-kit`) is hard-denied by the scope-guard hook regardless of any project's `scopes.json` — so after confirmation, ask the owner (or hand them the exact JSON and path) to add `<registryDir>/<projectId>/ui-review.json` themselves. Do the same for `ui-review.md` if useful project knowledge surfaces during the run and there's nowhere else to put it; otherwise record it in the run's `decision.md` (see step 9).
 
 **Platform other than `ios-simulator`, or no `ui-review.json` at all.** The owner supplies screenshots by hand (baseline in step 1, after-screenshots in step 7); every other step of this workflow is unchanged — `codex.sh` and `compare.sh` don't care how an image was produced.
 
@@ -41,7 +41,7 @@ Show the drafted JSON in chat and ask for confirmation ("да"). Agents cannot w
 **`ios-simulator` platform:**
 Build in the background if needed (skip if the tree is unchanged since the last build) using the project/scheme/device from `ui-review.json`. Then capture:
 ```bash
-$HOME/.agent-kit/current/ui-review/capture.sh .ui-review/<slug>/<run>/baseline-default.png --install
+$HOME/.agent-collab-kit/current/ui-review/capture.sh .ui-review/<slug>/<run>/baseline-default.png --install
 ```
 Check `ui-review.json`'s `appearanceNote` and `ui-review.md` for anything like an in-app appearance setting that ignores the simulator's system appearance — `--appearance light` alone may not be enough.
 
@@ -60,14 +60,14 @@ Screen & purpose · User goal · Surrounding screens & navigation · Every inter
 
 ## 3. Codex explores — in the background
 ```bash
-$HOME/.agent-kit/current/ui-review/codex.sh explore .ui-review/<slug>/<run> 4     # run_in_background: true; owner's count wins (3–5)
+$HOME/.agent-collab-kit/current/ui-review/codex.sh explore .ui-review/<slug>/<run> 4     # run_in_background: true; owner's count wins (3–5)
 ```
 Then check: `image_tool` is not `NONE`; every variant has `local_image`; **Read each image**. Missing renders → report which step failed. Claude cannot render images — never substitute its own drawings or HTML and call them mockups. Call out variants that dropped a MUST PRESERVE item or changed the data.
 
 ## 4. Two perspectives
-1. `$HOME/.agent-kit/current/ui-review/codex.sh evaluate .ui-review/<slug>/<run>` — a fresh Codex session: scores, one recommendation (hybrid allowed, rendered), risks.
+1. `$HOME/.agent-collab-kit/current/ui-review/codex.sh evaluate .ui-review/<slug>/<run>` — a fresh Codex session: scores, one recommendation (hybrid allowed, rendered), risks.
 2. Claude's independent critique → `claude-critique.md`: which variant is safest and most appropriate for THIS codebase — real files, tokens, components, any design-system ratchets `ui-review.md` names, confirmed decisions, user flows, text-scaling/locale behaviour, and any platform-specific behaviour (e.g. maps, sheets). State agreement or disagreement with Codex's pick and why. Do not just agree; disagreement is useful.
-3. `$HOME/.agent-kit/current/ui-review/compare.sh .ui-review/<slug>/<run>/compare-variants.png Baseline=… A=… B=… [Hybrid=…]`, then `open` it for the owner.
+3. `$HOME/.agent-collab-kit/current/ui-review/compare.sh .ui-review/<slug>/<run>/compare-variants.png Baseline=… A=… B=… [Hybrid=…]`, then `open` it for the owner.
 
 ## 5. Approval gate — STOP
 Show the owner (in Russian): original screenshot · every variant (one line each) · compact score table · Codex's recommendation · Claude's position (agree/disagree and why) · the hybrid, if any · implementation impact (files, tokens/components, complexity, risks) · any design-system status note from step 0. Open the comparison sheet locally with `open`.

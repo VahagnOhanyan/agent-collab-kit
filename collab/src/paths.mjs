@@ -45,7 +45,7 @@ export const DEFAULT_CONFIG_DIR = join(INSTALL_ROOT, 'config')
 // The trusted project registry. The single place its location is decided;
 // tests pass a registryDir.
 //
-// It lives in a PERSISTENT directory of the owner's own (~/.agent-kit/projects),
+// It lives in a PERSISTENT directory of the owner's own (~/.agent-collab-kit/projects),
 // read directly, so `collab connect` takes effect at once — not in the copy an
 // install bakes into each release, which needed a reinstall per project. The
 // home directory comes from the account database, not $HOME: an MCP server's
@@ -59,11 +59,11 @@ function ownHome() {
     return homedir()
   }
 }
-export const PERSISTENT_REGISTRY_DIR = join(ownHome(), '.agent-kit', 'projects')
+export const PERSISTENT_REGISTRY_DIR = join(ownHome(), '.agent-collab-kit', 'projects')
 // The person's own composition — which agents they have, who leads, who holds
 // which role — written by `collab setup`. Between a project's files and the
 // built-in vendor catalog; never in any repository.
-export const MACHINE_CONFIG_DIR = join(ownHome(), '.agent-kit', 'collab')
+export const MACHINE_CONFIG_DIR = join(ownHome(), '.agent-collab-kit', 'collab')
 export const RELEASE_REGISTRY_DIR = resolve(INSTALL_ROOT, '..', 'projects')
 // Decided at every call, not once at import: a long-running MCP server must
 // follow the move to the persistent registry the moment `connect` makes it,

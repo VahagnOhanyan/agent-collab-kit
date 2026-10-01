@@ -1,11 +1,11 @@
-// Тесты hooks/model-guard.mjs через лаунчер bin/agent-kit-hook — так же, как его запускает хост.
+// Тесты hooks/model-guard.mjs через лаунчер bin/agent-collab-kit-hook — так же, как его запускает хост.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 
 function run(input, name = 'model-guard') {
   const proc = spawnSync(process.execPath, [LAUNCHER, name], { input, encoding: 'utf8', timeout: 30_000 });
@@ -37,6 +37,6 @@ test('лаунчер: неизвестное или сломанное имя х
   for (const name of ['no-such-hook', '../x', 'Model-Guard', '']) {
     const { code, err } = run(agent({}), name);
     assert.equal(code, 2, name);
-    assert.match(err, /agent-kit-hook:/);
+    assert.match(err, /agent-collab-kit-hook:/);
   }
 });

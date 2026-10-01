@@ -20,10 +20,10 @@ test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text ar
   assert.equal(r.status, 0, r.all)
   const text = readFileSync(file, 'utf8')
   assert.ok(text.startsWith('# mine\n\nkeep this line\n'), 'the person\'s text is untouched')
-  assert.match(text, /<!-- agent-kit: begin[\s\S]*<!-- agent-kit: end -->/)
-  assert.equal(text.split('agent-kit: begin').length, 2, 'one block')
+  assert.match(text, /<!-- agent-collab-kit: begin[\s\S]*<!-- agent-collab-kit: end -->/)
+  assert.equal(text.split('agent-collab-kit: begin').length, 2, 'one block')
   // An index, not a copy: Codex reads at most 32 KiB of all AGENTS.md combined.
-  const current = join(W.home, '.agent-kit', 'current')
+  const current = join(W.home, '.agent-collab-kit', 'current')
   for (const rel of ['rules/orchestration.md', 'rules/vendor-claude.md', 'skills/ux-critic-review/SKILL.md', 'skills/ux-guidance/SKILL.md']) {
     assert.ok(text.includes(join(current, rel)), `points at ${rel}`)
   }
@@ -32,7 +32,7 @@ test('Codex gets the rules in a managed block of ~/.codex/AGENTS.md; the text ar
 
   const hooksFile = join(W.home, '.codex', 'hooks.json')
   const hooks = JSON.parse(readFileSync(hooksFile, 'utf8'))
-  assert.ok(hooks.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command.endsWith(`${join('.agent-kit', 'current', 'bin', 'agent-kit-hook')}" codex-guard`))))
+  assert.ok(hooks.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command.endsWith(`${join('.agent-collab-kit', 'current', 'bin', 'agent-collab-kit-hook')}" codex-guard`))))
   assert.match(r.stdout, /trust it once in Codex with \/hooks/)
 
   const again = W.run(['--source', world.source, '--skip-kit-tests'])
@@ -77,7 +77,7 @@ test('a failing kit test refuses the install and leaves home unchanged', () => {
   assert.notEqual(r.status, 0, r.all)
   assert.match(r.stderr, /kit tests did not pass: .*# fail [1-9]\d*/)
   assert.match(r.stderr, /not ok - injected failure/)
-  assert.deepEqual(W.snapshot(), before, 'no .agent-kit, no links, no config change')
+  assert.deepEqual(W.snapshot(), before, 'no .agent-collab-kit, no links, no config change')
   assert.deepEqual(mutating(W.claudeCalls()), [])
 })
 
@@ -86,7 +86,7 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   mkdirSync(join(W.home, '.claude', 'agents'), { recursive: true })
   writeFileSync(join(W.home, '.claude', 'agents', 'verifier.md'), 'my own verifier\n')
   // The migration trap on a machine that kept the rule by hand before
-  // agent-kit owned it: no manifest record, so it is refused, not overwritten.
+  // agent-collab-kit owned it: no manifest record, so it is refused, not overwritten.
   writeFileSync(join(W.home, '.claude', 'rules', 'orchestration.md'), 'my own rule\n')
   if (!IS_WINDOWS) {
     symlinkSync('/somewhere/else/collab', join(W.bindir, 'collab'))
@@ -101,7 +101,7 @@ test('an existing foreign file or symlink at a link destination is refused; noth
   if (!IS_WINDOWS) {
     // verifier.md is now a posixCopy entry (see linkSpecs): ownership is
     // tracked by content hash, same wording as the Windows branch below,
-    // not "not an agent-kit symlink" — there is no link here to complain about.
+    // not "not an agent-collab-kit symlink" — there is no link here to complain about.
     assert.match(r.stderr, /verifier\.md exists and was not created by this installer/)
     assert.match(r.stderr, /collab is a symlink to \/somewhere\/else\/collab/)
   } else {
@@ -118,7 +118,7 @@ test('posixCopy: a foreign directory is refused; a legitimate copy is a real dir
 
   const W = makeWorld('posix-copy')
   mkdirSync(join(W.home, '.claude', 'skills', 'codex-review'), { recursive: true })
-  writeFileSync(join(W.home, '.claude', 'skills', 'codex-review', 'SKILL.md'), "not agent-kit's\n")
+  writeFileSync(join(W.home, '.claude', 'skills', 'codex-review', 'SKILL.md'), "not agent-collab-kit's\n")
   const beforeForeign = W.snapshot()
   let r = W.run(['--source', world.source, '--skip-kit-tests'])
   assert.notEqual(r.status, 0)
@@ -148,7 +148,7 @@ test('posixCopy: a foreign directory is refused; a legitimate copy is a real dir
 
   // Reinstalling the identical commit is a true no-op: neither the copies
   // nor posix-copies.json (the ownership manifest) are rewritten.
-  const manifestPath = join(W.home, '.agent-kit', 'posix-copies.json')
+  const manifestPath = join(W.home, '.agent-collab-kit', 'posix-copies.json')
   const manifestBefore = readFileSync(manifestPath, 'utf8')
   const snapshotBefore = W.snapshot()
   r = W.run(['--source', world.source, '--skip-kit-tests'])
@@ -215,7 +215,7 @@ test('a different user-scope collab registration is refused without --replace-cl
 
   r = W.run(['--source', world.source, '--skip-kit-tests', '--replace-claude'])
   assert.equal(r.status, 0, r.all)
-  const server = join(W.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
+  const server = join(W.home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')
   assert.deepEqual(mutating(W.claudeCalls()), [
     ['mcp', 'remove', '-s', 'user', 'collab'],
     ['mcp', 'add', '-s', 'user', 'collab', '-e', 'COLLAB_AGENT_ID=claude', '--', NODE, server]
@@ -253,7 +253,7 @@ test('Codex config: the existing collab block is replaced, everything else byte-
 // 2026-09-15 to read exactly this file in exactly this shape.
 const geminiEntry = (home) => ({
   command: NODE,
-  args: [join(home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')],
+  args: [join(home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')],
   env: { COLLAB_AGENT_ID: 'gemini' }
 })
 
@@ -345,7 +345,7 @@ test('a vendor with no CLI and no prior state is skipped automatically, creating
   assert.deepEqual(W.claudeCalls(), [], 'claude was never even invoked — its binary is not on this PATH')
 
   // The rest of the install still succeeds: an absent vendor is not fatal.
-  assert.equal(existsSync(join(W.home, '.agent-kit', 'current')), true)
+  assert.equal(existsSync(join(W.home, '.agent-collab-kit', 'current')), true)
 })
 
 test('a vendor with no CLI but a pre-existing config is still kept in sync, not skipped', () => {
@@ -362,7 +362,7 @@ test('a vendor with no CLI but a pre-existing config is still kept in sync, not 
   assert.match(r.stdout, /codex: appended \[mcp_servers\.collab\]/)
   assert.match(r.stdout, /gemini: updated mcpServers\.collab/)
   assert.equal(readFileSync(join(W.home, '.codex', 'config.toml'), 'utf8'), `${original}\n${expectedBlock(W.home)}\n`)
-  assert.equal(JSON.parse(readFileSync(join(W.home, '.gemini', 'config', 'mcp_config.json'), 'utf8')).mcpServers.collab.args[0], join(W.home, '.agent-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs'))
+  assert.equal(JSON.parse(readFileSync(join(W.home, '.gemini', 'config', 'mcp_config.json'), 'utf8')).mcpServers.collab.args[0], join(W.home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs'))
 })
 
 test('dry-run runs the checks and the smoke test but changes nothing', () => {

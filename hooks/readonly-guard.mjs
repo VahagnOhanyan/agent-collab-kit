@@ -766,7 +766,7 @@ function decodeUtf8(buffer) {
 }
 
 async function collabProjectStrict(cwd, home) {
-  const script = path.join(home, '.agent-kit', 'current', 'bin', 'collab');
+  const script = path.join(home, '.agent-collab-kit', 'current', 'bin', 'collab');
   let out;
   try {
     out = await runCapped([process.execPath, script, 'project', '--json'], { cwd, env: cleanEnv(home), timeoutMs: COLLAB_TIMEOUT_MS });
@@ -843,7 +843,7 @@ async function checkSimpleCommand(items, context) {
   let name;
   if (text.startsWith('/')) {
     const home = env.HOME || '';
-    const collabPaths = IS_WINDOWS ? [] : ['/opt/homebrew/bin/collab', ...(home.startsWith('/') ? [path.join(home, '.agent-kit', 'current', 'bin', 'collab')] : [])];
+    const collabPaths = IS_WINDOWS ? [] : ['/opt/homebrew/bin/collab', ...(home.startsWith('/') ? [path.join(home, '.agent-collab-kit', 'current', 'bin', 'collab')] : [])];
     if (collabPaths.includes(text)) {
       name = 'collab';
     } else {
@@ -868,7 +868,7 @@ async function checkSimpleCommand(items, context) {
       if (PLATFORM_POLICIES[group].has(name)) policy = PLATFORM_POLICIES[group].get(name);
     }
     if (!policy) {
-      throw new Blocked(`команда \`${name}\` — платформенная; проект не включил её группу в реестре (~/agent-kit/projects/<id>/readonly-guard.json, "platforms")`);
+      throw new Blocked(`команда \`${name}\` — платформенная; проект не включил её группу в реестре (~/agent-collab-kit/projects/<id>/readonly-guard.json, "platforms")`);
     }
   }
   if (!policy) throw new Blocked(`команда \`${text}\` не входит в allowlist verifier`);

@@ -14,7 +14,7 @@
 // Порядок проверок:
 //   0. Событие: tool_name ∈ {Edit, Write, NotebookEdit}; поле пути соответствует инструменту и не
 //      задано дважды; cwd есть и абсолютный; в строках нет NUL и непредставимых в UTF-8 символов.
-//   1. Жёсткий запрет по лексическому абсолютному пути И по realpath: ~/agent-kit, ~/.agent-kit,
+//   1. Жёсткий запрет по лексическому абсолютному пути И по realpath: ~/agent-collab-kit, ~/.agent-collab-kit,
 //      ~/.claude, ~/.codex (от $HOME/$USERPROFILE и от домашнего каталога ОС).
 //   1б. Цель — обычный файл с единственным именем или ещё не существует.
 //   2. Временный каталог ОС — разрешён, только если оба пути под ним, в пути нет .git/.claude/
@@ -48,7 +48,7 @@ const WATCHDOG_MS = 10_000;
 const NOT_A_REPO = 'not a git repository (or any of the parent directories)';
 const TOOL_PATH_FIELD = { Edit: 'file_path', Write: 'file_path', NotebookEdit: 'notebook_path' };
 const PATH_FIELDS = ['file_path', 'notebook_path'];
-const PROTECTED_HOME_DIRS = ['agent-kit', '.agent-kit', '.claude', '.codex'];
+const PROTECTED_HOME_DIRS = ['agent-collab-kit', '.agent-collab-kit', '.claude', '.codex'];
 const PROJECT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -180,7 +180,7 @@ function tmpRoots() {
 // ── collab ────────────────────────────────────────────────────────────────────
 
 async function collabInfo(cwd, home) {
-  const script = path.join(home, '.agent-kit', 'current', 'bin', 'collab');
+  const script = path.join(home, '.agent-collab-kit', 'current', 'bin', 'collab');
   if (!existsSync(script)) throw new Blocked(`не найден ${script} — набор не установлен, блокирую`);
   let out;
   try {
@@ -311,7 +311,7 @@ async function decide({ stdinBuffer, env }) {
   // 6. Проект в реестре.
   const projectId = info.projectId;
   if (!projectId) {
-    throw new Blocked('проект не описан в реестре — владелец должен зарегистрировать его в ~/agent-kit/projects/<id>/project.json');
+    throw new Blocked('проект не описан в реестре — владелец должен зарегистрировать его в ~/agent-collab-kit/projects/<id>/project.json');
   }
   if (typeof projectId !== 'string' || !PROJECT_ID_RE.test(projectId)) {
     throw new Blocked(`collab project --json вернул некорректный projectId ${JSON.stringify(projectId)} — блокирую`);
@@ -326,7 +326,7 @@ async function decide({ stdinBuffer, env }) {
     scopes = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(scopesPath)));
   } catch (error) {
     if (error.code === 'ENOENT') {
-      throw new Blocked(`нет ${scopesPath} — владелец должен описать области в ~/agent-kit/projects/${projectId}/scopes.json`);
+      throw new Blocked(`нет ${scopesPath} — владелец должен описать области в ~/agent-collab-kit/projects/${projectId}/scopes.json`);
     }
     throw new Blocked(`не удалось прочитать ${scopesPath}: ${error.message} — блокирую`);
   }

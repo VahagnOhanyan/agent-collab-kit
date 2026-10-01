@@ -1,4 +1,4 @@
-/* Agent Kit panel. Tokens first; dark is the default, light follows the system. */
+/* Agent Collab Kit panel. Tokens first; dark is the default, light follows the system. */
 :root {
   color-scheme: dark light;
   --bg: #0f1115;

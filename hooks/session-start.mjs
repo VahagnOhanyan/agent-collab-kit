@@ -24,13 +24,13 @@ export async function main({ stdinText, env, cwd: hostCwd, stdout }) {
     const cwd = typeof event?.cwd === 'string' && event.cwd ? event.cwd : hostCwd;
     const setting = projectSettingStrict(cwd, home, 'githooks_dir');
     if (setting.state === 'broken') {
-      stdout(`agent-kit: настройки проекта не читаются (${setting.reason}) — git-хуки проекта не включены.\n`);
+      stdout(`agent-collab-kit: настройки проекта не читаются (${setting.reason}) — git-хуки проекта не включены.\n`);
       return 0;
     }
     if (setting.state !== 'ok') return 0;
     const dir = typeof setting.value === 'string' ? setting.value.replace(/\\/g, '/').replace(/\/+$/, '') : '';
     if (!dir || path.isAbsolute(dir) || dir.split('/').includes('..')) {
-      stdout('agent-kit: `githooks_dir` в реестре проекта задан неверно (нужен относительный путь без `..`) — git-хуки проекта не включены.\n');
+      stdout('agent-collab-kit: `githooks_dir` в реестре проекта задан неверно (нужен относительный путь без `..`) — git-хуки проекта не включены.\n');
       return 0;
     }
 
@@ -38,7 +38,7 @@ export async function main({ stdinText, env, cwd: hostCwd, stdout }) {
     const root = gitRoot(cwd, gitEnv);
     const full = path.join(root, dir);
     if (!existsSync(full) || !statSync(full).isDirectory()) {
-      stdout(`agent-kit: каталог git-хуков ${dir} объявлен в реестре, но не найден в ${root} — git-хуки проекта не включены.\n`);
+      stdout(`agent-collab-kit: каталог git-хуков ${dir} объявлен в реестре, но не найден в ${root} — git-хуки проекта не включены.\n`);
       return 0;
     }
 
@@ -51,10 +51,10 @@ export async function main({ stdinText, env, cwd: hostCwd, stdout }) {
     const current = git('config', '--get', 'core.hooksPath');
     if (current.status === 0 && current.stdout.trim() === dir) return 0;
     if (git('config', 'core.hooksPath', dir).status === 0) stdout(`git core.hooksPath → ${dir}\n`);
-    else stdout(`agent-kit: не удалось записать core.hooksPath → ${dir}; git-хуки проекта не включены.\n`);
+    else stdout(`agent-collab-kit: не удалось записать core.hooksPath → ${dir}; git-хуки проекта не включены.\n`);
     return 0;
   } catch (error) {
-    stdout(`agent-kit: session-start не отработал (${error?.message ?? error}) — git-хуки проекта могли не включиться.\n`);
+    stdout(`agent-collab-kit: session-start не отработал (${error?.message ?? error}) — git-хуки проекта могли не включиться.\n`);
     return 0;
   }
 }

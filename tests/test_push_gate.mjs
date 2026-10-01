@@ -1,5 +1,5 @@
 // Тесты hooks/push-gate.mjs — push только через зелёный гейт проекта и без обходов. Запуск — как у хоста,
-// через bin/agent-kit-hook; вход — событие Claude: Bash → tool_input.command. Гейт в тестах — .mjs-скрипт
+// через bin/agent-collab-kit-hook; вход — событие Claude: Bash → tool_input.command. Гейт в тестах — .mjs-скрипт
 // (одинаково запускается на macOS и Windows); он пишет метку в файл, чтобы видеть, что его вызывали.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,9 +9,9 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 
-function run(stdin, home = join(tmpdir(), 'agent-kit-no-such-home'), extraEnv = {}) {
+function run(stdin, home = join(tmpdir(), 'agent-collab-kit-no-such-home'), extraEnv = {}) {
   const env = { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', ...extraEnv };
   const input = typeof stdin === 'string' ? stdin : JSON.stringify(stdin);
   const proc = spawnSync(process.execPath, [LAUNCHER, 'push-gate'], { input, env, encoding: 'utf8', timeout: 30_000 });
@@ -41,7 +41,7 @@ function world({ gate = 'gate.mjs', gateExit = 0 } = {}) {
   };
   writeProject(gate);
   const home = join(base, 'home');
-  const binDir = join(home, '.agent-kit', 'current', 'bin');
+  const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: 'demo', registryDir: registry, codeRoot: root }));
@@ -360,8 +360,8 @@ scenario('collab ответил ошибкой или не ответил — б
   assert.match(r.err, /claimed by more than one/);
   assert.equal(w.bashAt(P, dirname(w.root)).code, 0, 'чужой каталог не заявлен — защищаться нечем');
   // Не ответивший collab не называет реестр: хук ищет запись там, где её держит collab по умолчанию.
-  mkdirSync(join(w.home, '.agent-kit', 'projects', 'demo'), { recursive: true });
-  writeFileSync(join(w.home, '.agent-kit', 'projects', 'demo', 'project.json'), JSON.stringify({ id: 'demo', roots: [w.root], gate: 'gate.mjs' }));
+  mkdirSync(join(w.home, '.agent-collab-kit', 'projects', 'demo'), { recursive: true });
+  writeFileSync(join(w.home, '.agent-collab-kit', 'projects', 'demo', 'project.json'), JSON.stringify({ id: 'demo', roots: [w.root], gate: 'gate.mjs' }));
   w.setCollabScript('setTimeout(() => {}, 30000);\n');
   const hung = w.bash(P, { PUSH_GATE_SECONDS: '1' });
   assert.equal(hung.code, 2);

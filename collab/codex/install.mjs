@@ -29,7 +29,7 @@ const CHECK = process.argv.includes('--check')
 const BLOCK = [
   '[mcp_servers.collab]',
   '# collab — shared tasks, messages, reviews, decisions and approvals for',
-  '# every project on this machine. Managed by collab/codex/install.mjs (agent-kit).',
+  '# every project on this machine. Managed by collab/codex/install.mjs (agent-collab-kit).',
   'command = "node"',
   `args = ["${SERVER}"]`,
   'env = { COLLAB_AGENT_ID = "codex" }',

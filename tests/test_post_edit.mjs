@@ -1,5 +1,5 @@
 // Тесты hooks/post-edit.mjs и hooks/session-start.mjs — проектные хуки ведущей сессии, настройки которых
-// (`post_edit`, `githooks_dir`) лежат в реестре проекта. Запуск — как у хоста, через bin/agent-kit-hook.
+// (`post_edit`, `githooks_dir`) лежат в реестре проекта. Запуск — как у хоста, через bin/agent-collab-kit-hook.
 // Гейты в тестах — .mjs-скрипты (одинаково запускаются на macOS и Windows), они пишут метку в файл.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 
 function launch(name, stdin, home, extraEnv = {}) {
   const env = { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '', ...extraEnv };
@@ -36,7 +36,7 @@ function world(projectExtra) {
   };
   writeProject(projectExtra);
   const home = join(base, 'home');
-  const binDir = join(home, '.agent-kit', 'current', 'bin');
+  const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: 'demo', registryDir: registry, codeRoot: root }));
@@ -180,7 +180,7 @@ scenario('post_edit: битый project.json и неверный тип — со
 });
 
 scenario('collab не нашёл проект из-за битого project.json — реестр всё равно опознаётся по roots', RULES, (w) => {
-  const payload = join(w.home, '.agent-kit', 'current', 'bin', 'collab.payload.json');
+  const payload = join(w.home, '.agent-collab-kit', 'current', 'bin', 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: null, registryDir: join(w.base, 'registry'), codeRoot: w.root }));
   writeFileSync(join(w.base, 'registry', 'demo', 'project.json'), `{ "roots": [${JSON.stringify(w.root)}], "post_edit": [`);
   const r = w.edit(join(w.root, 'app/DTO/New.swift'));
@@ -191,7 +191,7 @@ scenario('collab не нашёл проект из-за битого project.jso
 });
 
 test('нештатный вход и хост без collab — проход, хук не падает', () => {
-  const home = join(tmpdir(), 'agent-kit-no-such-home');
+  const home = join(tmpdir(), 'agent-collab-kit-no-such-home');
   for (const stdin of ['not json', '', 'null', '[]', '{"tool_input":{}}', '{"tool_input":{"file_path":42}}']) {
     const r = launch('post-edit', stdin, home);
     assert.equal(r.code, 0, stdin);

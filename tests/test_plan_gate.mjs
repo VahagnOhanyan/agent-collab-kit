@@ -1,5 +1,5 @@
 // Тесты hooks/plan-gate.mjs — план до правки для ведущей сессии Claude Code. Запуск — как у хоста,
-// через bin/agent-kit-hook; вход — событие Claude: Edit/Write/MultiEdit → tool_input.file_path,
+// через bin/agent-collab-kit-hook; вход — событие Claude: Edit/Write/MultiEdit → tool_input.file_path,
 // NotebookEdit → tool_input.notebook_path.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,9 +9,9 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-kit-hook');
+const LAUNCHER = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-collab-kit-hook');
 
-function run(stdin, home = join(tmpdir(), 'agent-kit-no-such-home')) {
+function run(stdin, home = join(tmpdir(), 'agent-collab-kit-no-such-home')) {
   const env = { HOME: home, USERPROFILE: home, PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' };
   const input = typeof stdin === 'string' ? stdin : JSON.stringify(stdin);
   const proc = spawnSync(process.execPath, [LAUNCHER, 'plan-gate'], { input, env, encoding: 'utf8', timeout: 30_000 });
@@ -32,7 +32,7 @@ function world() {
   };
   writeProject({ plans_dir: '.claude/plans', paths: ['src/', 'web/src/'] });
   const home = join(base, 'home');
-  const binDir = join(home, '.agent-kit', 'current', 'bin');
+  const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload.json');
   writeFileSync(payload, JSON.stringify({ projectId: 'demo', registryDir: registry, codeRoot: root }));

@@ -8,7 +8,7 @@
 //
 // У хука нет проектных данных: он одинаков для всех проектов и подключается в `.claude/settings.json`
 // ведущей сессии (PreToolUse, matcher `Agent`), командой:
-//   node "<путь к ~/.agent-kit/current>/bin/agent-kit-hook" model-guard
+//   node "<путь к ~/.agent-collab-kit/current>/bin/agent-collab-kit-hook" model-guard
 //
 // Сбой разбора stdin или отсутствие tool_input — fail-open: баг хука не должен ронять все делегирования.
 

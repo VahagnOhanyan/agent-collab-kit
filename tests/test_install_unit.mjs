@@ -1,4 +1,4 @@
-// Pure functions of bin/agent-kit-install: no install runs here.
+// Pure functions of bin/agent-collab-kit-install: no install runs here.
 //
 // Shared world and fakes: tests/helpers/install-world.mjs.
 
@@ -27,7 +27,7 @@ test('TAP verdict: requires exit 0, tests > 0, and zero fail/skipped/cancelled',
 })
 
 test('Codex TOML rewrite: replaces only the collab section, bytes elsewhere untouched', () => {
-  const block = lib.codexBlock('/h/.agent-kit/current/collab/src/mcp/server.mjs', '/opt/homebrew/bin/node')
+  const block = lib.codexBlock('/h/.agent-collab-kit/current/collab/src/mcp/server.mjs', '/opt/homebrew/bin/node')
   assert.equal(block[2], 'command = "/opt/homebrew/bin/node"')
   const head = '# top — comment\r\nmodel = "gpt-5"\r\n\r\n'
   const old = '[mcp_servers.collab]\r\n# old comment\r\ncommand = "node"\r\nargs = [\r\n  "/old/server.mjs",\r\n]\r\n\r\n[mcp_servers.collab.env]\r\nCOLLAB_AGENT_ID = "codex"\r\n'
@@ -56,7 +56,7 @@ test('claude mcp get parser: real Claude Code 2.x text format', () => {
     '  Status: [32m✓[39m Connected',
     '  Type: stdio',
     '  Command: node',
-    '  Args: /Users/x/.agent-kit/current/collab/src/mcp/server.mjs',
+    '  Args: /Users/x/.agent-collab-kit/current/collab/src/mcp/server.mjs',
     '  Environment:',
     '    COLLAB_AGENT_ID=claude',
     '',
@@ -65,7 +65,7 @@ test('claude mcp get parser: real Claude Code 2.x text format', () => {
   const reg = lib.parseClaudeGet({ status: 0, stdout: text, stderr: '' })
   assert.deepEqual(
     { scope: reg.scope, type: reg.type, command: reg.command, args: reg.args, env: reg.env },
-    { scope: 'user', type: 'stdio', command: 'node', args: '/Users/x/.agent-kit/current/collab/src/mcp/server.mjs', env: { COLLAB_AGENT_ID: 'claude' } }
+    { scope: 'user', type: 'stdio', command: 'node', args: '/Users/x/.agent-collab-kit/current/collab/src/mcp/server.mjs', env: { COLLAB_AGENT_ID: 'claude' } }
   )
   assert.deepEqual(lib.parseClaudeGet({ status: 1, stdout: '', stderr: 'No MCP server found with name: collab' }), { found: false })
   assert.throws(() => lib.parseClaudeGet({ status: 1, stdout: 'boom', stderr: '' }), /could not interpret/)
@@ -104,7 +104,7 @@ test('claude mcp get parser: formats captured from Claude Code 2.1.270; the exit
 })
 
 test('node for registrations: stable candidate path as-is, else realpath of the PATH node with a warning', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-kit-node-')))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-collab-kit-node-')))
   try {
     const cellar = join(dir, 'Cellar', 'node@20', '20.19.6', 'bin')
     mkdirSync(cellar, { recursive: true })
@@ -141,7 +141,7 @@ test('tool set comparison is exact: same names, same count', () => {
 // and refuse the whole install with ENOENT.
 test('Windows file links: a source missing at plan time defers to apply, and a release without it keeps the installed copy', () => {
   const home = join(world.base, 'winplan-home')
-  const release = join(home, '.agent-kit', 'current')
+  const release = join(home, '.agent-collab-kit', 'current')
   for (const rel of ['agents/implementer.md', 'agents/verifier.md', 'skills/codex-review/SKILL.md', 'skills/ui-review/SKILL.md', 'bin/collab']) {
     mkdirSync(join(release, dirname(rel)), { recursive: true })
     writeFileSync(join(release, rel), `${rel}\n`)
@@ -149,8 +149,8 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
   const ctx = {
     home,
     bindir: join(home, 'bin'),
-    kitDir: join(home, '.agent-kit'),
-    kitDirReal: join(home, '.agent-kit'),
+    kitDir: join(home, '.agent-collab-kit'),
+    kitDirReal: join(home, '.agent-collab-kit'),
     currentPath: release
   }
   mkdirSync(ctx.bindir, { recursive: true })
@@ -196,7 +196,7 @@ test('Windows file links: a source missing at plan time defers to apply, and a r
 test('Codex hooks: ours is added once and replaced in place; the person\'s hooks stay', () => {
   const theirs = { type: 'command', command: 'my-own-check.sh' }
   const existing = { other: 1, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [theirs] }], Stop: [{ hooks: [theirs] }] } }
-  const command = lib.codexHookCommand('/opt/node/bin/node', '/Users/x/.agent-kit/current')
+  const command = lib.codexHookCommand('/opt/node/bin/node', '/Users/x/.agent-collab-kit/current')
   const once = lib.mergeCodexHooks(existing, command)
   const twice = lib.mergeCodexHooks(once, command)
   assert.deepEqual(twice, once, 'idempotent')
@@ -211,18 +211,18 @@ test('Codex hooks: ours is added once and replaced in place; the person\'s hooks
 
 test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-start added once; an old python entry is replaced; other hooks stay', () => {
   const node = '/opt/node/bin/node'
-  const cur = '/Users/x/.agent-kit/current'
+  const cur = '/Users/x/.agent-collab-kit/current'
   const command = lib.claudeHookCommand(node, cur)
   const gate = lib.claudeHookCommand(node, cur, 'plan-gate')
   const push = lib.claudeHookCommand(node, cur, 'push-gate')
-  assert.equal(command, '"/opt/node/bin/node" "/Users/x/.agent-kit/current/bin/agent-kit-hook" model-guard')
+  assert.equal(command, '"/opt/node/bin/node" "/Users/x/.agent-collab-kit/current/bin/agent-collab-kit-hook" model-guard')
   const theirs = { type: 'command', command: 'push-gate.py', timeout: 180 }
   const existing = {
     permissions: { allow: ['Bash(ls)'] },
     hooks: {
       PreToolUse: [
         { matcher: 'Bash', hooks: [theirs] },
-        { matcher: 'Agent', hooks: [{ type: 'command', command: '/usr/bin/python3 "$HOME/.agent-kit/current/hooks/model-guard.py" || exit 2', timeout: 10 }] }
+        { matcher: 'Agent', hooks: [{ type: 'command', command: '/usr/bin/python3 "$HOME/.agent-collab-kit/current/hooks/model-guard.py" || exit 2', timeout: 10 }] }
       ],
       SessionStart: [{ hooks: [theirs] }]
     }
@@ -250,8 +250,8 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
 })
 
 test('Claude settings: a wrapper that merely mentions the launcher is not ours; our entry is replaced in place, keeping the order', () => {
-  const cur = '/Users/x/.agent-kit/current'
-  const wrapper = { type: 'command', command: `my-wrapper "${cur}/bin/agent-kit-hook" push-gate --extra` }
+  const cur = '/Users/x/.agent-collab-kit/current'
+  const wrapper = { type: 'command', command: `my-wrapper "${cur}/bin/agent-collab-kit-hook" push-gate --extra` }
   const oldPush = { type: 'command', command: lib.claudeHookCommand('/old/node', cur, 'push-gate'), timeout: 180 }
   const theirs = { type: 'command', command: 'other.sh' }
   const existing = { hooks: { PreToolUse: [
@@ -270,8 +270,8 @@ test('Claude settings: a wrapper that merely mentions the launcher is not ours; 
 })
 
 test('Claude settings: a launcher from another install root is not ours; our entry keeps its place inside a shared group', () => {
-  const cur = '/Users/x/.agent-kit/current'
-  const foreign = { type: 'command', command: '"/usr/bin/node" "/Users/x/custom/bin/agent-kit-hook" push-gate' }
+  const cur = '/Users/x/.agent-collab-kit/current'
+  const foreign = { type: 'command', command: '"/usr/bin/node" "/Users/x/custom/bin/agent-collab-kit-hook" push-gate' }
   const kept = lib.mergeClaudeHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [foreign] }] } }, '/usr/bin/node', cur)
   assert.ok(kept.hooks.PreToolUse.some((g) => g.hooks.some((h) => h.command === foreign.command)), 'foreign launcher survives')
 
@@ -284,14 +284,14 @@ test('Claude settings: a launcher from another install root is not ours; our ent
 })
 
 test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {
-  const command = lib.codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.agent-kit\\current')
-  assert.match(command, /^"C:\\Program Files\\nodejs\\node\.exe" ".*agent-kit-hook" codex-guard$/)
+  const command = lib.codexHookCommand('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.agent-collab-kit\\current')
+  assert.match(command, /^"C:\\Program Files\\nodejs\\node\.exe" ".*agent-collab-kit-hook" codex-guard$/)
   assert.doesNotMatch(command, /python|\$HOME/)
-  const old = { hooks: { PreToolUse: [{ matcher: '^(Bash|apply_patch)$', hooks: [{ type: 'command', command: '/usr/bin/python3 "$HOME/.agent-kit/current/hooks/codex-guard.py"' }] }] } }
+  const old = { hooks: { PreToolUse: [{ matcher: '^(Bash|apply_patch)$', hooks: [{ type: 'command', command: '/usr/bin/python3 "$HOME/.agent-collab-kit/current/hooks/codex-guard.py"' }] }] } }
   const merged = lib.mergeCodexHooks(old, command)
   assert.equal(merged.hooks.PreToolUse.length, 1, 'the python entry is gone, not kept next to the new one')
   assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, command)
-  const moved = lib.mergeCodexHooks(merged, lib.codexHookCommand('/usr/local/bin/node', '/h/.agent-kit/current'))
+  const moved = lib.mergeCodexHooks(merged, lib.codexHookCommand('/usr/local/bin/node', '/h/.agent-collab-kit/current'))
   assert.equal(moved.hooks.PreToolUse.length, 1, 'a moved node replaces our entry in place')
 })
 
@@ -312,9 +312,9 @@ test('three layers: the Codex adapter only with Codex, the personal rule only wh
   const base = {
     home,
     bindir: join(home, 'bin'),
-    kitDir: join(home, '.agent-kit'),
-    kitDirReal: join(home, '.agent-kit'),
-    currentPath: join(home, '.agent-kit', 'current')
+    kitDir: join(home, '.agent-collab-kit'),
+    kitDirReal: join(home, '.agent-collab-kit'),
+    currentPath: join(home, '.agent-collab-kit', 'current')
   }
   const rels = (ctx) => lib.linkSpecs(ctx).map((s) => s.rel)
   const ADAPTER = ['skills/codex-review', 'skills/ui-review', 'rules/vendor-codex.md']

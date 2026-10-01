@@ -1,5 +1,5 @@
 // Тесты hooks/readonly-guard.mjs (PreToolUse на Bash у субагента verifier). Хук запускается как у
-// хоста — через bin/agent-kit-hook отдельным процессом. Хост блокирует ТОЛЬКО по коду 2; любой другой
+// хоста — через bin/agent-collab-kit-hook отдельным процессом. Хост блокирует ТОЛЬКО по коду 2; любой другой
 // код, падение или таймаут — команда проходит, поэтому каждый нештатный путь обязан давать ровно 2.
 // Опасные команды НЕ исполняются — проверяется только классификация.
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const LAUNCHER = join(ROOT, 'bin', 'agent-kit-hook');
+const LAUNCHER = join(ROOT, 'bin', 'agent-collab-kit-hook');
 const HOOK = join(ROOT, 'hooks', 'readonly-guard.mjs');
 const WINDOWS = process.platform === 'win32';
 const CYRILLIC = /[А-Яа-яЁё]/;
@@ -36,7 +36,7 @@ function makeWorld({ settings, rawSettings, info, exitCode = 0 } = {}) {
   if (rawSettings !== undefined) writeFileSync(file, rawSettings);
   else if (settings !== undefined) writeFileSync(file, JSON.stringify(settings));
   const home = join(base, 'home');
-  const binDir = join(home, '.agent-kit', 'current', 'bin');
+  const binDir = join(home, '.agent-collab-kit', 'current', 'bin');
   mkdirSync(binDir, { recursive: true });
   const payload = join(binDir, 'collab.payload');
   writeFileSync(payload, JSON.stringify(info ?? { projectId: 'demo', registryDir: registry }));
@@ -282,7 +282,7 @@ const UNKNOWN_COMMANDS = [
   "psql -c 'DROP TABLE x'", 'sqlite3 db', 'docker ps', 'simctl list', 'devicectl list', 'xcrun devicectl list',
   'codesign -s x', 'security find-identity', 'defaults write x y z', 'launchctl list', 'say hi', 'pytest',
   'swift', 'node', 'python3', '/bin/rm x', '/usr/bin/touch f', '/usr/bin/vim f', '/usr/local/bin/rg x',
-  '/opt/homebrew/bin/rg x', '/usr/bin/../bin/rm x', '/usr/bin/env ls', '/nonexistent/.agent-kit/current/bin/collab inbox',
+  '/opt/homebrew/bin/rg x', '/usr/bin/../bin/rm x', '/usr/bin/env ls', '/nonexistent/.agent-collab-kit/current/bin/collab inbox',
   'collab inbox', 'collab init', 'collab project --json --x',
   'collab task tsk_x', 'collab claim tsk_x', 'collab release-review rev_x', 'collab reviews --task',
   "collab reviews --task 'a;b'", 'collab reviews --task x/y', 'collab reviews --all', 'collab reviews --json --x',
