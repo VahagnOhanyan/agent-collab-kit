@@ -47,7 +47,9 @@ test('before any composition is written, the catalog in force is fitted to the f
     assert.ok(!codex.capabilities.includes('run_application'), 'a read-only session runs nothing')
     const claude = w.api('claude', readOnly)
     assert.ok(claude.whoami().unverified_capabilities.includes('run_application'), 'running an application is not confirmed: said so')
-    assert.deepEqual(claude.registry.find({ capability: 'modify_code' }).map((a) => a.id), ['claude'])
+    // Codex is read-only here, so it is not routable for writing; the others in the catalog are.
+    const writers = claude.registry.find({ capability: 'modify_code' }).map((a) => a.id)
+    assert.ok(writers.includes('claude') && !writers.includes('codex'), writers.join(','))
     const conflicts = claude.doctor().fact_conflicts
     assert.ok(conflicts.some((c) => c.agent === 'codex' && c.role === 'software_engineer'), 'doctor names what the catalog would give and the facts rule out')
   } finally {

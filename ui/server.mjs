@@ -248,6 +248,30 @@ export async function startPanel({
     return { ok: true, task: { id: task.id, title: task.title, role: task.role } }
   }
 
+  // After the set of agents changed: tasks of an agent taken out go, in THIS project's journal, to one that holds the
+  // role (collab domain handOverFromAbsent). Other projects get it when a session opens there. Never fails the write
+  // that already succeeded: no journal here, no right to write it, an error — the answer says so.
+  const handOverHere = async (changes = []) => {
+    if (!changes.some((change) => change.field === 'agents')) return null
+    const later = 'collab попробует снова при следующих сессиях агентов в проекте; если журнал недоступен для записи, его задачи останутся за исключённым агентом, пока вы не передадите их вручную (collab task / release).'
+    if (typeof writeApiFactory !== 'function') return { done: false, reason: `Панель не пишет в журнал проекта. ${later}` }
+    try {
+      return { done: true, ...(await (await writeApiFactory()).handOverFromAbsent()) }
+    } catch (error) {
+      return { done: false, reason: `Задачи в этом проекте сейчас не переданы (${error.message}). ${later}` }
+    }
+  }
+  // For the preview: how many open tasks each agent about to be taken out holds in this project's journal.
+  const openTasksOf = async (ids = []) => {
+    if (!ids.length) return {}
+    try {
+      const open = await apiFactory().listTasks({ open: true })
+      return Object.fromEntries(ids.map((id) => [id, open.filter((task) => task.owner === id).length]))
+    } catch {
+      return {}
+    }
+  }
+
   const streams = new Set()
   const envSecrets = Object.values(process.env).filter((value) => typeof value === 'string' && value.length >= 8)
   const secrets = [token, homedir(), ...envSecrets]
@@ -316,6 +340,7 @@ export async function startPanel({
         if (url.pathname === '/api/setup/revert') {
           if (Object.keys(body).some((key) => key !== 'expect') || typeof body.expect !== 'string') return fail(res, 400, 'INVALID_INPUT', 'Revert takes exactly expect', options)
           const undone = revertSetup({ expect: body.expect, machineDir, env: probeEnv })
+          if (undone.ok) undone.handover = await handOverHere(undone.changes)
           return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
         }
         if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles, confirmed, owner_language and expect are accepted', options)
@@ -329,6 +354,7 @@ export async function startPanel({
           }
         }
         const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, confirmed: body.confirmed ?? null, ownerLanguage: body.owner_language, expect: body.expect, machineDir, env: probeEnv })
+        if (applied.ok) applied.handover = await handOverHere(applied.changes)
         return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
       } catch (error) {
         return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
@@ -382,6 +408,11 @@ export async function startPanel({
           machineDir,
           cwd
         })
+        if (answer.apply?.removed_agents?.length) answer.apply.removed_tasks = await openTasksOf(answer.apply.removed_agents)
+        // A project with its own composition (registry entry collab/agents.json) replaces the machine's: the wizard's
+        // ticks change the machine and do not reach that project. Said, not hidden.
+        const here = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
+        if (here.projectId && existsSync(join(here.registryDir, here.projectId, 'collab', 'agents.json'))) answer.project_own_composition = here.projectId
         return sendJson(res, 200, answer, { ...options, headers: authHeaders })
       }
       if (url.pathname === '/api/kit') return sendJson(res, 200, readKitFiles(kitRoot), { ...options, headers: authHeaders })

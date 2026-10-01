@@ -72,7 +72,8 @@ const WRITING_METHODS = Object.freeze([
   'requestUserApproval',
   'startRun',
   'setStatus',
-  'suspendRole'
+  'suspendRole',
+  'handOverFromAbsent'
 ])
 
 function executableOnPath(binary) {
@@ -248,6 +249,12 @@ export function createApi({
       // Recovery is opportunistic. A failed sweep must never fail the call the
       // agent actually made.
     }
+    try {
+      // Tasks still held by an agent the owner took out of the composition go to one that holds the role.
+      await tasks.handOverFromAbsent(ctx, { lead: config.agents?.lead || null })
+    } catch {
+      // Same: opportunistic, never the reason a call fails.
+    }
   }
 
   const configSource = () => {
@@ -316,6 +323,8 @@ export function createApi({
         .map((a) => agents.readAgent(ctx, a.id)),
     setStatus: (input) => agents.setStatus(ctx, input),
     suspendRole: (input) => agents.suspendRole(ctx, input),
+    // The panel calls this right after it writes the composition; sessions get it through the sweep.
+    handOverFromAbsent: () => tasks.handOverFromAbsent(ctx, { lead: config.agents?.lead || null }),
     // No restoreRole here on purpose: giving a role back is the owner's, and this object is what every agent
     // session holds. `collab role restore` calls the domain function itself, after its barriers.
 
@@ -347,7 +356,16 @@ export function createApi({
       await maybeSweep()
       return tasks.listTasks(ctx, input)
     },
-    claimTask: (input = {}) => tasks.claimTask(ctx, input),
+    // Taking work is when a task left behind by an excluded agent matters most: the handover runs first (only it —
+    // the rest of the sweep keeps its own schedule, so a lapsed lease is still taken over by the claim itself).
+    async claimTask(input = {}) {
+      try {
+        await tasks.handOverFromAbsent(ctx, { lead: config.agents?.lead || null })
+      } catch {
+        // Opportunistic, like the sweep: never the reason a claim fails.
+      }
+      return tasks.claimTask(ctx, input)
+    },
     assignTask: (input) => tasks.assignTask(ctx, input),
     updateTask: (input) => tasks.updateTask(ctx, input),
     completeTask: (input) => tasks.completeTask(ctx, input),

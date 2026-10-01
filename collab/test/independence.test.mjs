@@ -162,7 +162,9 @@ test('collab setup writes what the configuration in force already gives, with th
     const roles = structuredClone(loadConfigFrom().roles)
     roles.roles.release_signer = { summary: 'Signs releases.', requires: ['sign_releases'] }
     writeJson(join(dir, 'roles.json'), roles)
-    const inForce = Object.fromEntries(loadConfigFrom([dir], { kind: 'machine', dir }).agents.agents.map((a) => [a.id, [...a.roles].sort()]))
+    // The agents setup is asked for: the catalog may hold more (gemini), and what is not chosen is not written.
+    const chosen = ['claude', 'codex']
+    const inForce = Object.fromEntries(loadConfigFrom([dir], { kind: 'machine', dir }).agents.agents.filter((a) => chosen.includes(a.id)).map((a) => [a.id, [...a.roles].sort()]))
     const r = runCli(['setup', '--agents', 'claude,codex', '--lead', 'claude'], { cwd: base, options: { machineDir: dir, assumeHuman: true } })
     assert.equal(r.status, 0, r.stdout + r.stderr)
     const written = JSON.parse(readFileSync(join(dir, 'agents.json'), 'utf8'))

@@ -360,6 +360,100 @@ export function completeTask(ctx, { task_id, summary = '', evidence = null, expe
   })
 }
 
+// An agent the owner took out of the composition (the panel's wizard) can still hold tasks in this project's journal —
+// the composition is per machine, the journal per project, so this runs wherever a session opens (the opportunistic
+// sweep) and right after the panel writes the composition. Each open task it holds goes to an agent in the
+// composition holding the task's role: the one with the fewest open tasks, the lead on a tie. Work in hand becomes
+// "assigned" to it; a task in review, approved or waiting keeps its status and only changes holder. When nobody holds
+// the role, the task goes back to the queue if it can, and is reported as kept otherwise. Nothing to hand over,
+// nothing written.
+// A blocked task stays blocked with its new holder: the reason it was blocked has not gone away with the old one.
+const KEEP_STATUS_ON_HANDOVER = new Set([TASK_STATUS.REVIEW, TASK_STATUS.APPROVED, TASK_STATUS.WAITING_FOR_USER, TASK_STATUS.WAITING_FOR_AGENT, TASK_STATUS.BLOCKED])
+
+export function handOverFromAbsent(ctx, { lead = null } = {}) {
+  const absent = (id) => Boolean(id) && !ctx.registry.has(id)
+  const absentOwned = (t) => absent(t.owner) && !TERMINAL.has(t.status)
+  const absentReviewer = (r) => r.verdict === 'pending' && absent(r.reviewer)
+  if (!ctx.store.list('tasks', { filter: absentOwned }).length && !ctx.store.list('reviews', { filter: absentReviewer }).length) {
+    return Promise.resolve({ handed_over: [], queued: [], kept: [], reviews: [] })
+  }
+  return ctx.store.transact(async (tx) => {
+    const handedOver = []
+    const queued = []
+    const kept = []
+    const reviewsMoved = []
+    const load = new Map()
+    for (const t of tx.list('tasks', { filter: (t) => Boolean(t.owner) && !TERMINAL.has(t.status) })) load.set(t.owner, (load.get(t.owner) || 0) + 1)
+    const leaseSeconds = ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
+    const byLoad = (a, b) => (load.get(a.id) || 0) - (load.get(b.id) || 0) || (a.id === lead ? -1 : b.id === lead ? 1 : 0) || a.id.localeCompare(b.id)
+    const pendingReviewers = (taskId) => new Set(tx.list('reviews', { filter: (r) => r.task_id === taskId && r.verdict === 'pending' }).map((r) => r.reviewer))
+
+    for (const task of tx.list('tasks', { filter: absentOwned })) {
+      const from = task.owner
+      const reason = `${from} is no longer in the composition`
+      // A session of the excluded agent may still be running and holding the work: a live lease is not taken away —
+      // the task moves once the lease lapses (the next sweep after that). Two writers on one task is the one thing a
+      // handover must never cause.
+      const projected = projectTask(task, { now: tx.now(), leaseSeconds })
+      if (LEASED_STATES.has(task.status) && task.lease && !projected.lease_expired) {
+        kept.push({ id: task.id, status: task.status, owner: from, why: 'lease' })
+        continue
+      }
+      // The new holder is never one of the task's pending reviewers: they could no longer answer their own review.
+      const reviewers = pendingReviewers(task.id)
+      const holders = ctx.registry.agents()
+        .filter((a) => (task.role ? ctx.registry.hasRole(a.id, task.role) : true) && !reviewers.has(a.id))
+        .sort(byLoad)
+      const target = holders[0]?.id || null
+      const lease = (holder) => ({ holder, acquired_at: tx.iso(), expires_at: new Date(tx.now() + leaseSeconds * 1000).toISOString() })
+      // The one who left is no longer a contributor either: if they come back later, the task is not theirs to move.
+      const contributors = (task.contributors || []).filter((id) => id !== from)
+      if (target) {
+        const keepStatus = KEEP_STATUS_ON_HANDOVER.has(task.status)
+        const status = keepStatus ? task.status : TASK_STATUS.ASSIGNED
+        // in_progress cannot become assigned directly; through the queue it can, which is what a handover is.
+        if (!keepStatus && !allowedNext(task).includes(TASK_STATUS.ASSIGNED) && !allowedNext(task).includes(TASK_STATUS.CREATED)) {
+          kept.push({ id: task.id, status: task.status, owner: from, why: 'status' })
+          continue
+        }
+        tx.put('tasks', { ...task, status, owner: target, contributors: [...new Set([...contributors, target])], lease: keepStatus && !task.lease ? null : lease(target) })
+        load.set(target, (load.get(target) || 0) + 1)
+        tx.emit('task.handed_over', { collection: 'tasks', id: task.id }, { from, to: target, reason, status })
+        handedOver.push({ id: task.id, from, to: target, status })
+      } else if (allowedNext(task).includes(TASK_STATUS.CREATED)) {
+        tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null, contributors })
+        tx.emit('task.released', { collection: 'tasks', id: task.id }, { by: 'collab', previous_owner: from, reason: `${reason}; nobody holds role ${task.role}` })
+        queued.push({ id: task.id, from, role: task.role })
+      } else {
+        // Nobody holds the role and the task cannot go back to the queue from where it stands (in review, approved,
+        // waiting): it stays, and `collab doctor` / the panel name it as work of a role nobody holds.
+        kept.push({ id: task.id, status: task.status, owner: from, why: 'no holder' })
+      }
+    }
+
+    // A pending review whose reviewer left goes to another agent with the requested role — never the author or a
+    // contributor of the task, and of another vendor than the author, so the review stays independent. None such:
+    // it stays, and the requester can release it (release_review) and ask again.
+    for (const review of tx.list('reviews', { filter: absentReviewer })) {
+      const task = tx.get('tasks', review.task_id)
+      const near = new Set([review.author, task?.owner, ...(task?.contributors || [])].filter(Boolean))
+      const authorVendor = review.author && ctx.registry.has(review.author) ? ctx.registry.agent(review.author).provider : null
+      const candidates = ctx.registry.agents()
+        .filter((a) => !near.has(a.id) && (review.requested_role ? ctx.registry.hasRole(a.id, review.requested_role) : true) && (!authorVendor || a.provider !== authorVendor))
+        .sort(byLoad)
+      const target = candidates[0]?.id || null
+      if (!target) {
+        reviewsMoved.push({ id: review.id, task_id: review.task_id, from: review.reviewer, to: null })
+        continue
+      }
+      tx.put('reviews', { ...review, reviewer: target, independence: 'independent' })
+      tx.emit('review.handed_over', { collection: 'reviews', id: review.id }, { from: review.reviewer, to: target, task_id: review.task_id, reason: `${review.reviewer} is no longer in the composition` })
+      reviewsMoved.push({ id: review.id, task_id: review.task_id, from: review.reviewer, to: target })
+    }
+    return { handed_over: handedOver, queued, kept, reviews: reviewsMoved }
+  })
+}
+
 export function releaseTask(ctx, { task_id, reason = 'released' }) {
   return ctx.store.transact(async (tx) => {
     const task = tx.get('tasks', task_id)

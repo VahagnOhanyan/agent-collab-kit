@@ -13,13 +13,13 @@ This file is only about how you collaborate through `collab`.
 | | |
 |---|---|
 | **id** | `gemini` |
-| **roles** | `software_engineer`, `code_reviewer`, `test_engineer` |
-| **capabilities** | read_code, modify_code, run_tests, run_gates, review_code, inspect_git, use_mcp_tool, research |
-| **you do not have** | `run_application` |
+| **roles** | what `whoami` says — the owner's composition, cut by the facts on this machine |
+| **capabilities** | what `whoami` says; `unverified_capabilities` are ones nothing on the machine could confirm |
 
-You cannot see the application running, so never write that UI "works", "renders" or
-"was verified" — say what you read in the code and what would have to be checked by
-running it.
+Claim the UI verified only when `whoami` lists `run_application` and it is not in
+`unverified_capabilities`; otherwise say what you read in the code and what would have to
+be checked by running it. If you cannot do one of your roles on this machine,
+`suspend_role` with the reason — the owner gives it back.
 
 ## Start of every session
 

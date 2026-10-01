@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { delimiter, dirname, isAbsolute, join, sep } from 'node:path'
 
 import { describeProject } from '../collab/src/api.mjs'
 import { detectBinary, planComposition, rolesItCanHold, writeComposition } from '../collab/src/composition.mjs'
@@ -363,23 +363,30 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
     return { available: false, reason: `Файл состава не читается: ${error.message}` }
   }
   const ids = (current.agents || []).map((agent) => agent.id)
-  // Each entry is one agent id: a single string "a,b" must not pass for two.
-  if (!Array.isArray(agents) || !agents.every((id) => typeof id === 'string' && ID.test(id)) || [...agents].sort().join(',') !== [...ids].sort().join(',')) {
-    return { available: false, reason: 'Выбранный набор агентов отличается от записанного. Панель меняет только ведущего и режим ревью; состав агентов меняется командой в терминале.' }
+  // Each entry is one agent id: a single string "a,b" must not pass for two. The set may differ from what is written:
+  // ticking an agent of the catalog in step 1 adds it to the orchestration, unticking one takes it out (30.09.2026).
+  if (!Array.isArray(agents) || !agents.length || !agents.every((id) => typeof id === 'string' && ID.test(id)) || new Set(agents).size !== agents.length) {
+    return { available: false, reason: 'Отметьте хотя бы одного агента.' }
   }
-  if (!ID.test(lead || '') || !ids.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из записанных агентов.' }
+  if (!ID.test(lead || '') || !agents.includes(lead)) return { available: false, reason: 'Ведущий должен быть одним из выбранных агентов: его нельзя исключить, пока ведущим не назначен другой.' }
   const language = settleLanguage(ownerLanguage, current.owner_language)
   if (!language.ok) return { available: false, reason: language.reason }
   const roleDefs = machineRoleDefs(machineDir)
-  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir), machineDir), roleDefs, include: ids, lead, singleVendor: Boolean(singleVendor) })
+  // The catalog decides what may be added (an unknown id is refused here); the written entries stay as written.
+  const planned = planComposition({ catalog: catalogFor(machineConfig(machineDir), machineDir), roleDefs, include: agents, lead, singleVendor: Boolean(singleVendor) })
   if (!planned.ok) return { available: false, reason: planned.reason }
   const written = current.agents || []
-  const withConfirmed = settleConfirmed({ agents: written, confirmed })
+  const added = agents.filter((id) => !ids.includes(id))
+  const removed = ids.filter((id) => !agents.includes(id))
+  const inPlay = [...written.filter((agent) => agents.includes(agent.id)), ...planned.content.agents.filter((agent) => added.includes(agent.id))]
+  const withConfirmed = settleConfirmed({ agents: inPlay, confirmed })
   if (!withConfirmed.ok) return { available: false, reason: withConfirmed.reason }
   const facts = machineFacts(withConfirmed.agents, machineDir, env)
   const against = confirmedAgainstFacts(withConfirmed.agents, facts)
   if (!against.ok) return { available: false, reason: against.reason, facts: factsView(facts) }
-  const settled = settleRoles({ agents: withConfirmed.agents, roles, roleDefs, facts })
+  // A newly added agent starts with every role the facts allow (as at a first setup); written ones keep theirs.
+  const fitted = withConfirmed.agents.map((agent) => (added.includes(agent.id) ? fitToFacts([agent], facts)[0] : agent))
+  const settled = settleRoles({ agents: fitted, roles, roleDefs, facts })
   // Refused, but the page still gets the facts: they are usually the reason, and the editor needs them to fix it.
   if (!settled.ok) {
     return { available: false, reason: settled.reason, facts: factsView(facts), holdable: Object.fromEntries(Object.entries(facts).map(([id, f]) => [id, f.allowed])) }
@@ -400,6 +407,7 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
   if ((current.lead || null) !== planned.content.lead) changes.push({ field: 'lead', from: current.lead || null, to: planned.content.lead })
   if ((current.review_mode || null) !== planned.content.review_mode) changes.push({ field: 'review_mode', from: current.review_mode || null, to: planned.content.review_mode })
   if ((current.owner_language || null) !== language.value) changes.push({ field: 'owner_language', from: current.owner_language || null, to: language.value })
+  if (added.length || removed.length) changes.push({ field: 'agents', from: ids, to: settled.agents.map((agent) => agent.id) })
   changes.push(...roleChanges(written, settled.agents), ...confirmedChanges(written, settled.agents))
   return {
     available: true,
@@ -407,8 +415,9 @@ export function evaluateApply({ agents, lead, singleVendor, roles = null, confir
     expect: fingerprint(raw),
     revert: evaluateRevert(machineDir, env),
     owner_language: language.value,
+    removed_agents: removed,
     ...shown,
-    _next: { current, raw, lead: planned.content.lead, review_mode: planned.content.review_mode, owner_language: language.value, agents: settled.agents }
+    _next: { current, raw, lead: planned.content.lead, review_mode: planned.content.review_mode, owner_language: language.value, agents: settled.agents, setChanged: Boolean(added.length || removed.length) }
   }
 }
 
@@ -446,20 +455,28 @@ function evaluateRevert(machineDir, env = undefined) {
   }
   // Only what the panel itself writes comes back: the lead, the review mode and each agent's roles. The agents and
   // everything else about them must be as saved, or the owner changed the composition elsewhere since.
-  const panelFields = (list = []) => list.map(({ roles: _r, unverified_roles: _u, confirmed_capabilities: _c, ...rest }) => rest)
-  if (!sameJson(panelFields(current.agents), panelFields(before.agents))) {
-    return { available: false, reason: 'Состав агентов изменился после применения (вероятно, командой collab setup): отсюда возвращать нельзя.' }
+  // The panel now writes the set of agents too, so the saved set comes back: the agents of the saved copy, each as it
+  // was saved. An agent in both must be unchanged apart from what the panel writes, or the owner changed the
+  // composition elsewhere since (collab setup, by hand) and going back would undo that.
+  const panelFields = ({ roles: _r, unverified_roles: _u, confirmed_capabilities: _c, ...rest }) => rest
+  const savedAgents = before.agents || []
+  for (const agent of current.agents || []) {
+    const saved = savedAgents.find((b) => b.id === agent.id)
+    if (saved && !sameJson(panelFields(agent), panelFields(saved))) {
+      return { available: false, reason: `Агент ${agent.id} изменён после применения (вероятно, командой collab setup): отсюда возвращать нельзя.` }
+    }
   }
+  if (!savedAgents.length || !savedAgents.some((agent) => agent.id === before.lead)) return { available: false, reason: 'Сохранённая копия прежнего состава неполна: возвращать её нельзя.' }
   // The saved roles and confirmations go through today's facts like any other change: a role or confirmation the
   // machine now rules out does not come back, and which roles are unconfirmed is decided by the facts now.
   const roleDefs = machineRoleDefs(machineDir)
-  const savedOf = (agent) => before.agents.find((b) => b.id === agent.id) || {}
-  const withConfirmed = settleConfirmed({ agents: current.agents || [], confirmed: Object.fromEntries((current.agents || []).map((agent) => [agent.id, savedOf(agent).confirmed_capabilities || []])) })
+  const savedOf = (agent) => savedAgents.find((b) => b.id === agent.id) || {}
+  const withConfirmed = settleConfirmed({ agents: savedAgents, confirmed: Object.fromEntries(savedAgents.map((agent) => [agent.id, agent.confirmed_capabilities || []])) })
   if (!withConfirmed.ok) return { available: false, reason: `Прежний состав нельзя вернуть: ${withConfirmed.reason}` }
   const facts = machineFacts(withConfirmed.agents, machineDir, env)
   const against = confirmedAgainstFacts(withConfirmed.agents, facts)
   if (!against.ok) return { available: false, reason: `Прежний состав нельзя вернуть на этой машине: ${against.reason}` }
-  const savedRoles = Object.fromEntries((current.agents || []).map((agent) => [agent.id, savedOf(agent).roles || []]))
+  const savedRoles = Object.fromEntries(savedAgents.map((agent) => [agent.id, savedOf(agent).roles || []]))
   const settled = settleRoles({ agents: withConfirmed.agents, roles: savedRoles, roleDefs, facts })
   if (!settled.ok) return { available: false, reason: `Прежний состав нельзя вернуть на этой машине: ${settled.reason}` }
   const restored = settled.agents
@@ -469,20 +486,24 @@ function evaluateRevert(machineDir, env = undefined) {
   if ((current.lead || null) !== (before.lead || null)) changes.push({ field: 'lead', from: current.lead || null, to: before.lead || null })
   if ((current.review_mode || null) !== (before.review_mode || null)) changes.push({ field: 'review_mode', from: current.review_mode || null, to: before.review_mode || null })
   if ((current.owner_language || null) !== (before.owner_language || null)) changes.push({ field: 'owner_language', from: current.owner_language || null, to: before.owner_language || null })
+  const nowIds = (current.agents || []).map((agent) => agent.id)
+  const backIds = restored.map((agent) => agent.id)
+  const setChanged = nowIds.length !== backIds.length || nowIds.some((id) => !backIds.includes(id))
+  if (setChanged) changes.push({ field: 'agents', from: nowIds, to: backIds })
   changes.push(...roleChanges(current.agents || [], restored), ...confirmedChanges(current.agents || [], restored))
   if (!changes.length) return { available: false, reason: 'Прежний состав не отличается от текущего: возвращать нечего.' }
   return {
     available: true,
     changes,
     expect: fingerprint(raw),
-    _next: { current, raw, lead: before.lead, review_mode: before.review_mode, owner_language: before.owner_language || null, agents: restored, savedFingerprint: lastSaved }
+    _next: { current, raw, lead: before.lead, review_mode: before.review_mode, owner_language: before.owner_language || null, agents: restored, setChanged, savedFingerprint: lastSaved }
   }
 }
 
 // One write path for apply and revert. The current file becomes the saved one, the new one is checked by the
 // registry, and ANY failure — a rejected registry, a file that cannot be read or replaced — puts both files back as
 // they were, so a half-done write is never left behind.
-function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner_language: ownerLanguage = null, agents = null, savedFingerprint = null }) {
+function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner_language: ownerLanguage = null, agents = null, setChanged = false, savedFingerprint = null }) {
   const file = compositionFile(machineDir)
   const previous = previousFile(machineDir)
   const keptPrevious = existsSync(previous) ? readFileSync(previous) : null
@@ -491,7 +512,11 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner
   const indent = /^\s*\{\n\s+"/.test(raw.toString('utf8')) ? 2 : 0
   // Roles are set on each written agent and nothing else about it moves.
   // Roles, and which of them are unconfirmed, are set on each written agent; nothing else about it moves.
-  const nextAgents = agents
+  // A changed set is written as decided: written agents as they were (with their settled roles), added ones from the
+  // catalog, removed ones gone. Otherwise each written agent keeps every field but its roles and confirmations.
+  const nextAgents = agents && setChanged
+    ? agents
+    : agents
     ? (current.agents || []).map((agent) => {
       const chosen = agents.find((a) => a.id === agent.id)
       if (!chosen) return agent
@@ -507,7 +532,38 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner
   const { owner_language: _written, ...rest } = current
   const withLanguage = ownerLanguage ? { ...current, owner_language: ownerLanguage } : rest
   const next = Buffer.from(`${JSON.stringify({ ...withLanguage, lead, review_mode: reviewMode, agents: nextAgents }, null, indent)}\n`)
+  // An agent added from the catalog brings its briefing file, as `collab setup` copies it; one already there is kept.
+  const createdBriefings = []
+  const createdDirs = []
+  // Physically inside the machine directory: a link on the way (briefings -> elsewhere) must not carry the copy out.
+  const realMachineDir = realpathSync(machineDir)
+  const insideMachineDir = (target) => {
+    let head = target
+    while (!present(head) && dirname(head) !== head) head = dirname(head)
+    const real = realpathSync(head)
+    return real === realMachineDir || real.startsWith(realMachineDir + sep)
+  }
+  const copyBriefings = () => {
+    for (const agent of nextAgents || []) {
+      const rel = agent.briefing_file
+      if (typeof rel !== 'string' || !rel || isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) continue
+      const target = join(machineDir, rel)
+      const source = join(DEFAULT_CONFIG_DIR, rel)
+      if (present(target) || !existsSync(source)) continue
+      if (!insideMachineDir(target)) throw new Error(`${target} leads outside ${machineDir} (a link on the way): not copied`)
+      // Directories this copy creates are remembered, so an undo leaves no empty ones behind.
+      for (let dir = dirname(target); !present(dir); dir = dirname(dir)) createdDirs.unshift(dir)
+      mkdirSync(dirname(target), { recursive: true })
+      copyFileSync(source, target)
+      createdBriefings.push(target)
+    }
+  }
+  const undoBriefings = () => {
+    for (const target of createdBriefings) try { rmSync(target, { force: true }) } catch { /* same as below */ }
+    for (const dir of [...createdDirs].reverse()) try { rmSync(dir, { recursive: false }) } catch { /* not empty: something else is in it */ }
+  }
   const restore = () => {
+    undoBriefings()
     try { writeAtomically(file, raw) } catch { /* the original bytes could not be written back; the caller says so */ }
     try {
       if (keptPrevious) writeAtomically(previous, keptPrevious)
@@ -520,16 +576,26 @@ function commit(machineDir, { current, raw, lead, review_mode: reviewMode, owner
   }
   // Compare-before-swap: the file is read again right before it is replaced. A write by another process after the
   // page's request was checked is refused, not overwritten. (A process writing in the few microseconds between this
-  // read and the rename below is not caught — there is no lock shared with `collab setup` or an editor.)
+  // read and the rename below is not caught — there is no lock shared with `collab setup` or an editor.) The briefing
+  // copies happen BEFORE that read, so the window between the check and the swap holds two renames and nothing more.
+  try {
+    copyBriefings()
+  } catch (error) {
+    undoBriefings()
+    return { ok: false, reason: `Памятка агента не скопирована, ничего не записано: ${error.message}` }
+  }
   try {
     if (fingerprint(readFileSync(file)) !== fingerprint(raw)) {
+      undoBriefings()
       return { ok: false, reason: 'Состав на машине изменился во время записи: ничего не записано. Обновите страницу.' }
     }
     // A revert puts back values read from the saved copy: that copy is checked again too.
     if (savedFingerprint && fingerprint(readFileSync(previous)) !== savedFingerprint) {
+      undoBriefings()
       return { ok: false, reason: 'Сохранённая копия прежнего состава изменилась во время возврата: ничего не записано. Обновите страницу.' }
     }
   } catch (error) {
+    undoBriefings()
     return { ok: false, reason: `Файл состава не читается: ${error.message}` }
   }
   try {

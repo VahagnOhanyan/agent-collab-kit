@@ -649,7 +649,9 @@ async function setup() {
     // Clicks can outrun the server: only the answer to the LATEST selection may
     // be drawn, or two command sets and a wrong lastPlan would stay on screen.
     // The old steps stay on screen until the answer is here and are then swapped in one go: emptying them first made
-    // the page short for a moment and the browser jumped to the top on every tick.
+    // the page short for a moment and the browser jumped to the top on every tick. Their buttons go dead at once,
+    // though: the change they would confirm is no longer the one chosen.
+    applyBox.querySelectorAll('button').forEach((button) => { button.disabled = true })
     const seq = ++previewSeq
     lastPlan = null
     const show = (...nodes) => { out.replaceChildren(...nodes) }
@@ -689,12 +691,13 @@ async function setup() {
       : 'Разные вендоры: ревью никогда не достаётся автору.'
     show(
       ...(missingNote ? [missingNote] : []),
+      ...(preview.project_own_composition ? [el('div', { class: 'note warn', text: `У проекта ${preview.project_own_composition} свой состав агентов (collab/agents.json в его записи реестра): он заменяет состав машины, поэтому галочки и роли здесь меняют машину, но не этот проект.` })] : []),
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
       el('h2', { id: 'step-6', text: '6. Проект' }),
       projectCard(detect.project),
       el('h2', { id: 'step-7', text: '7. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — ведущего, режим ревью, язык текстов и роли агентов, всегда после вашего подтверждения. Смена набора агентов — командой в вашем терминале (в этой сессии — через приставку «!»).' }),
+      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — кто в оркестрации (галочки шага 1), ведущего, режим ревью, язык текстов и роли агентов, всегда после вашего подтверждения. Команда для терминала — запасной путь.' }),
       applyBlock(preview.apply),
       ...preview.commands.map((c) => {
         const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
@@ -771,13 +774,33 @@ async function setup() {
     : field === 'owner_language' ? LANGUAGE_RU[value] || value || 'не задан'
     : Array.isArray(value) ? value.join(', ') || 'ничего' : value || 'не записано')
   // A list change (roles, confirmations) reads as what is added and taken away, not as two long lists.
-  const isListDiff = (c) => (c.field === 'roles' || c.field === 'confirmed') && c.from?.length
+  const isListDiff = (c) => (c.field === 'roles' || c.field === 'confirmed' || c.field === 'agents') && Array.isArray(c.from) && c.from.length
   const changeText = (c) => {
     if (!isListDiff(c)) return `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ${valueRu(c.field, c.from)} → ${valueRu(c.field, c.to)}`
     const added = c.to.filter((r) => !c.from.includes(r))
     const removed = c.from.filter((r) => !c.to.includes(r))
+    // The set of agents reads as "в оркестрацию: + gemini; из оркестрации: − codex".
+    if (c.field === 'agents') return `агенты: ${[added.length ? `+ ${added.join(', ')} (в оркестрацию)` : '', removed.length ? `− ${removed.join(', ')} (из оркестрации)` : ''].filter(Boolean).join('; ')}`
     return `${FIELD_RU[c.field]} ${c.agent}: ${[added.length ? `+ ${added.join(', ')}` : '', removed.length ? `− ${removed.join(', ')}` : ''].filter(Boolean).join('; ')}`
   }
+  // What the handover did in this project's journal, after the write.
+  const handoverText = (h) => {
+    if (!h) return ''
+    if (!h.done) return ` ${h.reason}`
+    const parts = [
+      h.handed_over?.length ? `передано задач: ${h.handed_over.length} (${h.handed_over.map((t) => `${t.id} → ${t.to}`).join(', ')})` : '',
+      h.queued?.length ? `в очередь (роль никто не держит): ${h.queued.length}` : '',
+      h.kept?.length ? `не сдвинуто: ${h.kept.map((t) => `${t.id} (${t.status})`).join(', ')}` : ''
+    ].filter(Boolean)
+    return parts.length ? ` Задачи в этом проекте: ${parts.join('; ')}.` : ''
+  }
+  // What happens to the work of an agent taken out, said before the write: its open tasks here go to an agent that
+  // holds the same role, or back to the queue when nobody does. Other projects: when a session opens there.
+  const removedNotes = (info) => (info.removed_agents || []).map((id) => {
+    const n = info.removed_tasks?.[id]
+    const here = n === undefined ? 'открытые задачи в этом проекте посчитать не удалось' : n ? `в этом проекте у него открытых задач: ${n}` : 'в этом проекте открытых задач у него нет'
+    return el('div', { class: 'note warn', text: `${id} уходит из оркестрации: ${here}. Его задачи перейдут агенту с той же ролью (у кого меньше открытых задач, при равенстве — ведущему), а если роль никто не держит — вернутся в очередь. В других проектах — при первой сессии агента там. Роли ${id} уходят вместе с ним; в каталоге он остаётся, вернуть — галочкой.` })
+  })
   const applyBox = el('div', {})
   const finish = async (text) => {
     toast(text)
@@ -804,8 +827,8 @@ async function setup() {
       const undo = async () => {
         row.querySelectorAll('button').forEach((b) => { b.disabled = true })
         try {
-          await post('/api/setup/revert', { expect: info.revert.expect })
-          await finish('Прежний состав возвращён')
+          const done = await post('/api/setup/revert', { expect: info.revert.expect })
+          await finish(`Прежний состав возвращён.${handoverText(done?.handover)}`)
         } catch (error) {
           row.querySelectorAll('button').forEach((b) => { b.disabled = false })
           applyBox.append(el('div', { class: 'note bad', text: error.message }))
@@ -823,11 +846,14 @@ async function setup() {
       return applyBox
     }
     const confirmRow = el('div', { class: 'toolbar', hidden: true })
+    // The confirmation writes exactly what "Что изменится" shows: the choice as it was when this block was drawn, not
+    // whatever the boxes say by the time "Да, записать" is clicked (a tick in between redraws the block anyway).
+    const shown = structuredClone({ agents: [...chosen], lead, single_vendor: forceSingle, owner_language: ownerLanguage, ...(chosenRoles ? { roles: chosenRoles } : {}), ...(chosenConfirmed ? { confirmed: chosenConfirmed } : {}), expect: info.expect })
     const apply = async () => {
       confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = true })
       try {
-        await post('/api/setup/apply', { agents: [...chosen], lead, single_vendor: forceSingle, owner_language: ownerLanguage,...(chosenRoles ? { roles: chosenRoles } : {}), ...(chosenConfirmed ? { confirmed: chosenConfirmed } : {}), expect: info.expect })
-        await finish('Записано. Перезапустите открытые сессии агентов.')
+        const done = await post('/api/setup/apply', shown)
+        await finish(`Записано. Перезапустите открытые сессии агентов.${handoverText(done?.handover)}`)
       } catch (error) {
         confirmRow.querySelectorAll('button').forEach((b) => { b.disabled = false })
         applyBox.append(el('div', { class: 'note bad', text: error.message }))
@@ -844,6 +870,7 @@ async function setup() {
         isListDiff(c)
           ? el('div', { class: 'row' }, el('strong', { text: changeText(c) }))
           : el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
+      ...removedNotes(info),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: info.first_setup ? 'Записать состав' : 'Применить', onclick: () => { confirmRow.hidden = false } })),
       confirmRow, ...(back ? [back] : []))
     return applyBox
@@ -923,7 +950,7 @@ async function setup() {
     el('span', { text: label }))))
   const jump = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'auto', block: 'start' })
   drawLead(); drawPreview()
-  return page('Мастер настройки', 'Соберите состав коллаборации и получите готовые команды. Ведущего и режим ревью можно применить кнопкой; остальное запишется, когда вы выполните команду в терминале.',
+  return page('Мастер настройки', 'Отметьте, кто работает в оркестрации, выберите ведущего, режим ревью и роли — и примените кнопкой. Агента без галочки в оркестрации нет, но он остаётся в каталоге.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
     el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Проект', 'Команды'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),

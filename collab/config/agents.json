@@ -44,6 +44,23 @@
       },
       "briefing_file": "briefings/codex.md",
       "briefing": "You are the Codex CLI agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities (the owner confirms it). If you cannot do one of your roles here, suspend_role. Full instructions: collab brief codex."
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini, via Antigravity CLI",
+      "provider": "google",
+      "adapter": {
+        "kind": "cli",
+        "enabled": false,
+        "cannot": [],
+        "binary": "agy",
+        "args": ["-p"],
+        "note": "Owner decision 2026-09-15: queue first, launch by hand — nothing here starts a paid agent on its own. Back in the catalog 2026-09-30 (owner): whether it works in the orchestration is the person's composition, chosen in the panel's wizard.",
+        "verified_against": "agy 1.2.6, read 2026-09-30 from `agy --help` and `agy mcp --help` (no model call): -p/--print, --model, --effort are as in 1.1.8; `agy mcp list` shows the collab entry the installer writes to ~/.gemini/config/mcp_config.json. First verified live on agy 1.1.8 (2026-09-15): a headless `agy -p` reached collab's whoami. `args` omits --model/--effort, chosen at invocation time like Codex's.",
+        "install_hint": "brew install --cask antigravity-cli (or install the Antigravity app, which puts `agy` on PATH), then `agy` once to sign in. Headless calls also need an allow-rule or they auto-deny: add {\"permissions\":{\"allow\":[\"mcp(*)\"]}} to ~/.gemini/antigravity-cli/settings.json. Then: collab doctor"
+      },
+      "briefing_file": "briefings/gemini.md",
+      "briefing": "You are the Gemini agent (Antigravity CLI) on this project, a different vendor from Claude and Codex — useful for an independent second opinion. whoami says whether you lead or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. If you cannot do one of your roles here, suspend_role. Full instructions: collab brief gemini."
     }
   ]
 }

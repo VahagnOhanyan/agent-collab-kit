@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { planComposition, writeComposition } from '../../collab/src/composition.mjs'
@@ -709,4 +710,72 @@ test('language: the first setup records it; a code that is not a language is ref
   assert.equal(done.status, 200, done.text)
   assert.ok(done.json.changes.some((c) => c.field === 'owner_language' && c.to === 'ru'))
   assert.equal(read(dir).owner_language, 'ru')
+})
+
+// ── who is in the orchestration: the set of agents from the wizard (30.09.2026) ─
+
+test('set: ticking an agent of the catalog adds it — shown first, written with its roles and briefing; others untouched', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = read(dir)
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex,gemini&lead=claude&single_vendor=0')).json.apply
+  assert.equal(preview.available, true, preview.reason)
+  assert.deepEqual(preview.changes.find((c) => c.field === 'agents'), { field: 'agents', from: ['claude', 'codex'], to: ['claude', 'codex', 'gemini'] })
+  const done = await send(started, 'POST', '/api/setup/apply', { agents: [...IDS, 'gemini'], lead: 'claude', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(done.status, 200, done.text)
+  const after = read(dir)
+  assert.deepEqual(after.agents.map((a) => a.id), ['claude', 'codex', 'gemini'])
+  const gemini = after.agents.find((a) => a.id === 'gemini')
+  assert.ok(gemini.roles.length, 'it holds the roles the facts allow')
+  assert.ok(existsSync(join(dir, gemini.briefing_file)), 'its briefing file is copied like collab setup copies it')
+  assert.deepEqual(after.agents.slice(0, 2), before.agents, 'the agents already there are written exactly as they were')
+})
+
+test('set: unticking an agent takes it out; the lead cannot be taken out; an id outside the catalog cannot be added', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const lead = await send(started, 'POST', '/api/setup/apply', { agents: ['codex'], lead: 'claude', single_vendor: true, expect: await expectOf(started) })
+  assert.equal(lead.status, 409)
+  assert.match(lead.json.reason, /Ведущий/)
+  const unknown = await send(started, 'POST', '/api/setup/apply', { agents: [...IDS, 'nobody'], lead: 'claude', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(unknown.status, 409)
+  assert.deepEqual(read(dir).agents.map((a) => a.id), IDS, 'nothing written by the refusals')
+  const preview = (await send(started, 'GET', '/api/setup/preview?agents=claude&lead=claude&single_vendor=1')).json.apply
+  assert.deepEqual(preview.removed_agents, ['codex'])
+  const out = await send(started, 'POST', '/api/setup/apply', { agents: ['claude'], lead: 'claude', single_vendor: true, expect: await expectOf(started) })
+  assert.equal(out.status, 200, out.text)
+  assert.deepEqual(read(dir).agents.map((a) => a.id), ['claude'])
+})
+
+test('set: "Вернуть прежний" brings the previous set of agents back', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const added = await send(started, 'POST', '/api/setup/apply', { agents: [...IDS, 'gemini'], lead: 'claude', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(added.status, 200, added.text)
+  const revert = (await send(started, 'GET', '/api/setup/preview?agents=claude,codex,gemini&lead=claude&single_vendor=0')).json.apply.revert
+  assert.equal(revert.available, true, revert.reason)
+  assert.deepEqual(revert.changes.find((c) => c.field === 'agents'), { field: 'agents', from: ['claude', 'codex', 'gemini'], to: ['claude', 'codex'] })
+  const undone = await send(started, 'POST', '/api/setup/revert', { expect: revert.expect })
+  assert.equal(undone.status, 200, undone.text)
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
+})
+
+test('set: a briefing copy never follows a link out of the machine directory; nothing is written then', async (t) => {
+  const dir = machineWith()
+  const started = await panel(t, dir)
+  if (!started) return
+  const outside = mkdtempSync(join(tmpdir(), 'panel-outside-'))
+  t.after(() => rmSync(outside, { recursive: true, force: true }))
+  rmSync(join(dir, 'briefings'), { recursive: true, force: true })
+  symlinkSync(outside, join(dir, 'briefings'))
+  const before = readFileSync(join(dir, 'agents.json'), 'utf8')
+  const res = await send(started, 'POST', '/api/setup/apply', { agents: [...IDS, 'gemini'], lead: 'claude', single_vendor: false, expect: await expectOf(started) })
+  assert.equal(res.status, 409, res.text)
+  assert.match(res.json.reason, /outside/)
+  assert.deepEqual(readdirSync(outside), [], 'nothing copied through the link')
+  assert.equal(readFileSync(join(dir, 'agents.json'), 'utf8'), before)
 })
