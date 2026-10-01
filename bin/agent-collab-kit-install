@@ -414,6 +414,7 @@ collab MCP server with Claude Code (user scope) and Codex.
   --skip-claude        do not register with Claude Code even if it is on PATH
   --skip-codex         do not touch ~/.codex/config.toml
   --skip-gemini        do not touch ~/.gemini/config/mcp_config.json
+  --skip-cursor        do not touch ~/.cursor/mcp.json
   --dry-run            run every check, tests and smoke included; change nothing
   --rollback           switch current back to the previous release
   --adopt-profile <profile.json>
@@ -451,6 +452,7 @@ function parseArgs(argv) {
     skipClaude: false,
     skipCodex: false,
     skipGemini: false,
+    skipCursor: false,
     help: false
   }
   opts.claudeConfigDirs = []
@@ -464,6 +466,7 @@ function parseArgs(argv) {
     '--skip-claude': 'skipClaude',
     '--skip-codex': 'skipCodex',
     '--skip-gemini': 'skipGemini',
+    '--skip-cursor': 'skipCursor',
     '--help': 'help',
     '-h': 'help'
   }
@@ -602,6 +605,7 @@ function makeContext(opts) {
     serverPath: path.join(currentPath, SERVER_REL),
     codexConfig: path.join(home, '.codex', 'config.toml'),
     geminiConfig: path.join(home, '.gemini', 'config', 'mcp_config.json'),
+    cursorConfig: path.join(home, '.cursor', 'mcp.json'),
     claudeBin: opts.claudeBin || 'claude',
     claudeDirs: resolveClaudeConfigDirs(opts, home),
     // Without --source: the clone this installer is run from, when it is one; otherwise ~/agent-collab-kit. A kit
@@ -2923,6 +2927,33 @@ function summarizeGemini(ctx, plan) {
   return plan.changed ? `gemini: ${plan.exists ? 'update' : 'create'} mcpServers.collab in ${plan.file}` : null
 }
 
+// ── Cursor (the agent in the editor): ~/.cursor/mcp.json ──────────────────
+// The editor and the Cursor CLI read MCP servers from the same file (cursor.com/docs/cli/mcp), a JSON object with
+// mcpServers like Gemini's. Registered only where Cursor has been used: its own ~/.cursor directory exists, or the
+// `cursor` command is on PATH — on Windows the editor need not put it there (01.10.2026), so the directory counts.
+function cursorServerEntry(ctx) {
+  return { command: ctx.node.path, args: [ctx.serverPath], env: { COLLAB_AGENT_ID: 'cursor' } }
+}
+
+function planCursor(ctx) {
+  if (ctx.opts.skipCursor) return { skipped: true, reason: 'requested with --skip-cursor' }
+  if (!lstatOrNull(ctx.cursorConfig) && !commandExists('cursor') && !lstatOrNull(path.dirname(ctx.cursorConfig))) {
+    return { skipped: true, reason: 'Cursor is not installed (no ~/.cursor and no cursor command)' }
+  }
+  return planJsonRegistration({ display: ctx.cursorConfig, serversKey: 'mcpServers', entry: cursorServerEntry(ctx) })
+}
+
+function applyCursor(ctx, plan, journal, changes) {
+  applyFileRegistration(plan, journal, changes, {
+    updated: (backup) => `cursor: updated mcpServers.collab in ${plan.file} (backup ${backup})`,
+    created: () => `cursor: created ${plan.file} with mcpServers.collab`
+  })
+}
+
+function summarizeCursor(ctx, plan) {
+  return plan.changed ? `cursor: ${plan.exists ? 'update' : 'create'} mcpServers.collab in ${plan.file}` : null
+}
+
 // ── install ────────────────────────────────────────────────────────────────
 
 function rollbackCommand(ctx) {
@@ -2949,6 +2980,7 @@ const MCP_CLIENTS = [
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
   { id: 'claude-hooks', plan: planClaudeHooks, apply: applyClaudeHooks, summary: summarizeClaudeHooks },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini },
+  { id: 'cursor', plan: planCursor, apply: applyCursor, summary: summarizeCursor },
   // Vendors adopted on this machine from a vendor-probe profile (~/.agent-collab-kit/collab/adapters/).
   { id: 'adapters', plan: planAdapters, apply: applyAdapters, summary: summarizeAdapters }
 ]

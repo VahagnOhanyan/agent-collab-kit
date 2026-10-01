@@ -17,7 +17,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { which } from './adapters/index.mjs'
-import { detectBinary } from './composition.mjs'
+import { agentInstalled, detectBinary } from './composition.mjs'
 import { readMcpServers } from './mcp-servers.mjs'
 import { loadBuiltinAgents } from './registry.mjs'
 
@@ -76,7 +76,9 @@ function binaryOf(agent) {
 
 export function probeAgent(agent, capabilityIds, env = machineEnv()) {
   const binary = binaryOf(agent)
-  const installed = binary ? env.which(binary) : null
+  // The catalog's detect fields, also for a composition that dropped them (looked up by id, like the binary).
+  const known = (loadBuiltinAgents().agents || []).find((entry) => entry.id === agent.id) || {}
+  const installed = agentInstalled({ ...known, ...agent, detect: binary || undefined, detect_home: agent.detect_home || known.detect_home }, env)
   const sandbox = sessionSandbox(agent, env)
   const readOnly = sandbox === 'read-only'
   const runners = applicationRunners(env)

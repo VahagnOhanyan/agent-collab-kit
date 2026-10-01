@@ -3,7 +3,8 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathS
 import { delimiter, dirname, isAbsolute, join, sep } from 'node:path'
 
 import { describeProject } from '../collab/src/api.mjs'
-import { detectBinary, planComposition, rolesItCanHold, writeComposition } from '../collab/src/composition.mjs'
+import { homedir } from 'node:os'
+import { agentInstalled, planComposition, rolesItCanHold, writeComposition } from '../collab/src/composition.mjs'
 import { independenceReport } from '../collab/src/independence.mjs'
 import { factsFor, fitToFacts } from '../collab/src/probe.mjs'
 import { DEFAULT_CONFIG_DIR } from '../collab/src/paths.mjs'
@@ -90,7 +91,7 @@ export function detectSetup({ registryDir, machineDir, cwd }) {
   const project = describeProject({ cwd, registryDir })
   return {
     catalog: (catalog.agents || []).map((agent) => ({ id: agent.id, name: agent.name, provider: agent.provider, roles: agent.roles || [] })),
-    installed: (catalog.agents || []).filter((agent) => executableOnPath(detectBinary(agent))).map((agent) => agent.id),
+    installed: (catalog.agents || []).filter((agent) => agentInstalled(agent, { which: executableOnPath, exists: existsSync, home: homedir() })).map((agent) => agent.id),
     roles,
     roles_problem: rolesProblem,
     current: { machine: machineComposition(machineDir), project: project.projectId },

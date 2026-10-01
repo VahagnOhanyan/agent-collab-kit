@@ -15,6 +15,19 @@ export function detectBinary(agent) {
   return agent.detect || (agent.adapter?.kind === 'cli' ? agent.adapter.binary : null) || null
 }
 
+// Whether the agent's program is on this machine: its command on PATH, or — for a program that need not put one there,
+// like Cursor's editor on Windows — its own directory in the home (`detect_home`, relative to the home). Advisory: it
+// labels the wizard's choice and starts the facts; it never decides on its own who may hold a role.
+// Answers what was found (the command's path or the directory), or null.
+export function agentInstalled(agent, { which, exists, home }) {
+  const binary = detectBinary(agent)
+  const onPath = binary ? which(binary) : null
+  if (onPath) return onPath
+  if (typeof agent.detect_home !== 'string' || agent.detect_home === '') return null
+  const dir = join(home, agent.detect_home)
+  return exists(dir) ? dir : null
+}
+
 // Every role this agent's capabilities satisfy.
 export function rolesItCanHold(agent, roleDefs) {
   const caps = new Set(agent.capabilities || [])
@@ -37,7 +50,7 @@ export function planComposition({ catalog, roleDefs, include, lead, singleVendor
   // longer says which vendor does what. The facts on the machine (probe.mjs fitToFacts) cut the proposal after this.
   const roles = new Map(chosen.map((a) => [a.id, rolesItCanHold(a, roleDefs)]))
   const agents = chosen.map((a) => {
-    const { adapter, detect, ...rest } = a
+    const { adapter, detect, detect_home: detectHome, ...rest } = a
     return { ...rest, roles: roles.get(a.id) }
   })
   // One vendor (by provider) means no reviewer of another model family exists:

@@ -30,7 +30,7 @@ import { ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
 import { CollabError } from './errors.mjs'
 import { which } from './adapters/index.mjs'
 import { catalogFor, loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
-import { detectBinary, planComposition, writeComposition } from './composition.mjs'
+import { agentInstalled, planComposition, writeComposition } from './composition.mjs'
 import { independenceReport } from './independence.mjs'
 import { factsFor, fitToFacts, machineEnv } from './probe.mjs'
 import { unadaptedVendors } from './vendors.mjs'
@@ -169,7 +169,7 @@ async function machineSetup(flags, options) {
   const machineConfig = loadConfigFrom([machineDir], { kind: 'machine', dir: machineDir })
   const roleDefs = machineConfig.roles.roles
   const catalog = catalogFor(machineConfig, machineDir)
-  const detected = (catalog.agents || []).filter((a) => detectBinary(a) && which(detectBinary(a))).map((a) => a.id)
+  const detected = (catalog.agents || []).filter((a) => agentInstalled(a, probeEnvFrom(options))).map((a) => a.id)
   out(
     `${C.bold}collab setup${C.off} — this machine's composition ${dim(join(machineDir, 'agents.json'))}`,
     `  catalog      ${(catalog.agents || []).map((a) => a.id).join(', ')}`,

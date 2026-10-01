@@ -61,6 +61,21 @@
       },
       "briefing_file": "briefings/gemini.md",
       "briefing": "You are the Gemini agent (Antigravity CLI) on this project, a different vendor from Claude and Codex — useful for an independent second opinion. whoami says whether you lead or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. If you cannot do one of your roles here, suspend_role. Full instructions: collab brief gemini."
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor (agent in the editor)",
+      "provider": "cursor",
+      "detect": "cursor",
+      "detect_home": ".cursor",
+      "adapter": {
+        "kind": "manual",
+        "session": "interactive",
+        "cannot": [],
+        "note": "Added 2026-10-01 (owner): Cursor's editor agent reads the journal through ~/.cursor/mcp.json, which the installer writes. No CLI adapter yet: without the Cursor CLI (`agent`) nothing can start it on a task, so work reaches it through the inbox. On Windows the editor need not put a `cursor` command on PATH, so ~/.cursor counts as installed (detect_home)."
+      },
+      "briefing_file": "briefings/cursor.md",
+      "briefing": "You are the Cursor agent (in the editor) on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. Nothing launches you from outside: work arrives in your inbox. Ask for an independent review by ROLE (code_reviewer), not by name; with one vendor it is the same agent in a separate session on another model. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. Full instructions: collab brief cursor."
     }
   ]
 }

@@ -72,9 +72,24 @@ function codexServers(home) {
   return found
 }
 
+// Cursor's user-level MCP settings: ~/.cursor/mcp.json, `mcpServers` keyed by name (the editor and its CLI share it).
+function cursorServers(home) {
+  let data
+  try {
+    data = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8'))
+  } catch {
+    return []
+  }
+  const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
+  return Object.entries(servers).map(([name, spec]) => {
+    const remote = typeof spec?.url === 'string'
+    return { name, agent: 'cursor', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : basename(String(spec?.command || '')) }
+  })
+}
+
 export function readMcpServers(home) {
   const byName = new Map()
-  for (const s of [...claudeServers(home), ...codexServers(home)]) {
+  for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home)]) {
     const row = byName.get(s.name) || { name: s.name, transport: s.transport, target: s.target, agents: [] }
     if (!row.agents.includes(s.agent)) row.agents.push(s.agent)
     if (!row.target) row.target = s.target

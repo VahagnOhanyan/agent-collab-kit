@@ -314,6 +314,34 @@ test('Gemini config: an existing collab entry is updated, disabled:true and an u
   )
 })
 
+// Cursor's editor need not put a `cursor` command on PATH (on Windows it did not, 01.10.2026): its ~/.cursor directory
+// is what says it is installed, and ~/.cursor/mcp.json is where its agent (and its CLI) read MCP servers from.
+test('Cursor: skipped without ~/.cursor; with it, collab is registered in ~/.cursor/mcp.json beside the person\'s servers', () => {
+  const absent = makeWorld('cursor-absent')
+  let r = absent.run(['--source', world.source, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /cursor: skipped — Cursor is not installed/)
+  assert.equal(existsSync(join(absent.home, '.cursor')), false, 'no ~/.cursor made for a program nobody has')
+
+  const W = makeWorld('cursor-present')
+  mkdirSync(join(W.home, '.cursor'), { recursive: true })
+  const configPath = join(W.home, '.cursor', 'mcp.json')
+  writeFileSync(configPath, `${JSON.stringify({ mcpServers: { other: { command: 'other-server', args: [] } } }, null, 2)}\n`)
+  r = W.run(['--source', world.source, '--skip-kit-tests'])
+  assert.equal(r.status, 0, r.all)
+  assert.match(r.stdout, /cursor: updated mcpServers\.collab/)
+  const written = JSON.parse(readFileSync(configPath, 'utf8'))
+  assert.deepEqual(written.mcpServers.other, { command: 'other-server', args: [] }, 'the person\'s server untouched')
+  assert.deepEqual(written.mcpServers.collab, {
+    command: NODE,
+    args: [join(W.home, '.agent-collab-kit', 'current', 'collab', 'src', 'mcp', 'server.mjs')],
+    env: { COLLAB_AGENT_ID: 'cursor' }
+  })
+  const again = W.run(['--source', world.source, '--skip-kit-tests'])
+  assert.equal(again.status, 0, again.all)
+  assert.match(again.stdout, /changed: nothing/)
+})
+
 const NO_VENDOR_PATH = '/no-vendor-cli-on-this-path'
 
 test('--skip-codex and --skip-gemini leave both untouched and say why, without touching Claude', () => {
