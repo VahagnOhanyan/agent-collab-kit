@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// agent-collab-kit-install — install the COMMITTED state of ~/agent-collab-kit as a release.
+// agent-collab-kit-install — install the COMMITTED state of the kit's clone (the one it is run from, else
+// ~/agent-collab-kit) as a release.
 //
 //   ~/.agent-collab-kit/releases/<sha>/   one directory per installed commit (git archive)
 //   ~/.agent-collab-kit/current           symlink to the active release, switched atomically
@@ -402,7 +403,7 @@ Installs the committed HEAD of the source repository as ~/.agent-collab-kit/rele
 switches ~/.agent-collab-kit/current to it, links skills/agents/rules/collab and registers the
 collab MCP server with Claude Code (user scope) and Codex.
 
-  --source <dir>       source git repository (default: <home>/agent-collab-kit)
+  --source <dir>       source git repository (default: the clone this installer is run from, else <home>/agent-collab-kit)
   --home <dir>         home directory to install into (default: $HOME)
   --bindir <dir>       where the collab launcher is linked (default: first of ${BINDIR_CANDIDATES.join(', ')} that exists)
   --claude-bin <path>  Claude Code executable (default: claude)
@@ -603,8 +604,19 @@ function makeContext(opts) {
     geminiConfig: path.join(home, '.gemini', 'config', 'mcp_config.json'),
     claudeBin: opts.claudeBin || 'claude',
     claudeDirs: resolveClaudeConfigDirs(opts, home),
-    source: path.resolve(opts.source || path.join(home, 'agent-collab-kit'))
+    // Without --source: the clone this installer is run from, when it is one; otherwise ~/agent-collab-kit. A kit
+    // cloned anywhere (the Desktop, a folder GitHub Desktop chose) then installs itself — on 01.10.2026 the first
+    // Windows install stopped at "C:\Users\…\agent-collab-kit is not a directory" for exactly that. Only for the real
+    // home: a test with its own --home must never pick up the repository it runs from.
+    source: path.resolve(opts.source || (home === realHome && ownClone()) || path.join(home, 'agent-collab-kit'))
   }
+}
+
+// The repository around this script: a .git beside bin/ (a working clone). A release copy under
+// ~/.agent-collab-kit/releases has no .git, so running the installer from there keeps the old default.
+function ownClone() {
+  const root = path.resolve(__dirname, '..')
+  return lstatOrNull(path.join(root, '.git')) && lstatOrNull(path.join(root, 'bin', 'agent-collab-kit-install')) ? root : null
 }
 
 // ── lock ───────────────────────────────────────────────────────────────────

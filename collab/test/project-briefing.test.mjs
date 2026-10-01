@@ -6,13 +6,13 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
 import { checkBriefings, loadBuiltinAgents, loadConfig, PROJECT_BRIEFING_MAX } from '../src/registry.mjs'
-import { gitRepo, initialisedJournal, tempDir, writeJson } from './helpers.mjs'
+import { gitRepo, initialisedJournal, linkForTest, tempDir, writeJson } from './helpers.mjs'
 
 function fixture() {
   const base = tempDir('collab-project-briefing-')
@@ -51,12 +51,15 @@ test('without the file there is no project briefing and nothing else changes', (
   }
 })
 
-test('the file is not followed through a link and is not shown when oversized; doctor names both', () => {
+test('the file is not followed through a link and is not shown when oversized; doctor names both', (t) => {
   const f = fixture()
   try {
     const secret = join(f.base, 'elsewhere.md')
     writeFileSync(secret, 'SOMETHING ELSE ON THE MACHINE')
-    symlinkSync(secret, join(f.briefings, 'claude.project.md'))
+    if (!linkForTest(secret, join(f.briefings, 'claude.project.md'))) {
+      t.skip('this Windows user may not create a link to a file (needs Developer Mode)')
+      return
+    }
     writeFileSync(join(f.briefings, 'codex.project.md'), 'x'.repeat(PROJECT_BRIEFING_MAX + 1))
     assert.equal(f.api('claude').whoami().project_briefing, null)
     assert.equal(f.api('codex').whoami().project_briefing, null)

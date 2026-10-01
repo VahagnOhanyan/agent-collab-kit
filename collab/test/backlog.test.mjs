@@ -3,11 +3,11 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { cleanupFeature, cleanupTask, groupByFeature, NO_FEATURE, parseBacklog, patternToRegex, readBacklog, recordsWord, suggestedRole, validateFeatures } from '../src/backlog.mjs'
-import { tempDir, writeJson } from './helpers.mjs'
+import { linkForTest, tempDir, writeJson } from './helpers.mjs'
 
 const BACKLOG = [
   '# Бэклог',
@@ -108,13 +108,14 @@ test('readBacklog: settings only from the registry entry, the file only inside t
     // A link where the backlog should be is not followed.
     rmSync(join(root, 'docs', 'backlog.md'))
     writeFileSync(join(base, 'elsewhere.md'), BACKLOG)
-    symlinkSync(join(base, 'elsewhere.md'), join(root, 'docs', 'backlog.md'))
     // (refused at the path check — it resolves outside the project — or, for a link inside it, as not a plain file)
-    assert.match(readBacklog({ projectDir: entry, projectRoot: root }).reason, /внутри проекта|обычным файлом/)
+    if (linkForTest(join(base, 'elsewhere.md'), join(root, 'docs', 'backlog.md'))) {
+      assert.match(readBacklog({ projectDir: entry, projectRoot: root }).reason, /внутри проекта|обычным файлом/)
+    }
     // Nor is a linked directory on the way out of the project.
     mkdirSync(join(base, 'outside'), { recursive: true })
     writeFileSync(join(base, 'outside', 'backlog.md'), BACKLOG)
-    symlinkSync(join(base, 'outside'), join(root, 'linked'))
+    linkForTest(join(base, 'outside'), join(root, 'linked'))
     writeJson(join(entry, 'project.json'), { id: 'demo', roots: [root], review_backlog: 'linked/backlog.md' })
     assert.match(readBacklog({ projectDir: entry, projectRoot: root }).reason, /внутри проекта/)
   } finally {

@@ -127,11 +127,14 @@ function resolveArgs(def, args, { codeRoot, realRoot }) {
   if (given.length < (spec.min || 0) || given.length > (spec.max || 20)) {
     throw refuse(`this runner takes between ${spec.min} and ${spec.max} paths, got ${given.length}`, { given })
   }
-  const under = spec.must_be_under ? normalize(spec.must_be_under).replace(/[\\/]+$/, '') : null
+  // Compared with "/" on every platform: normalize() on Windows turns "backend/test" into "backend\test", and
+  // until 01.10.2026 that made every argument "not under backend/test" there.
+  const posix = (p) => p.replace(/\\/g, '/')
+  const under = spec.must_be_under ? posix(normalize(spec.must_be_under)).replace(/\/+$/, '') : null
   const realUnder = under ? realpathLoose(join(codeRoot, under)) : null
 
   return given.map((raw) => {
-    const clean = normalize(String(raw)).replace(/^[\\/]+/, '')
+    const clean = posix(normalize(String(raw))).replace(/^\/+/, '')
     if (clean.split(/[\\/]/).includes('..')) throw refuse(`"${raw}" walks out of the tree`, { path: raw })
     if (under && clean !== under && !clean.startsWith(`${under}/`)) {
       throw refuse(`"${raw}" is not under ${spec.must_be_under}`, { path: raw })

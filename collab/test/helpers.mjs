@@ -5,7 +5,7 @@
 // from inside a real project must not end up writing that project's journal.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -19,6 +19,26 @@ export const LAUNCHER = join(HERE, '..', '..', 'bin', 'collab')
 export const KIT_REGISTRY = join(HERE, '..', '..', 'projects')
 
 export const tempDir = (prefix = 'collab-') => realpathSync(mkdtempSync(join(tmpdir(), prefix)))
+
+// A link a test plants to check that it is not followed. A directory link on Windows is a junction — any user may make
+// one, and Node reports it as a symbolic link like the real thing. A link to a FILE on Windows needs Developer Mode or
+// an administrator; without that this returns false and the caller leaves out the check that needs it (EPERM made six
+// tests fail on the first Windows run, 01.10.2026). Anywhere else a failure is a failure.
+export function linkForTest(target, path) {
+  const windows = process.platform === 'win32'
+  const directory = statSync(target, { throwIfNoEntry: false })?.isDirectory() === true
+  try {
+    symlinkSync(target, path, windows && directory ? 'junction' : undefined)
+    return true
+  } catch (error) {
+    if (windows && !directory && (error.code === 'EPERM' || error.code === 'EACCES')) return false
+    throw error
+  }
+}
+
+// Removing a test's directory on Windows can meet a file a just-exited child process still holds (EBUSY, ENOTEMPTY):
+// retried for a moment instead of failing the test over its own cleanup.
+export const removeTree = (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
 
 // os.homedir() reads $HOME on POSIX but %USERPROFILE% on Windows — a test
 // that spawns a child process and sets only HOME to fake its home directory
@@ -269,7 +289,7 @@ export function sandbox({ git: withGit = false, init = true } = {}) {
     roots: { journalRoot: root, codeRoot: root, stateDir },
     // Passed to main()/createApi as parameters — never as environment variables.
     options: { projectRoot: root, configDir, registryDir: join(base, 'empty-registry') },
-    cleanup: () => rmSync(base, { recursive: true, force: true })
+    cleanup: () => removeTree(base)
   }
 }
 

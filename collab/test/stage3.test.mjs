@@ -24,7 +24,8 @@ function machine({ files = {} } = {}) {
     read: (file) => (Object.hasOwn(files, file) ? files[file] : null)
   }
 }
-const READ_ONLY_CODEX = { '/nowhere/.codex/config.toml': 'sandbox_mode = "read-only"\n' }
+// Spelled with join, as the probe spells it: on Windows the path is "\nowhere\.codex\config.toml".
+const READ_ONLY_CODEX = { [join('/nowhere', '.codex', 'config.toml')]: 'sandbox_mode = "read-only"\n' }
 const BRIEFING = 'A test agent. It reads the journal, takes work and answers reviews like any other agent here.'
 
 function world({ agents = null } = {}) {

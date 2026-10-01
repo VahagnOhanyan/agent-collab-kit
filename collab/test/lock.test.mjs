@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 
 import { acquireSync, isStale, readOwner, releaseSync, withLock } from '../src/lock.mjs'
 import { CODES } from '../src/errors.mjs'
+import { removeTree } from './helpers.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const WORKER = join(HERE, 'fixtures', 'lock-worker.mjs')
@@ -49,7 +50,7 @@ test('six real processes serialise: no update is lost', async () => {
     assert.equal(readFileSync(counter, 'utf8').trim(), '240', 'every one of 6x40 increments must survive')
     assert.equal(existsSync(lock), false, 'the lock file is removed on release')
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    removeTree(dir)
   }
 })
 

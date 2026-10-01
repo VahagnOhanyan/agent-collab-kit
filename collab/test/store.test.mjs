@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { createStore } from '../src/store.mjs'
 import { CODES } from '../src/errors.mjs'
@@ -197,7 +197,8 @@ test('two real processes updating the same record lose nothing', async () => {
     writeFileSync(
       worker,
       [
-        `import { createStore } from ${JSON.stringify(join(HERE, '..', 'src', 'store.mjs'))}`,
+        // A file URL, not a path: on Windows an absolute path "C:\…" in an import reads as the URL scheme "c:".
+        `import { createStore } from ${JSON.stringify(pathToFileURL(join(HERE, '..', 'src', 'store.mjs')).href)}`,
         `const store = createStore({ root: ${JSON.stringify(dir)}, agentId: 'w' + process.pid })`,
         'for (let i = 0; i < 25; i += 1) {',
         `  await store.update('tasks', ${JSON.stringify(task.id)}, (c) => ({ hits: c.hits + 1 }))`,

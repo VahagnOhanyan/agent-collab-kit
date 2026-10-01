@@ -4,12 +4,12 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { ensurePersistentRegistry, proposeConnection, writeConnection } from '../src/connect.mjs'
 import { defaultRegistryDir } from '../src/paths.mjs'
-import { git, gitRepo, runCli, tempDir } from './helpers.mjs'
+import { git, gitRepo, linkForTest, runCli, tempDir } from './helpers.mjs'
 
 function project(base, name, { apple = false, gate = false } = {}) {
   const root = gitRepo(join(base, name), { commit: false })
@@ -151,7 +151,7 @@ test('the first persistent registry brings valid release entries along, skips br
     const elsewhere = join(w.base, 'elsewhere')
     mkdirSync(elsewhere)
     writeFileSync(join(elsewhere, 'project.json'), '{"id":"linked","roots":["/z"]}\n')
-    symlinkSync(elsewhere, join(release, 'linked'))
+    linkForTest(elsewhere, join(release, 'linked'))
     writeFileSync(join(release, 'README.md'), 'readme\n')
     const persistent = join(w.base, 'persistent')
     assert.deepEqual(ensurePersistentRegistry({ persistent, release }), { created: true, copied: ['old-app'], skipped: ['broken'] })
@@ -204,7 +204,7 @@ test('a symlinked registry entry is ignored, and an id that appears meanwhile is
     const outside = join(w.base, 'outside')
     mkdirSync(outside)
     writeFileSync(join(outside, 'project.json'), JSON.stringify({ id: 'my-app', roots: [root] }))
-    symlinkSync(outside, join(w.registryDir, 'my-app'))
+    linkForTest(outside, join(w.registryDir, 'my-app'))
     const found = JSON.parse(runCli(['project', '--json'], { cwd: root, options: { registryDir: w.registryDir } }).stdout)
     assert.equal(found.projectId, null, 'a symlinked entry is not trusted')
     rmSync(join(w.registryDir, 'my-app'))

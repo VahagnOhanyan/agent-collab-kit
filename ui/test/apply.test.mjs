@@ -46,7 +46,7 @@ const machineFacts = ({ files = {} } = {}) => ({
   exists: (file) => file === '/Applications/Xcode.app' || Object.hasOwn(files, file),
   read: (file) => (Object.hasOwn(files, file) ? files[file] : null)
 })
-const READ_ONLY_CODEX = { '/nowhere/.codex/config.toml': 'sandbox_mode = "read-only"\n' }
+const READ_ONLY_CODEX = { [join('/nowhere', '.codex', 'config.toml')]: 'sandbox_mode = "read-only"\n' }
 
 async function panel(t, machineDir, options = {}) {
   let started

@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from './errors.mjs'
 import { writeJsonAtomic } from './jsonio.mjs'
@@ -91,9 +91,13 @@ export const FIXED_PATH_DIRS = Object.freeze([
 ])
 export const FIXED_PATH = FIXED_PATH_DIRS.join(IS_WINDOWS ? ';' : ':')
 
+// Windows has no executable bit (a file's mode always reads 0o666 there): what runs is decided by the extension.
+const WINDOWS_RUNNABLE = /\.(exe|com|cmd|bat)$/i
+
 export function isExecutableFile(path) {
   try {
     const stat = statSync(path)
+    if (IS_WINDOWS) return stat.isFile() && WINDOWS_RUNNABLE.test(path)
     return stat.isFile() && (stat.mode & 0o111) !== 0
   } catch {
     return false
@@ -113,8 +117,16 @@ export function sanitisedEnv(base = process.env) {
 // LC_ALL=C so "not a git repository" can be recognised by its message.
 const gitEnv = () => ({ ...sanitisedEnv(), LC_ALL: 'C' })
 
-// Real binaries first; /usr/bin/git on macOS is an xcrun shim.
-export const GIT_CANDIDATES = Object.freeze([
+// Fixed places, never a PATH lookup (a repository can put a fake git first on PATH). macOS/Linux: real binaries
+// first; /usr/bin/git on macOS is an xcrun shim. Windows: where Git for Windows installs — for all users under
+// Program Files, for one user under %LOCALAPPDATA%\Programs. The list had only the macOS places until 01.10.2026,
+// and on the first Windows install every journal in a git project was refused as "cannot be verified".
+function windowsGitCandidates(env = process.env) {
+  const roots = [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs') : null]
+    .filter((root) => typeof root === 'string' && root)
+  return [...new Set(roots.flatMap((root) => [join(root, 'Git', 'cmd', 'git.exe'), join(root, 'Git', 'bin', 'git.exe')]))]
+}
+export const GIT_CANDIDATES = Object.freeze(IS_WINDOWS ? windowsGitCandidates() : [
   '/opt/homebrew/bin/git',
   '/usr/local/bin/git',
   '/Library/Developer/CommandLineTools/usr/bin/git',
@@ -227,10 +239,15 @@ export function gitInfo(dir) {
   return { commonDir: common, toplevel: top, journalRoot }
 }
 
+// The root of a filesystem: "/" — and on Windows every drive root ("C:\", "D:\") and a share root ("\\server\share\").
+// Only "/" was checked until 01.10.2026, so on Windows `collab init` at C:\ made C:\.collab.
+export const isFilesystemRoot = (dir) => typeof dir === 'string' && dir !== '' && parse(dir).root === dir
+
 function assertAllowedRoot(root, { home, how }) {
   const realHome = safeRealpath(home)
-  if (root === '/' || root === realHome) {
-    const what = root === '/' ? 'the filesystem root' : 'your home directory'
+  const atRoot = isFilesystemRoot(root)
+  if (atRoot || root === realHome) {
+    const what = atRoot ? 'the filesystem root' : 'your home directory'
     throw new CollabError(
       CODES.ROOT_REFUSED,
       `refusing to use ${what} (${root}) as a collab project root (${how}) — a journal there would collect every session on the machine. ` +

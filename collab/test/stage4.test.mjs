@@ -138,14 +138,14 @@ test('the owner confirms what the machine cannot check; a fact that rules it out
   assert.equal(probeAgent(claude, CAPS, machine()).capabilities.run_application.status, 'confirmed')
   assert.match(probeAgent(claude, CAPS, machine()).capabilities.run_application.reason, /владельцем/)
   const codex = { ...loadBuiltinAgents().agents.find((a) => a.id === 'codex'), confirmed_capabilities: ['run_application'] }
-  const readOnly = machine({ files: { '/nowhere/.codex/config.toml': 'sandbox_mode = "read-only"\n' } })
+  const readOnly = machine({ files: { [join('/nowhere', '.codex', 'config.toml')]: 'sandbox_mode = "read-only"\n' } })
   assert.equal(probeAgent(codex, CAPS, readOnly).capabilities.run_application.status, 'missing')
 })
 
 test('a confirmation the facts now rule out does not break the machine: the session starts, the capability is simply gone', () => {
   const w = world([agent('claude', 'anthropic', ['software_engineer', 'code_reviewer']), agent('codex', 'openai', ['code_reviewer'], { confirmed_capabilities: ['run_application'] })])
   try {
-    const readOnly = machine({ files: { '/nowhere/.codex/config.toml': 'sandbox_mode = "read-only"\n' } })
+    const readOnly = machine({ files: { [join('/nowhere', '.codex', 'config.toml')]: 'sandbox_mode = "read-only"\n' } })
     const codex = w.api('codex', readOnly).whoami()
     assert.equal(codex.capabilities.includes('run_application'), false)
     assert.deepEqual(w.api('claude', readOnly).doctor().fact_conflicts, [], 'a capability, not a role, was ruled out')

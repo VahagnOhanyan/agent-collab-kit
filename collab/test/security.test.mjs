@@ -25,6 +25,7 @@ import {
   apis,
   cleanEnv,
   gitRepo,
+  removeTree,
   runCli,
   sandbox,
   startServer,
@@ -308,7 +309,8 @@ test('D: init racing a reader never exposes a half-built journal', async () => {
       assert.doesNotThrow(() => createApi({ agentId: 'claude', cwd: project, configDir }))
     }
   } finally {
-    rmSync(base, { recursive: true, force: true })
+    // A child that failed mid-run may still have the project as its cwd for a moment; Windows will not remove that.
+    removeTree(base)
   }
 })
 
