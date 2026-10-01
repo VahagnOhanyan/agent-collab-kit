@@ -274,7 +274,7 @@ async function tasks(param) {
   const counts = {}
   for (const t of everything) counts[t.status] = (counts[t.status] || 0) + 1
   const chip = (href, text, on, tone = '') => el('a', { class: `pill ${tone}${on ? ' on' : ''}`, href, 'aria-current': on ? 'true' : undefined, text })
-  const toggle = el('div', { class: 'chips' },
+  const toggle = el('div', { class: 'chips filters', role: 'navigation', 'aria-label': 'Фильтр задач по статусу' },
     chip('#/tasks', `открытые ${everything.filter(isOpen).length}`, !all && !status),
     chip('#/tasks?all=1', `все ${everything.length}`, all && !status),
     ...Object.entries(counts).map(([k, v]) => chip(`#/tasks?status=${encodeURIComponent(k)}`, `${statusText(k)} ${v}`, status === k, STATUS_TONE[k] || '')))
