@@ -82,7 +82,10 @@ export function proposeConnection({ journalRoot, registryDir, id = null }) {
         return `${name}/`
       }
     })
-  const gate = isExecutableFile(join(root, 'scripts', 'preflight.sh')) ? 'scripts/preflight.sh' : null
+  // A shell script carries no executable mark on Windows (and runs there through Git's bash): there it is the gate
+  // when it exists as a file; elsewhere it must be executable.
+  const preflight = join(root, 'scripts', 'preflight.sh')
+  const gate = (process.platform === 'win32' ? statSync(preflight, { throwIfNoEntry: false })?.isFile() : isExecutableFile(preflight)) ? 'scripts/preflight.sh' : null
   const apple = detectApple(tracked, root)
 
   const files = {
@@ -109,7 +112,9 @@ export function writeConnection(proposal, { registryDir }) {
     renameSync(stage, final)
   } catch (error) {
     rmSync(stage, { recursive: true, force: true })
-    if (['EEXIST', 'ENOTEMPTY', 'EISDIR', 'ENOTDIR'].includes(error.code)) {
+    // Windows answers a rename onto an existing directory with EPERM (or EACCES), not EEXIST/ENOTEMPTY.
+    const taken = ['EEXIST', 'ENOTEMPTY', 'EISDIR', 'ENOTDIR'].includes(error.code) || (['EPERM', 'EACCES'].includes(error.code) && lstatOrNull(final))
+    if (taken) {
       throw new CollabError(CODES.CONFIG_INVALID, `the id "${proposal.id}" appeared in the registry meanwhile — nothing written`, { id: proposal.id })
     }
     throw error

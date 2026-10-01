@@ -11,7 +11,7 @@ import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { createApi } from '../src/api.mjs'
 import { CODES } from '../src/errors.mjs'
@@ -508,7 +508,8 @@ test('two real processes claiming one task: exactly one wins', async () => {
     writeFileSync(
       script,
       [
-        `import { createApi } from ${JSON.stringify(API)}`,
+        // A file URL: a "C:\…" path in an import is read as the URL scheme "c:" on Windows.
+        `import { createApi } from ${JSON.stringify(pathToFileURL(API).href)}`,
         'const api = createApi({ agentId: process.argv[2], root: process.argv[3], configDir: process.argv[4] })',
         `const result = await api.claimTask({ task_id: ${JSON.stringify(task.id)} })`,
         'process.stdout.write(JSON.stringify({ agent: process.argv[2], claimed: result.claimed, reason: result.reason || null }))'
