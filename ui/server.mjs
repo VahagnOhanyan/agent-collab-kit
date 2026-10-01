@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { CODES, CollabError } from '../collab/src/errors.mjs'
 import { describeProject, isUninitialised } from '../collab/src/api.mjs'
 import { cleanupTask, readBacklog, recordsWord, suggestedRole } from '../collab/src/backlog.mjs'
+import { listProjects } from '../collab/src/projects.mjs'
 import { unadaptedVendors } from '../collab/src/vendors.mjs'
 import { readKitFiles } from './kit-files.mjs'
 import { applySetup, detectSetup, previewSetup, revertSetup } from './setup-wizard.mjs'
@@ -22,7 +23,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_PATHS = new Set(['/api/setup/apply', '/api/setup/revert', '/api/backlog/cleanup'])
 const WRITE_BODY_MAX = 4096
 const APPLY_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 'expect'])
-const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 't'])
+const PREVIEW_KEYS = new Set(['agents', 'lead', 'single_vendor', 'roles', 'confirmed', 'owner_language', 't', 'project'])
+const PROJECT_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const MACHINE_SCREENS = new Set(['/api/kit', '/api/vendors', '/api/setup/detect', '/api/projects'])
 const ROLES_PARAM_MAX = 2048
 
 const panelHeaders = () => ({
@@ -214,10 +217,32 @@ export async function startPanel({
   if (typeof token !== 'string' || token.length < 16) throw new CollabError(CODES.INVALID_INPUT, 'the panel needs a random token')
   if (typeof apiFactory !== 'function') throw new CollabError(CODES.INVALID_INPUT, 'the panel needs an apiFactory')
 
+  // ── which project's journal a request reads (the switcher, 01.10.2026) ───────
+  // `?project=<id>` names a project of the trusted registry — nothing else: an id the registry does not hold, an entry
+  // with problems or one with no root on this machine is refused, so a request can never point the panel at an
+  // arbitrary directory. No parameter: the project the panel was started in, as before.
+  const registryProjects = () => (registryDir ? listProjects(registryDir) : []).filter((entry) => entry.problems.length === 0)
+  const resolveProject = (url) => {
+    const values = url.searchParams.getAll('project')
+    // A repeated parameter is refused before anything else: `?project=&project=beta` must not read as "none".
+    if (values.length > 1) return { error: [400, 'INVALID_INPUT', 'project is given at most once'] }
+    if (!values.length || values[0] === '') return { where: null }
+    if (!PROJECT_ID.test(values[0])) return { error: [400, 'INVALID_INPUT', 'project is one registry project id'] }
+    const entry = registryProjects().find((project) => project.id === values[0])
+    if (!entry) return { error: [404, 'NOT_FOUND', `No connected project "${values[0]}" in the registry`] }
+    const index = entry.realRoots.findIndex((root) => existsSync(root))
+    if (index === -1) return { error: [404, 'NOT_FOUND', `Project "${values[0]}" has no root on this machine`] }
+    return { where: { id: entry.id, cwd: entry.realRoots[index], projectRoot: entry.roots[index] } }
+  }
+  const cwdOf = (where) => where?.cwd || cwd
+  // A factory written for one journal (tests, an older caller) takes no argument and simply ignores the project.
+  const apiFor = (where) => (where ? apiFactory(where) : apiFactory())
+  const writeApiFor = (where) => (where ? writeApiFactory(where) : writeApiFactory())
+
   // The project's backlog of small review findings, grouped by feature (collab/src/backlog.mjs). Settings come only
-  // from the trusted registry entry of the project the panel is opened in.
-  const backlogFor = async (api) => {
-    const project = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
+  // from the trusted registry entry of the selected project.
+  const backlogFor = async (api, where = null) => {
+    const project = describeProject({ cwd: cwdOf(where), ...(registryDir ? { registryDir } : {}) })
     const projectDir = project.projectId ? join(project.registryDir, project.projectId) : null
     const openTasks = api ? await api.listTasks({ open: true }) : []
     const view = readBacklog({ projectDir, projectRoot: project.journalRoot, openTasks })
@@ -230,13 +255,13 @@ export async function startPanel({
   // Two requests for the same group at once (two tabs, a double submit) must not both pass the "no open cleanup"
   // check: creations from this panel run one after the other.
   let cleanupQueue = Promise.resolve()
-  const createCleanup = (api, input) => {
-    const run = cleanupQueue.then(() => createCleanupNow(api, input))
+  const createCleanup = (api, input, where = null) => {
+    const run = cleanupQueue.then(() => createCleanupNow(api, input, where))
     cleanupQueue = run.catch(() => {})
     return run
   }
-  const createCleanupNow = async (api, { feature, role, expect }) => {
-    const view = await backlogFor(api)
+  const createCleanupNow = async (api, { feature, role, expect }, where = null) => {
+    const view = await backlogFor(api, where)
     if (!view.configured) return { ok: false, reason: view.reason }
     if (expect !== view.expect) return { ok: false, reason: 'Бэклог изменился, пока вы смотрели. Обновите страницу.' }
     const group = view.groups.find((g) => g.feature === feature)
@@ -251,21 +276,21 @@ export async function startPanel({
   // After the set of agents changed: tasks of an agent taken out go, in THIS project's journal, to one that holds the
   // role (collab domain handOverFromAbsent). Other projects get it when a session opens there. Never fails the write
   // that already succeeded: no journal here, no right to write it, an error — the answer says so.
-  const handOverHere = async (changes = []) => {
+  const handOverHere = async (changes = [], where = null) => {
     if (!changes.some((change) => change.field === 'agents')) return null
     const later = 'collab попробует снова при следующих сессиях агентов в проекте; если журнал недоступен для записи, его задачи останутся за исключённым агентом, пока вы не передадите их вручную (collab task / release).'
     if (typeof writeApiFactory !== 'function') return { done: false, reason: `Панель не пишет в журнал проекта. ${later}` }
     try {
-      return { done: true, ...(await (await writeApiFactory()).handOverFromAbsent()) }
+      return { done: true, ...(await (await writeApiFor(where)).handOverFromAbsent()) }
     } catch (error) {
       return { done: false, reason: `Задачи в этом проекте сейчас не переданы (${error.message}). ${later}` }
     }
   }
   // For the preview: how many open tasks each agent about to be taken out holds in this project's journal.
-  const openTasksOf = async (ids = []) => {
+  const openTasksOf = async (ids = [], where = null) => {
     if (!ids.length) return {}
     try {
-      const open = await apiFactory().listTasks({ open: true })
+      const open = await (await apiFor(where)).listTasks({ open: true })
       return Object.fromEntries(ids.map((id) => [id, open.filter((task) => task.owner === id).length]))
     } catch {
       return {}
@@ -310,6 +335,13 @@ export async function startPanel({
     if (foreign) return fail(res, 403, 'FORBIDDEN_ORIGIN', `Cross-origin requests are refused (${foreign})`, options)
     const supplied = req.headers['x-panel-token'] || (url.pathname === '/api/stream' ? url.searchParams.get('t') : null)
     if (!sameSecret(supplied, token)) return fail(res, 403, 'FORBIDDEN', 'A valid panel token is required', options)
+    const chosen = resolveProject(url)
+    // Screens of the machine (kit, vendors, the wizard's detection) and the switcher's own list do not depend on the
+    // project: a project chosen and then disconnected must not take them down — the list must stay usable to choose
+    // another. Every journal screen refuses an unusable choice instead of silently reading another journal.
+    const machineScreen = MACHINE_SCREENS.has(url.pathname)
+    if (chosen.error && !machineScreen) return fail(res, chosen.error[0], chosen.error[1], chosen.error[2], options)
+    const where = machineScreen && url.pathname !== '/api/projects' ? null : chosen.where || null
 
     if (writing) {
       // A write is driven by the panel's own page and by nothing else: the browser must say so (same-origin, not
@@ -334,13 +366,13 @@ export async function startPanel({
             return fail(res, 400, 'INVALID_INPUT', 'feature, role and expect are each required, and nothing else', options)
           }
           if (typeof writeApiFactory !== 'function') return fail(res, 403, 'READ_ONLY', 'This panel cannot create tasks', options)
-          const created = await createCleanup(await writeApiFactory(), body)
+          const created = await createCleanup(await writeApiFor(where), body, where)
           return sendJson(res, created.ok ? 200 : 409, created, { ...options, headers: authHeaders })
         }
         if (url.pathname === '/api/setup/revert') {
           if (Object.keys(body).some((key) => key !== 'expect') || typeof body.expect !== 'string') return fail(res, 400, 'INVALID_INPUT', 'Revert takes exactly expect', options)
           const undone = revertSetup({ expect: body.expect, machineDir, env: probeEnv })
-          if (undone.ok) undone.handover = await handOverHere(undone.changes)
+          if (undone.ok) undone.handover = await handOverHere(undone.changes, where)
           return sendJson(res, undone.ok ? 200 : 409, undone, { ...options, headers: authHeaders })
         }
         if (Object.keys(body).some((key) => !APPLY_KEYS.has(key))) return fail(res, 400, 'INVALID_INPUT', 'Only agents, lead, single_vendor, roles, confirmed, owner_language and expect are accepted', options)
@@ -354,7 +386,7 @@ export async function startPanel({
           }
         }
         const applied = applySetup({ agents: body.agents, lead: body.lead, singleVendor: body.single_vendor, roles: body.roles ?? null, confirmed: body.confirmed ?? null, ownerLanguage: body.owner_language, expect: body.expect, machineDir, env: probeEnv })
-        if (applied.ok) applied.handover = await handOverHere(applied.changes)
+        if (applied.ok) applied.handover = await handOverHere(applied.changes, where)
         return sendJson(res, applied.ok ? 200 : 409, applied, { ...options, headers: authHeaders })
       } catch (error) {
         return fail(res, 500, 'WRITE_FAILED', `The write failed and nothing was reported as done: ${error.message}`, options)
@@ -408,29 +440,49 @@ export async function startPanel({
           machineDir,
           cwd
         })
-        if (answer.apply?.removed_agents?.length) answer.apply.removed_tasks = await openTasksOf(answer.apply.removed_agents)
+        if (answer.apply?.removed_agents?.length) answer.apply.removed_tasks = await openTasksOf(answer.apply.removed_agents, where)
         // A project with its own composition (registry entry collab/agents.json) replaces the machine's: the wizard's
         // ticks change the machine and do not reach that project. Said, not hidden.
-        const here = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
+        const here = describeProject({ cwd: cwdOf(where), ...(registryDir ? { registryDir } : {}) })
         if (here.projectId && existsSync(join(here.registryDir, here.projectId, 'collab', 'agents.json'))) answer.project_own_composition = here.projectId
         return sendJson(res, 200, answer, { ...options, headers: authHeaders })
       }
       if (url.pathname === '/api/kit') return sendJson(res, 200, readKitFiles(kitRoot), { ...options, headers: authHeaders })
       // Read-only: a PATH lookup, no CLI is started.
       if (url.pathname === '/api/vendors') return sendJson(res, 200, { unadapted: await vendorsLookup() }, { ...options, headers: authHeaders })
+      // The switcher's list: the connected projects of the trusted registry, whether each has a journal yet, and which
+      // one the panel was started in (shown when nothing is chosen).
+      if (url.pathname === '/api/projects') {
+        const started = describeProject({ cwd, ...(registryDir ? { registryDir } : {}) })
+        // No root in the answer: the page does not need it, and a root outside the home would not be scrubbed.
+        const list = registryProjects().map((entry) => {
+          const index = entry.realRoots.findIndex((root) => existsSync(root))
+          const root = index === -1 ? null : entry.realRoots[index]
+          const described = root ? describeProject({ cwd: root, ...(registryDir ? { registryDir } : {}) }) : null
+          return { id: entry.id, present: Boolean(root), initialized: Boolean(described?.initialized) }
+        })
+        return sendJson(res, 200, {
+          projects: list,
+          // null: the panel was started in a folder that is not a connected project — the page lists it as such.
+          started: started.projectId || null,
+          selected: chosen.error ? null : where?.id || started.projectId || null,
+          // The chosen project cannot be used any more (disconnected, no root here): said, so another can be chosen.
+          unusable: chosen.error ? chosen.error[2] : null
+        }, { ...options, headers: authHeaders })
+      }
 
       let api
       try {
-        api = await apiFactory()
+        api = await apiFor(where)
       } catch (error) {
         if (isUninitialised(error) && url.pathname === '/api/overview') {
-          return sendJson(res, 200, initHint(cwd), { ...options, headers: authHeaders })
+          return sendJson(res, 200, initHint(cwdOf(where)), { ...options, headers: authHeaders })
         }
         throw error
       }
 
       if (url.pathname === '/api/overview') return sendJson(res, 200, await overviewView(api), { ...options, headers: authHeaders })
-      if (url.pathname === '/api/backlog') return sendJson(res, 200, { ...(await backlogFor(api)), writable: allowWrite && typeof writeApiFactory === 'function' }, { ...options, headers: authHeaders })
+      if (url.pathname === '/api/backlog') return sendJson(res, 200, { ...(await backlogFor(api, where)), writable: allowWrite && typeof writeApiFactory === 'function' }, { ...options, headers: authHeaders })
       if (url.pathname === '/api/tasks') {
         const open = url.searchParams.get('open')
         const filters = {

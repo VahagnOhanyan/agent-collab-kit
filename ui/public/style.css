@@ -40,6 +40,9 @@ a:hover { text-decoration: underline; }
 .side { border-right: 1px solid var(--line); background: var(--surface); padding: 16px 12px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px; }
 .brand { font-weight: 600; letter-spacing: .02em; padding: 4px 8px 12px; }
 .nav-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 14px 8px 4px; }
+.project-switch { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+.project-switch .nav-title { padding: 0; }
+.project-switch select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--text); }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-group a { color: var(--text); padding: 6px 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
 .nav-group a:hover { background: var(--surface-2); text-decoration: none; }

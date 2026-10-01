@@ -304,7 +304,10 @@ const STANDALONE = {
       ...(projectRoot ? { projectRoot } : {}),
       readOnly: true
     }
-    const apiFactory = () => createApi({ agentId: panelIdentity(apiOptions), ...apiOptions })
+    // The panel's project switcher passes the project it resolved from the registry ({ cwd, projectRoot }); without one,
+    // the project the panel was started in. The panel never passes a path of its own making.
+    const optionsFor = (where) => (where ? { ...apiOptions, cwd: where.cwd, projectRoot: where.projectRoot } : apiOptions)
+    const apiFactory = (where) => createApi({ agentId: panelIdentity(optionsFor(where)), ...optionsFor(where) })
     let panel
     try {
       // Loaded here, not at the top: every other command must keep working
@@ -316,7 +319,7 @@ const STANDALONE = {
         apiFactory,
         // The one journal write the panel makes (a backlog cleanup task, ADR-0027): as the composition's lead, used
         // only when allowWrite holds.
-        writeApiFactory: () => createApi({ agentId: panelIdentity(apiOptions), ...apiOptions, readOnly: false }),
+        writeApiFactory: (where) => createApi({ agentId: panelIdentity(optionsFor(where)), ...optionsFor(where), readOnly: false }),
         kitRoot: KIT_ROOT,
         registryDir,
         machineDir: options.machineDir || MACHINE_CONFIG_DIR,

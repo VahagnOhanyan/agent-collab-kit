@@ -38,8 +38,19 @@ const PANEL_TOKEN = (() => {
   }
 })()
 
+// The project whose journal the panel shows: `?project=<id>` in the address (so a link opens the same project), chosen
+// in the switcher. Empty: the project the panel was started in. Every request carries it; the server resolves it from
+// the trusted registry and refuses anything else.
+const PROJECT = new URL(location.href).searchParams.get('project') || ''
+function withProject(path) {
+  if (!PROJECT) return path
+  const url = new URL(path, location.origin)
+  url.searchParams.set('project', PROJECT)
+  return url.pathname + url.search
+}
+
 async function api(path) {
-  const response = await fetch(path, { credentials: 'omit', headers: { accept: 'application/json', 'x-panel-token': PANEL_TOKEN } })
+  const response = await fetch(withProject(path), { credentials: 'omit', headers: { accept: 'application/json', 'x-panel-token': PANEL_TOKEN } })
   let body = null
   try {
     body = await response.json()
@@ -59,7 +70,7 @@ async function api(path) {
 // The only write the panel makes. `credentials: 'omit'`, the token as a header and a JSON body: the server accepts
 // nothing else (see the write checks in server.mjs).
 async function post(path, body) {
-  const response = await fetch(path, {
+  const response = await fetch(withProject(path), {
     method: 'POST',
     credentials: 'omit',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'x-panel-token': PANEL_TOKEN },
@@ -505,7 +516,7 @@ async function events() {
     followBtn.textContent = `Автопрокрутка: ${follow ? 'вкл' : 'выкл'}`
   } })
   closeStream()
-  stream = new EventSource(`/api/stream?t=${encodeURIComponent(PANEL_TOKEN)}`) // EventSource cannot send headers
+  stream = new EventSource(withProject(`/api/stream?t=${encodeURIComponent(PANEL_TOKEN)}`)) // EventSource cannot send headers
   stream.onmessage = (message) => {
     try { render(JSON.parse(message.data)) } catch { /* a malformed line is skipped, the stream goes on */ }
   }
@@ -1024,7 +1035,58 @@ async function route() {
   refreshBadge()
 }
 
-// The token is kept out of the address bar (history) once read; see PANEL_TOKEN.
-if (location.search.includes('t=')) history.replaceState(null, '', location.pathname + location.hash)
+// The token is kept out of the address bar (history) once read and stored; see PANEL_TOKEN. Without sessionStorage it
+// stays, or a reload would leave the page without it. The chosen project stays in the address either way.
+const tokenKept = (() => {
+  try { return sessionStorage.getItem('panel_token') === PANEL_TOKEN } catch { return false }
+})()
+if (new URL(location.href).searchParams.has('t') && tokenKept) {
+  history.replaceState(null, '', location.pathname + (PROJECT ? `?project=${encodeURIComponent(PROJECT)}` : '') + location.hash)
+}
+
+// The switcher: the connected projects of the registry. Choosing one reloads the page on it — every screen and the
+// event stream then read that project's journal. A project with no journal yet is listed but cannot be chosen.
+async function drawProjectSwitch() {
+  const box = document.getElementById('project-switch')
+  if (!box) return
+  let data
+  try {
+    data = await api('/api/projects')
+  } catch {
+    return // the panel still works on the project it was started in
+  }
+  const list = data.projects || []
+  if (!list.length && data.started === null && !data.unusable) return
+  // The token normally lives in sessionStorage; where that is unavailable it must stay in the address, or the reload
+  // that a switch makes would leave the page without it.
+  const tokenStored = (() => {
+    try { return sessionStorage.getItem('panel_token') === PANEL_TOKEN } catch { return false }
+  })()
+  const options = [
+    // Started in a folder that is not a connected project: its own entry, so its data is never shown under another
+    // project's name.
+    ...(data.started === null ? [el('option', { value: '', selected: !PROJECT, text: 'эта папка (не подключена)' })] : []),
+    // The chosen project cannot be used any more: shown as such, and another one can be chosen.
+    ...(data.unusable && PROJECT ? [el('option', { value: PROJECT, selected: true, disabled: true, text: `${PROJECT} — недоступен` })] : []),
+    ...list.map((project) => el('option', {
+      value: project.id,
+      selected: !data.unusable && project.id === data.selected,
+      disabled: !project.present || !project.initialized,
+      text: `${project.id}${!project.present ? ' — нет на этой машине' : !project.initialized ? ' — журнала нет (collab init)' : ''}`
+    }))
+  ]
+  const select = el('select', { id: 'project-select', 'aria-label': 'Проект', onchange: (event) => {
+    const id = event.target.value
+    const url = new URL(location.href)
+    url.search = ''
+    if (id && id !== data.started) url.searchParams.set('project', id)
+    if (!tokenStored) url.searchParams.set('t', PANEL_TOKEN)
+    location.assign(url.pathname + url.search + location.hash)
+  } }, options)
+  box.replaceChildren(el('label', { class: 'nav-title', for: 'project-select', text: 'Проект' }), select,
+    data.unusable ? el('div', { class: 'muted small', text: `${data.unusable}. Выберите другой проект.` }) : null)
+}
+
 window.addEventListener('hashchange', route)
+drawProjectSwitch()
 route()
