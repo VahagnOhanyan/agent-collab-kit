@@ -47,16 +47,16 @@ export async function taskView(api, taskId) {
 
 export async function waitingView(api) {
   const live = new Set((await api.listTasks({ open: true })).map((task) => task.id))
-  // A decision is a question attached to a task, not a task: the screen names the task and its status beside it.
+  // A question or a review belongs to a task (open or not): the screen names that task and its status beside it.
+  const byId = new Map((await api.listTasks({})).map((task) => [task.id, task]))
   const taskOf = (id) => {
-    if (!id) return null
-    const task = api.store.get('tasks', id)
+    const task = id ? byId.get(id) : null
     return task ? { task_title: task.title, task_status: task.status } : null
   }
   return {
     approvals: api.listApprovals({ pending_only: true }),
     decisions: api.listDecisions({}).filter((decision) => LIVE_DECISIONS.has(decision.status)).map((decision) => ({ ...decision, ...taskOf(decision.task_id) })),
-    reviews: api.listReviews({ pending_only: true }).filter((review) => live.has(review.task_id)),
+    reviews: api.listReviews({ pending_only: true }).filter((review) => live.has(review.task_id)).map((review) => ({ ...review, ...taskOf(review.task_id) })),
     commands: {
       approve: 'collab approve <id>',
       reject: 'collab reject <id> --note …'

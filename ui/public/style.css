@@ -92,6 +92,14 @@ table { border-collapse: collapse; width: 100%; background: var(--surface); bord
 th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--surface-2); }
 tr:last-child td { border-bottom: 0; }
+table.data { margin-bottom: 8px; }
+table.data td { overflow-wrap: anywhere; }
+table.data td.nw { white-space: nowrap; width: 1%; }
+table.data th { white-space: nowrap; }
+table.data tr.link { cursor: pointer; }
+table.data tr.link:hover td { background: var(--surface-2); }
+table.data td a { text-decoration: none; }
+.card > table.data { border: 0; margin: 6px 0 0; }
 
 button, .btn { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
 button:hover { border-color: var(--accent); }

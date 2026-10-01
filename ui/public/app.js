@@ -19,7 +19,7 @@ function el(tag, props, ...children) {
     else if (key.startsWith('on')) node.addEventListener(key.slice(2), value)
     else node.setAttribute(key, value === true ? '' : value)
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child === undefined || child === null || child === false) continue
     node.append(child.nodeType ? child : document.createTextNode(String(child)))
   }
@@ -177,6 +177,15 @@ function page(title, subtitle, ...content) {
 }
 const empty = (text) => el('div', { class: 'empty', text })
 
+// Every list of records is a table with named columns: one value per column, never three fields packed in one.
+// td(content, 'nw') is a narrow column that does not wrap (status, model, date); the rest share the width.
+const td = (content, cls) => el('td', cls ? { class: cls } : {}, content)
+const dataTable = (heads, rows) => el('table', { class: 'data' },
+  el('thead', {}, el('tr', {}, heads.map((h) => el('th', { text: h })))),
+  el('tbody', {}, rows))
+// A row that opens a page: the whole row is clickable, and the link inside it keeps the keyboard and the middle click.
+const linkRow = (href, cells) => el('tr', { class: 'link', onclick: (e) => { if (!e.target.closest('a')) location.hash = href.replace(/^#/, '') } }, cells)
+
 function failure(error) {
   if (error.status === 403) {
     return [el('h1', { text: 'Нет доступа' }), el('p', { class: 'sub', text: 'Откройте панель по адресу, который напечатала команда collab ui (в нём есть токен).' })]
@@ -205,17 +214,17 @@ function delegationsBlock(list) {
   const latest = (g) => g.items.reduce((m, d) => (String(d.started_at || '') > m ? String(d.started_at || '') : m), '')
   const groups = [...byTask.values()].sort((a, b) => latest(b).localeCompare(latest(a)))
   const age = (d) => (d.started_at ? Date.now() - new Date(d.started_at).getTime() : 0)
-  const row = (d) => el('div', { class: 'row' },
-    el('span', { class: 'mono', text: d.to }), el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }),
-    el('span', { class: 'grow', text: d.purpose || '' }),
-    age(d) > DAY_MS ? el('span', { class: 'pill warn', title: `Отдано ${when(d.started_at)}`, text: `не закрыто ${Math.floor(age(d) / DAY_MS)} дн.` }) : el('span', { class: 'muted small', text: when(d.started_at) }))
+  const row = (d) => el('tr', {},
+    td(el('span', { class: 'mono', text: d.to }), 'nw'), td(el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }), 'nw'),
+    td(d.purpose || ''),
+    td(age(d) > DAY_MS ? el('span', { class: 'pill warn', title: `Отдано ${when(d.started_at)}`, text: `не закрыто ${Math.floor(age(d) / DAY_MS)} дн.` }) : el('span', { class: 'muted small', text: when(d.started_at) }), 'nw'))
   return [
     el('h2', { text: 'Поручения субагентам без итога' }),
     el('p', { class: 'sub', text: `${list.length} ${list.length === 1 ? 'поручение' : 'поручений'} в ${groups.length} ${groups.length === 1 ? 'задаче' : 'задачах'}. Поручение — не задача: это запись ведущего, что часть задачи отдана субагенту; она закрывается итогом субагента. Старые незакрытые почти всегда просто забыли закрыть.` }),
     ...groups.map((g) => el('div', { class: 'card' },
       el('div', { class: 'row' }, pill(g.status), el('a', { class: 'grow', href: `#/tasks/${encodeURIComponent(g.id)}`, text: g.title || g.id }),
         el('span', { class: 'muted small', text: `${g.items.length} без итога` })),
-      el('div', { class: 'list' }, [...g.items].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || ''))).map(row))))]
+      dataTable(['Кому', 'Модель', 'Поручение', 'Отдано'], [...g.items].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || ''))).map(row))))]
 }
 
 // ── screens ───────────────────────────────────────────────────────────────
@@ -256,9 +265,9 @@ async function overview() {
       tile(s.runs_failed, 'проверок не проходят сейчас', s.runs_failed > 0)),
     vendors,
     el('h2', { text: 'Агенты' }),
-    el('div', { class: 'list' }, s.agents.map((a) =>
-      el('div', { class: 'row' }, pill(a.status), el('strong', { class: 'grow', text: a.id }),
-        a.current_task_id ? el('a', { href: `#/tasks/${encodeURIComponent(a.current_task_id)}`, class: 'mono', text: a.current_task_id }) : null))),
+    dataTable(['Статус', 'Агент', 'Текущая задача'], s.agents.map((a) => el('tr', {},
+      td(pill(a.status), 'nw'), td(el('strong', { text: a.id }), 'nw'),
+      td(a.current_task_id ? el('a', { href: `#/tasks/${encodeURIComponent(a.current_task_id)}`, class: 'mono', text: a.current_task_id }) : el('span', { class: 'muted', text: '—' }))))),
     el('h2', { text: 'Задачи по статусам' }),
     Object.keys(s.tasks.by_status).length
       ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('a', { class: `pill ${STATUS_TONE[k] || ''}`, href: `#/tasks?status=${encodeURIComponent(k)}`, title: `Открыть задачи со статусом «${statusText(k)}»`, text: `${statusText(k)}  ${v}` })))
@@ -298,12 +307,13 @@ async function tasks(param) {
   const QUIET = new Set(['not_started', 'in_work'])
   const rows = list.map((t) => ({
     text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
-    node: el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status),
-      el('span', { class: 'grow' }, t.title,
+    node: linkRow(`#/tasks/${encodeURIComponent(t.id)}`, [
+      td(pill(t.status), 'nw'),
+      td([el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
         t.standstill && !QUIET.has(t.standstill.code)
           ? el('div', { class: 'muted small' }, STANDSTILL_RU[t.standstill.code] === statusText(t.status) ? null : [standstillPill(t.standstill), ' '], t.standstill.detail)
-          : null),
-      el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
+          : null]),
+      td(t.owner ? el('span', { class: 'mono', text: t.owner }) : el('span', { class: 'muted', text: '—' }), 'nw')])
   }))
   const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
   const noun = status ? `«${statusText(status)}»` : all ? 'всего' : 'открытых'
@@ -319,7 +329,7 @@ async function tasks(param) {
     count.textContent = query ? `${shown} из ${list.length}` : `${list.length} ${noun}`
   } })
   return page('Задачи', status ? `Задачи со статусом «${statusText(status)}»` : all ? 'Все задачи' : 'Открытые задачи', toggle, el('div', { class: 'toolbar' }, search, count),
-    list.length ? el('div', { class: 'list' }, rows.map((row) => row.node)) : empty('Задач нет'), none)
+    list.length ? dataTable(['Статус', 'Задача', 'Исполнитель'], rows.map((row) => row.node)) : empty('Задач нет'), none)
 }
 
 const TERMINAL = new Set(['completed', 'cancelled'])
@@ -327,7 +337,7 @@ const TERMINAL = new Set(['completed', 'cancelled'])
 async function taskDetail(id) {
   const data = await api(`/api/tasks/${encodeURIComponent(id)}`)
   const t = data.task
-  const section = (title, items, render) => [el('h2', { text: title }), items?.length ? el('div', { class: 'list' }, items.map(render)) : empty('—')]
+  const section = (title, heads, items, render) => [el('h2', { text: title }), items?.length ? dataTable(heads, items.map(render)) : empty('—')]
   return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'} · ${t.role || 'роль не указана'}`,
     // Back goes to the list the task can be found in: a closed task is not in the open-only list.
     el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: TERMINAL.has(t.status) ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' })),
@@ -346,13 +356,15 @@ async function taskDetail(id) {
     [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
     // The outcome is the lead's free-text report, often a paragraph: it goes under the purpose and wraps. As a
     // no-wrap pill it pushed the row off the page and squeezed the purpose to one letter per line.
-    section('Делегирование', data.delegations || t.delegations, (d) => el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by || ''} → ${d.to || ''}` }), el('span', { class: 'pill', text: d.model || '' }),
-      el('span', { class: 'grow' }, el('div', { text: d.purpose || '' }), d.outcome ? el('div', { class: 'muted', text: d.outcome }) : null),
-      d.outcome ? null : pill('идёт'))),
-    section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, runPill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
-    section('Сообщения', data.messages, (m) => el('div', { class: 'row msg' },
-      el('span', { class: 'mono muted', text: `${m.from_agent || '?'} · ${when(m.created_at)}` }),
-      el('span', { class: 'grow' }, m.subject ? el('strong', { text: m.subject }) : null, m.body ? prose(m.body) : null))),
+    section('Поручения субагентам', ['Кому', 'Модель', 'Поручение и итог', 'Состояние'], data.delegations || t.delegations, (d) => el('tr', {},
+      td(el('span', { class: 'mono', text: d.to || '' }), 'nw'), td(el('span', { class: 'pill', text: `${d.model || ''}${d.level ? ` · ${d.level}` : ''}` }), 'nw'),
+      td([el('div', { text: d.purpose || '' }), d.outcome ? el('div', { class: 'muted', text: d.outcome }) : null]),
+      td(d.finished_at || d.outcome ? el('span', { class: 'pill ok', text: 'закрыто' }) : el('span', { class: 'pill warn', text: 'без итога' }), 'nw'))),
+    section('Прогоны проверок', ['Результат', 'Проверка', 'Итог'], t.runs, (r) => el('tr', {},
+      td(runPill(r.status), 'nw'), td(el('span', { class: 'mono', text: r.runner }), 'nw'), td(r.headline || ''))),
+    section('Сообщения', ['От', 'Когда', 'Сообщение'], data.messages, (m) => el('tr', {},
+      td(el('span', { class: 'mono', text: m.from_agent || '?' }), 'nw'), td(el('span', { class: 'muted small', text: when(m.created_at) }), 'nw'),
+      td([m.subject ? el('strong', { text: m.subject }) : null, m.body ? prose(m.body) : null]))),
     t.files?.length ? [el('h2', { text: 'Файлы задачи' }), el('div', { class: 'card mono', text: t.files.join('\n') })] : null)
 }
 
@@ -536,7 +548,12 @@ async function waiting() {
       ? [el('p', { class: 'sub', text: 'Вопрос — не задача: агент спрашивает, какой вариант выбрать, и выбрать можете только вы. Он закрывается вашей командой collab decide; выбор, сказанный в разговоре, вопрос не закрывает.' }), ...d.map(decisionCard)]
       : empty('Вопросов нет'),
     el('h2', { text: `Ревью в очереди (${r.length})` }),
-    r.length ? el('div', { class: 'list' }, r.map((x) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(x.task_id)}` }, pill('pending'), el('span', { class: 'grow', text: `${slotText(x)}${x.reviewer || x.requested_role || x.reviewer_role ? ` · ждёт ${x.reviewer || x.requested_role || x.reviewer_role}` : ''}` }), el('span', { class: 'mono muted', text: x.task_id })))) : empty('Очередь пуста'))
+    r.length
+      ? dataTable(['Статус', 'Ревью', 'Ждёт', 'Задача'], r.map((x) => linkRow(`#/tasks/${encodeURIComponent(x.task_id)}`, [
+          td(pill('pending'), 'nw'), td(slotText(x), 'nw'),
+          td(el('span', { class: 'mono', text: x.reviewer || x.requested_role || x.reviewer_role || '—' }), 'nw'),
+          td(el('a', { href: `#/tasks/${encodeURIComponent(x.task_id)}`, text: x.task_title || x.task_id }))])))
+      : empty('Очередь пуста'))
 }
 
 const EVENT_RU = {
@@ -637,9 +654,10 @@ function modelsTable(models) {
   const levels = models?.levels || models || []
   const list = Array.isArray(levels) ? levels : Object.entries(levels).map(([level, v]) => ({ level, ...v }))
   if (!list.length) return empty('Нет данных о моделях')
-  return el('div', { class: 'list' }, list.map((l) =>
-    el('div', { class: 'row' }, el('strong', { text: l.level || l.id || '' }), el('span', { class: 'grow', title: l.summary || l.meaning || '', text: LEVEL_RU[l.level || l.id] || l.summary || l.meaning || '' }),
-      chips((l.models || l.rungs || []).map((m) => (typeof m === 'string' ? m : m.ref || m.id || m.model || JSON.stringify(m)))))))
+  return dataTable(['Уровень', 'Что значит', 'Модели'], list.map((l) => el('tr', {},
+    td(el('strong', { text: l.level || l.id || '' }), 'nw'),
+    td(el('span', { title: l.summary || l.meaning || '', text: LEVEL_RU[l.level || l.id] || l.summary || l.meaning || '' })),
+    td(chips((l.models || l.rungs || []).map((m) => (typeof m === 'string' ? m : m.ref || m.id || m.model || JSON.stringify(m)))), 'nw'))))
 }
 
 // ── backlog of small review findings, grouped by feature ──────────────────
@@ -719,9 +737,17 @@ async function kit() {
   const draw = () => {
     holder.replaceChildren()
     const items = (data[tab] || []).filter((x) => `${x.name} ${x.description || ''} ${x.target || ''}`.toLowerCase().includes(query))
-    holder.append(items.length ? el('div', { class: 'list' }, items.map((x) =>
-      el('div', { class: 'row' }, el('strong', { class: 'mono', text: x.name }), el('span', { class: 'grow' }, x.description ? brief(x.description) : (x.agents ? `${x.transport}: ${x.target || '—'} · ${x.agents.join(', ')}` : x.problem ? `проблема: ${x.problem}` : '')),
-        x.model ? el('span', { class: 'pill', text: x.model }) : null))) : empty('Ничего не найдено'))
+    // Columns per tab: an MCP server is a transport, a target and the agents that use it; the rest are a description.
+    const rows = tab === 'mcp'
+      ? dataTable(['Название', 'Подключение', 'Куда', 'У каких агентов'], items.map((x) => el('tr', {},
+          td(el('strong', { class: 'mono', text: x.name }), 'nw'), td(x.transport || '—', 'nw'),
+          td(x.problem ? el('span', { class: 'pill bad', text: `проблема: ${x.problem}` }) : el('span', { class: 'mono small', text: x.target || '—' })),
+          td((x.agents || []).join(', ') || '—', 'nw'))))
+      : dataTable(tab === 'agents' ? ['Название', 'Описание', 'Модель'] : ['Название', 'Описание'], items.map((x) => el('tr', {},
+          td(el('strong', { class: 'mono', text: x.name }), 'nw'),
+          td(x.description ? brief(x.description) : x.problem ? `проблема: ${x.problem}` : ''),
+          tab === 'agents' ? td(x.model ? el('span', { class: 'pill', text: x.model }) : '—', 'nw') : null)))
+    holder.append(items.length ? rows : empty('Ничего не найдено'))
   }
   const tabs = el('div', { class: 'tabs' }, Object.keys(labels).map((key) =>
     el('button', { type: 'button', 'aria-pressed': String(key === tab), text: `${labels[key]} (${(data[key] || []).length})`, onclick: (e) => {
@@ -829,10 +855,10 @@ async function setup() {
   function rolesEditor(plan, apply) {
     const box = el('div', {})
     const editable = detect.writable && chosenRoles && apply.holdable
-    box.append(el('div', { class: 'list' }, plan.agents.map((a) => {
+    box.append(dataTable(['Агент', 'Роли', 'Подтверждено вами'], plan.agents.map((a) => {
       const held = chosenRoles?.[a.id] || a.roles
-      const head = [el('strong', { text: a.id }), a.id === lead ? el('span', { class: 'pill', text: 'ведущий' }) : null]
-      if (!editable) return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, chips(held)))
+      const head = td([el('strong', { text: a.id }), a.id === lead ? [' ', el('span', { class: 'pill', text: 'ведущий' })] : null], 'nw')
+      if (!editable) return el('tr', {}, head, td(chips(held)), td('—', 'nw'))
       const facts = apply.facts?.[a.id]
       const unverified = new Set(facts?.unverified || [])
       const boxes = (apply.holdable[a.id] || []).map((role) => el('label', { class: 'chip', title: unverified.has(role) ? 'Способность для этой роли на машине не подтверждена: агент получит такие задачи последним' : null },
@@ -856,8 +882,8 @@ async function setup() {
           chosenConfirmed = { ...chosenConfirmed, [a.id]: confirmable.filter((c) => next.has(c)) }
           drawPreview()
         } }), ` подтверждаю: ${capability}`)) : []
-      return el('div', { class: 'row' }, ...head, el('span', { class: 'grow' }, el('span', { class: 'chips' }, boxes),
-        confirmBoxes.length ? el('span', { class: 'chips' }, confirmBoxes) : null, ...blocked))
+      return el('tr', {}, head, td([el('span', { class: 'chips' }, boxes), ...blocked]),
+        td(confirmBoxes.length ? el('span', { class: 'chips' }, confirmBoxes) : '—', 'nw'))
     })))
     if (editable) box.append(el('div', { class: 'muted', text: 'Показаны только роли, для которых у агента есть нужные способности. Изменения записываются кнопкой «Применить» ниже.' }))
     // Roles an agent may hold here but does not (a composition written before "all, then cut by facts"): offered in
