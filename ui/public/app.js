@@ -251,7 +251,7 @@ async function overview() {
       known
         ? tile(live, 'ждут вашего одобрения', live > 0, '#/waiting')
         : tile(s.approvals_pending, 'ждут одобрения (часть может быть просрочена: не удалось проверить)', s.approvals_pending > 0, '#/waiting'),
-      tile(s.decisions_open, 'открытых решений', s.decisions_open > 0, '#/waiting'),
+      tile(s.decisions_open, 'вопросов ждут вашего выбора', s.decisions_open > 0, '#/waiting'),
       tile(s.reviews_pending, 'ревью в очереди', false, '#/waiting'),
       tile(s.runs_failed, 'проверок не проходят сейчас', s.runs_failed > 0)),
     vendors,
@@ -498,7 +498,11 @@ function decisionCard(x) {
   const label = new Map(options.map((o) => [o.id, o.label || o.id]))
   return el('div', { class: 'card' },
     el('div', {}, el('strong', { text: x.title || x.id }), ' ', pill(x.status)),
-    x.task_id ? el('a', { class: 'mono small', href: `#/tasks/${encodeURIComponent(x.task_id)}`, text: `задача ${x.task_id}` }) : null,
+    // The task this question belongs to, as the delegations block shows it: status first, then the title as a link.
+    x.task_id
+      ? el('div', { class: 'row' }, el('span', { class: 'muted small', text: 'к задаче' }), x.task_status ? pill(x.task_status) : null,
+          el('a', { class: 'grow', href: `#/tasks/${encodeURIComponent(x.task_id)}`, text: x.task_title || x.task_id }))
+      : null,
     x.context ? el('div', { class: 'detail', text: plain(x.context) }) : null,
     options.length ? el('h3', { text: 'Варианты' }) : null,
     ...options.map((o) => el('div', { class: 'option' },
@@ -519,7 +523,7 @@ async function waiting() {
   const stale = (data.approvals || []).filter((x) => x.expired)
   const d = data.decisions || []
   const r = data.reviews || []
-  return page('Ждёт вас', 'Одобрения и решения выдаются только в терминале: панель их показывает, но не выдаёт.',
+  return page('Ждёт вас', 'Одобрения и выбор по вопросам даются только в терминале: панель их показывает, но не выдаёт.',
     el('h2', { text: `Одобрения (${live.length})` }),
     live.length ? live.map(approvalCard) : empty('Нет одобрений, которые можно выдать'),
     // Expired requests are not work for the owner: they are kept apart and folded,
@@ -527,8 +531,10 @@ async function waiting() {
     stale.length
       ? el('details', { class: 'stale' }, el('summary', { text: `Просроченные одобрения (${stale.length}): выдать их уже нельзя, агент должен запросить заново` }), ...stale.map(approvalCard))
       : null,
-    el('h2', { text: `Решения (${d.length})` }),
-    d.length ? d.map(decisionCard) : empty('Нет открытых споров'),
+    el('h2', { text: `Вопросы ждут вашего выбора (${d.length})` }),
+    d.length
+      ? [el('p', { class: 'sub', text: 'Вопрос — не задача: агент спрашивает, какой вариант выбрать, и выбрать можете только вы. Он закрывается вашей командой collab decide; выбор, сказанный в разговоре, вопрос не закрывает.' }), ...d.map(decisionCard)]
+      : empty('Вопросов нет'),
     el('h2', { text: `Ревью в очереди (${r.length})` }),
     r.length ? el('div', { class: 'list' }, r.map((x) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(x.task_id)}` }, pill('pending'), el('span', { class: 'grow', text: `${slotText(x)}${x.reviewer || x.requested_role || x.reviewer_role ? ` · ждёт ${x.reviewer || x.requested_role || x.reviewer_role}` : ''}` }), el('span', { class: 'mono muted', text: x.task_id })))) : empty('Очередь пуста'))
 }
