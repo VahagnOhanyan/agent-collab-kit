@@ -290,6 +290,17 @@ export function getRun(ctx, { run_id }) {
   return run
 }
 
+// Checks that are red right now: the latest run of each runner for each open task (or with no task) did not pass.
+// A failure fixed by a later green run, or one on a finished task, is history, not something to act on.
+export function failingNow(ctx, openTaskIds) {
+  const latest = new Map()
+  for (const run of ctx.store.list('runs')) {
+    if (run.task_id && !openTaskIds.has(run.task_id)) continue
+    latest.set(`${run.task_id || ''}\u0000${run.runner}`, run)
+  }
+  return [...latest.values()].filter((run) => NOT_PASSING.includes(run.status))
+}
+
 export function listRuns(ctx, { failed_only = false, runner = null, limit = 20 } = {}) {
   return ctx.store
     .list('runs', {

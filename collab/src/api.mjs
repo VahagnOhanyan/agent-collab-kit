@@ -452,7 +452,7 @@ export function createApi({
         reviews_stale: pendingReviews.length - waitingReviews.length,
         approvals_pending: approvals.listApprovals(ctx, { pending_only: true }).length,
         decisions_open: decisions.listDecisions(ctx, {}).filter((d) => ['open', 'disputed', 'escalated'].includes(d.status)).length,
-        runs_failed: runs.listRuns(ctx, { failed_only: true }).length,
+        runs_failed: runs.failingNow(ctx, new Set(all.filter((t) => !['completed', 'cancelled'].includes(t.status)).map((t) => t.id))).length,
         delegations: delegations.openDelegations(ctx),
         git: gitSnapshot(roots.codeRoot, all)
       }

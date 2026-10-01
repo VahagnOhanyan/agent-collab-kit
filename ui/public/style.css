@@ -158,6 +158,9 @@ a.tile.link:hover { border-color: var(--accent); }
 details.stale { margin: 8px 0; }
 details.stale > summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
 details.stale[open] > summary { margin-bottom: 8px; }
+details.more { display: inline; }
+details.more > summary { display: inline; cursor: pointer; color: var(--accent); font-size: 12.5px; }
+details.more[open] > div { margin-top: 4px; }
 [hidden] { display: none !important; }
 
 /* backlog of small review findings, grouped by feature */

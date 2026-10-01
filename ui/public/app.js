@@ -126,11 +126,29 @@ const STANDSTILL_TONE = {
   ready_to_complete: 'ok', in_work: 'muted'
 }
 const standstillPill = (s) => el('span', { class: `pill ${STANDSTILL_TONE[s.code] || ''}`, title: s.code, text: STANDSTILL_RU[s.code] || s.code })
+// What a review checks (reviews.mjs SLOTS) and how a check ended (runs.mjs).
+const SLOT_RU = {
+  requirements: 'ревью требований', architecture: 'ревью архитектуры', implementation: 'ревью реализации', tests: 'ревью тестов',
+  ui: 'ревью интерфейса', consistency: 'ревью согласованности', security: 'ревью безопасности', challenger: 'оппонент'
+}
+const slotText = (r) => SLOT_RU[r.slot] || (r.slot ? `ревью: ${r.slot}` : 'ревью')
+const RUN_RU = { passed: 'прошла', failed: 'упала', timeout: 'не уложилась во время', nothing_ran: 'ничего не запустилось', running: 'идёт', queued: 'в очереди', error: 'ошибка' }
+const RUN_TONE = { passed: 'ok', failed: 'bad', timeout: 'bad', nothing_ran: 'bad', error: 'bad', running: 'warn', queued: 'warn' }
+const runPill = (status) => el('span', { class: `pill ${RUN_TONE[status] || ''}`, title: status ?? '', text: RUN_RU[status] || status || '—' })
 const REVIEW_MODE_RU ={ cross_vendor: 'ревью другим вендором', single_vendor: 'ревью тем же вендором' }
 const LANGUAGE_RU = { ru: 'русский', en: 'английский' }
 const statusText = (status) => (status === undefined || status === null ? '—' : STATUS_RU[status] || status)
 const pill = (status) => el('span', { class: `pill ${STATUS_TONE[status] || ''}`, title: status ?? '', text: statusText(status) })
-const when = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—')
+// The journal stores UTC; the owner reads local time ("1 окт., 10:04"), the year only when it is not this one.
+const when = (iso, { seconds = false } = {}) => {
+  const date = iso ? new Date(iso) : null
+  if (!date || Number.isNaN(date.getTime())) return iso ? String(iso) : '—'
+  return date.toLocaleString('ru-RU', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    ...(seconds ? { second: '2-digit' } : {}),
+    ...(date.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {})
+  })
+}
 const chips = (list) => el('div', { class: 'chips' }, (list || []).map((item) => el('span', { class: 'pill', text: item })))
 // Every copy button says WHAT it copies: a screen reader lists buttons out of
 // context, and four of them named just "Копировать" cannot be told apart.
@@ -174,6 +192,19 @@ function uninitialised(hint) {
   ]
 }
 
+// Unfinished delegations on open tasks, newest first: five in view, the rest folded. The lead declares them; the
+// journal does not check them, which the tooltip says instead of the heading.
+function delegationsBlock(list) {
+  const sorted = [...list].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))
+  const row = (d) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(d.task_id)}` },
+    el('span', { class: 'mono', text: `${d.by} → ${d.to}` }), el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }),
+    el('span', { class: 'grow', text: d.purpose || d.task_title || '' }), el('span', { class: 'muted small', text: when(d.started_at) }))
+  const rest = sorted.slice(5)
+  return [el('h2', { text: 'Делегирование', title: 'Записи ведущего о том, кому он отдал работу; журнал их не проверяет' }),
+    el('div', { class: 'list' }, sorted.slice(0, 5).map(row)),
+    rest.length ? el('details', { class: 'stale' }, el('summary', { text: `ещё ${rest.length}` }), el('div', { class: 'list' }, rest.map(row))) : null]
+}
+
 // ── screens ───────────────────────────────────────────────────────────────
 async function overview() {
   const data = await api('/api/overview')
@@ -205,11 +236,11 @@ async function overview() {
     el('div', { class: 'grid' },
       tile(s.tasks.open, 'открытых задач', false, '#/tasks'),
       known
-        ? tile(live, expired ? `ждут вашего одобрения (ещё ${expired} просрочено)` : 'ждут вашего одобрения', live > 0, '#/waiting')
+        ? tile(live, 'ждут вашего одобрения', live > 0, '#/waiting')
         : tile(s.approvals_pending, 'ждут одобрения (часть может быть просрочена: не удалось проверить)', s.approvals_pending > 0, '#/waiting'),
       tile(s.decisions_open, 'открытых решений', s.decisions_open > 0, '#/waiting'),
       tile(s.reviews_pending, 'ревью в очереди', false, '#/waiting'),
-      tile(s.runs_failed, 'проверок упало', s.runs_failed > 0)),
+      tile(s.runs_failed, 'проверок не проходят сейчас', s.runs_failed > 0)),
     vendors,
     el('h2', { text: 'Агенты' }),
     el('div', { class: 'list' }, s.agents.map((a) =>
@@ -219,12 +250,7 @@ async function overview() {
     Object.keys(s.tasks.by_status).length
       ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('span', { class: `pill ${STATUS_TONE[k] || ''}`, title: k, text: `${statusText(k)}  ${v}` })))
       : empty('Задач пока нет'),
-    s.delegations?.length
-      ? [el('h2', { text: 'Делегирование (заявлено ведущим, не проверено)' }),
-         el('div', { class: 'list' }, s.delegations.map((d) =>
-           el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by} → ${d.to}` }), el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }),
-             el('span', { class: 'grow', text: d.purpose || d.task_title || '' }))))]
-      : null,
+    s.delegations?.length ? delegationsBlock(s.delegations) : null,
     el('h2', { text: 'Рабочее дерево' }),
     s.git?.is_git
       ? el('div', { class: 'card' },
@@ -245,16 +271,22 @@ async function tasks(param) {
   const toggle = el('a', { href: all ? '#/tasks' : '#/tasks?all=1', text: all ? 'Только открытые' : 'Показать все, включая закрытые' })
   // A long list is searched, not scrolled: id, title, owner and the status word
   // (raw or Russian) are all matched.
+  // "Not started" and "in work" only repeat the status and the owner beside them; the line under the title is kept
+  // for reasons the row does not already show (blocked, changes requested, ready to close, ...).
+  const QUIET = new Set(['not_started', 'in_work'])
   const rows = list.map((t) => ({
     text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
     node: el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(t.id)}` }, pill(t.status),
       el('span', { class: 'grow' }, t.title,
-        t.standstill ? el('div', { class: 'muted small' }, standstillPill(t.standstill), ` ${t.standstill.detail}`) : null),
+        t.standstill && !QUIET.has(t.standstill.code)
+          ? el('div', { class: 'muted small' }, STANDSTILL_RU[t.standstill.code] === statusText(t.status) ? null : [standstillPill(t.standstill), ' '], t.standstill.detail)
+          : null),
       el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
   }))
   const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
-  const count = el('span', { class: 'muted small', text: `${list.length}` })
-  const search = el('input', { type: 'search', placeholder: 'Поиск: номер, название, исполнитель, статус', 'aria-label': 'Поиск по задачам', oninput: (e) => {
+  const noun = all ? 'всего' : 'открытых'
+  const count = el('span', { class: 'muted small', text: `${list.length} ${noun}` })
+  const search = el('input', { type: 'search', placeholder: 'Поиск', title: 'Номер, название, исполнитель или статус', 'aria-label': 'Поиск по задачам: номер, название, исполнитель, статус', oninput: (e) => {
     const query = e.target.value.trim().toLowerCase()
     let shown = 0
     for (const row of rows) {
@@ -262,7 +294,7 @@ async function tasks(param) {
       if (!row.node.hidden) shown += 1
     }
     none.hidden = shown > 0
-    count.textContent = query ? `${shown} из ${list.length}` : `${list.length}`
+    count.textContent = query ? `${shown} из ${list.length}` : `${list.length} ${noun}`
   } })
   return page('Задачи', all ? 'Все задачи' : 'Открытые задачи', el('div', { class: 'toolbar' }, search, count, toggle),
     list.length ? el('div', { class: 'list' }, rows.map((row) => row.node)) : empty('Задач нет'), none)
@@ -295,7 +327,7 @@ async function taskDetail(id) {
     section('Делегирование', data.delegations || t.delegations, (d) => el('div', { class: 'row' }, el('span', { class: 'mono', text: `${d.by || ''} → ${d.to || ''}` }), el('span', { class: 'pill', text: d.model || '' }),
       el('span', { class: 'grow' }, el('div', { text: d.purpose || '' }), d.outcome ? el('div', { class: 'muted', text: d.outcome }) : null),
       d.outcome ? null : pill('идёт'))),
-    section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, pill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
+    section('Прогоны проверок', t.runs, (r) => el('div', { class: 'row' }, runPill(r.status), el('span', { class: 'mono', text: r.runner }), el('span', { class: 'grow', text: r.headline || '' }))),
     section('Сообщения', data.messages, (m) => el('div', { class: 'row msg' },
       el('span', { class: 'mono muted', text: `${m.from_agent || '?'} · ${when(m.created_at)}` }),
       el('span', { class: 'grow' }, m.subject ? el('strong', { text: m.subject }) : null, m.body ? prose(m.body) : null))),
@@ -384,8 +416,8 @@ function prose(value) {
 function reviewCard(r) {
   const findings = r.findings || []
   return el('div', { class: 'card' },
-    el('div', {}, pill(r.verdict || 'pending'), ' ', el('span', { class: 'mono', text: `${r.slot || r.requested_role || ''}${r.round ? ` · раунд ${r.round}` : ''}` }),
-      r.reviewer ? el('span', { class: 'muted', text: ` · ${r.reviewer}` }) : null,
+    el('div', {}, pill(r.verdict || 'pending'), ' ', el('span', { text: `${slotText(r)}${r.round ? ` · раунд ${r.round}` : ''}` }),
+      r.reviewer ? el('span', { class: 'muted', text: ` · проверяет ${r.reviewer}` }) : r.requested_role ? el('span', { class: 'muted', text: ` · ждёт ${r.requested_role}` }) : null,
       r.independence === 'same_agent_separate_session' ? el('span', { class: 'pill warn', text: 'тот же агент' }) : null,
       r.independence === 'same_vendor' ? el('span', { class: 'pill warn', text: 'тот же вендор' }) : null,
       r.reviewer_model ? el('span', { class: 'pill', text: `ревьюер: ${r.reviewer_model}${r.reviewer_model_level ? ` (${r.reviewer_model_level})` : ''}${r.author_model ? `, автор: ${r.author_model}` : ''}` }) : null),
@@ -476,7 +508,19 @@ async function waiting() {
     el('h2', { text: `Решения (${d.length})` }),
     d.length ? d.map(decisionCard) : empty('Нет открытых споров'),
     el('h2', { text: `Ревью в очереди (${r.length})` }),
-    r.length ? el('div', { class: 'list' }, r.map((x) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(x.task_id)}` }, pill('pending'), el('span', { class: 'grow', text: x.slot || x.reviewer_role || x.id }), el('span', { class: 'mono muted', text: x.task_id })))) : empty('Очередь пуста'))
+    r.length ? el('div', { class: 'list' }, r.map((x) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(x.task_id)}` }, pill('pending'), el('span', { class: 'grow', text: `${slotText(x)}${x.reviewer || x.requested_role || x.reviewer_role ? ` · ждёт ${x.reviewer || x.requested_role || x.reviewer_role}` : ''}` }), el('span', { class: 'mono muted', text: x.task_id })))) : empty('Очередь пуста'))
+}
+
+const EVENT_RU = {
+  'agent.status': 'агент: статус', 'agent.exit': 'агент вышел', 'agent.role_suspended': 'агент приостановил роль', 'agent.role_restored': 'роль возвращена',
+  'approval.requested': 'запрошено одобрение', 'approval.resolved': 'ответ на одобрение', 'approval.consumed': 'одобрение использовано',
+  'decision.created': 'открыт спор', 'decision.position': 'позиция в споре', 'decision.escalated': 'спор передан вам', 'decision.resolved': 'спор решён',
+  'message.sent': 'сообщение',
+  'review.requested': 'запрошено ревью', 'review.submitted': 'ревью сдано', 'review.released': 'ревью снято', 'review.handed_over': 'ревью передано',
+  'run.started': 'проверка запущена', 'run.finished': 'проверка завершена',
+  'task.created': 'задача создана', 'task.updated': 'задача обновлена', 'task.assigned': 'задача назначена', 'task.claimed': 'задача взята',
+  'task.released': 'задача отпущена', 'task.completed': 'задача завершена', 'task.handed_over': 'задача передана', 'task.lease_expired': 'аренда задачи истекла',
+  'task.files_claimed': 'файлы закреплены', 'task.delegated': 'делегирование', 'task.delegation_closed': 'делегирование закрыто'
 }
 
 async function events() {
@@ -488,23 +532,22 @@ async function events() {
   const box = el('div', { class: 'log', id: 'log', tabindex: '0', role: 'log', 'aria-label': 'Лента событий' })
   const emptyNote = el('div', { class: 'empty', text: 'В журнале пока нет событий', hidden: initial.length > 0 })
   const noMatch = el('div', { class: 'empty', text: 'Ни одно событие не подходит под фильтр', hidden: true })
-  let follow = true
   let filter = ''
   const rows = []
   // Recomputed on every change — a filter typed earlier and an event arriving later both move it.
   const updateNoMatch = () => {
     noMatch.hidden = !filter || rows.length === 0 || rows.some((row) => !row.node.hidden)
   }
+  // Newest on top: a new event is put first, so the owner sees it without scrolling; one read lower stays put.
   const render = (event) => {
     const node = el('details', { class: 'ev' },
-      el('summary', {}, el('span', { class: 't', text: when(event.ts) }), el('span', { class: 'ty', text: event.type }), el('span', { text: `${event.actor || ''} ${event.subject?.id || ''}` })),
+      el('summary', {}, el('span', { class: 't', text: when(event.ts, { seconds: true }) }), el('span', { class: 'ty', title: event.type, text: EVENT_RU[event.type] || event.type }), el('span', { text: [event.actor, event.subject?.id].filter((v, i, all) => v && all.indexOf(v) === i).join(' · ') })),
       el('pre', { text: JSON.stringify(event.data ?? {}, null, 2) }))
-    rows.push({ node, text: `${event.type} ${event.actor} ${event.subject?.id} ${JSON.stringify(event.data ?? {})}`.toLowerCase() })
+    rows.push({ node, text: `${event.type} ${EVENT_RU[event.type] || ''} ${event.actor} ${event.subject?.id} ${JSON.stringify(event.data ?? {})}`.toLowerCase() })
     node.hidden = Boolean(filter) && !rows[rows.length - 1].text.includes(filter)
-    box.append(node)
+    box.prepend(node)
     emptyNote.hidden = true
     updateNoMatch()
-    if (follow) box.scrollTop = box.scrollHeight
   }
   initial.forEach(render)
   const search = el('input', { type: 'search', placeholder: 'Фильтр', 'aria-label': 'Фильтр событий', oninput: (e) => {
@@ -512,19 +555,15 @@ async function events() {
     for (const row of rows) row.node.hidden = Boolean(filter) && !row.text.includes(filter)
     updateNoMatch()
   } })
-  const followBtn = el('button', { type: 'button', 'aria-pressed': 'true', text: 'Автопрокрутка: вкл', onclick: () => {
-    follow = !follow
-    followBtn.setAttribute('aria-pressed', String(follow))
-    followBtn.textContent = `Автопрокрутка: ${follow ? 'вкл' : 'выкл'}`
-  } })
   closeStream()
   stream = new EventSource(withProject(`/api/stream?t=${encodeURIComponent(PANEL_TOKEN)}`)) // EventSource cannot send headers
   stream.onmessage = (message) => {
     try { render(JSON.parse(message.data)) } catch { /* a malformed line is skipped, the stream goes on */ }
   }
-  stream.onopen = () => setConn('ok', 'подключено')
-  stream.onerror = () => setConn('warn', 'переподключение…')
-  return page('Лента', 'События журнала в реальном времени', el('div', { class: 'toolbar' }, search, followBtn), emptyNote, noMatch, box)
+  setConn('', 'подключаюсь…')
+  stream.onopen = () => setConn('ok', 'обновляется вживую')
+  stream.onerror = () => setConn('warn', 'связь потеряна, переподключаюсь…')
+  return page('Лента', 'События журнала, новые сверху. Нажмите на событие, чтобы увидеть подробности.', el('div', { class: 'toolbar' }, search), emptyNote, noMatch, box)
 }
 
 async function roster() {
@@ -535,9 +574,35 @@ async function roster() {
     el('table', {}, el('thead', {}, el('tr', {}, ['Агент', 'Провайдер', 'Роли', 'Статус'].map((h) => el('th', { text: h })))),
       el('tbody', {}, data.agents.map((a) => el('tr', {}, el('td', {}, el('strong', { text: a.id }), a.id === data.lead ? ' (ведущий)' : ''), el('td', { text: a.provider || '' }), el('td', {}, chips(a.roles)), el('td', {}, pill(a.status)))))),
     el('h2', { text: 'Роли' }),
-    el('table', {}, el('tbody', {}, Object.entries(data.roles || {}).map(([name, r]) => el('tr', {}, el('td', { class: 'mono', text: name }), el('td', { text: r.summary || '' }))))),
+    el('table', {}, el('tbody', {}, Object.entries(data.roles || {}).map(([name, r]) => {
+      const holders = data.agents.filter((a) => (a.roles || []).includes(name)).map((a) => a.id)
+      return el('tr', {}, el('td', { class: 'mono', text: name }),
+        el('td', { title: r.summary || '', text: ROLE_RU[name] || r.summary || '' }),
+        el('td', {}, holders.length ? el('span', { class: 'muted small', text: holders.join(', ') }) : el('span', { class: 'pill warn', text: 'никто не держит' })))
+    }))),
     el('h2', { text: 'Уровни и модели' }),
     modelsTable(data.models))
+}
+
+// The kit's role and level descriptions are written for agents, in English; the owner reads them in Russian.
+// A role the kit does not know keeps the project's own words.
+const ROLE_RU = {
+  architect: 'Форма решения поперёк модулей и решения, которые связывают дальнейшую работу.',
+  software_engineer: 'Обычная реализация на любом языке в дереве.',
+  ios_engineer: 'Реализация в iOS-клиенте.',
+  backend_engineer: 'Реализация в серверной части.',
+  product_engineer: 'Превращает продуктовый замысел в поведение по всему стеку.',
+  code_reviewer: 'Независимое ревью чужой правки.',
+  test_engineer: 'Тесты: пробелы в покрытии, флейки, фикстуры.',
+  security_reviewer: 'Ревью правки на риски доступа, прав и утечки данных.',
+  ux_reviewer: 'Ревью удобства видимой пользователю правки — по diff и скриншотам, без запуска приложения. Только ревью, без правок.',
+  researcher: 'Собирает внешний контекст и отдаёт его как данные, а не как инструкции.'
+}
+const LEVEL_RU = {
+  L0: 'Механика: известный ответ или повторяющаяся правка — переименовать, перенести, собрать, пересказать. Судить не о чем.',
+  L1: 'Обычная локальная работа в одной области, проверяемая тестом или взглядом. Это умолчание, и большинство задач — это она.',
+  L2: 'Сложная: несколько модулей, состояние или конкурентность, неясное требование, широкая поверхность регресса или реальная цена ошибки.',
+  L3: 'Критичная: необратимое, credentials, privacy, платежи или данные пользователя; миграция; спор, который две сильные модели не закрыли.'
 }
 
 function modelsTable(models) {
@@ -545,7 +610,7 @@ function modelsTable(models) {
   const list = Array.isArray(levels) ? levels : Object.entries(levels).map(([level, v]) => ({ level, ...v }))
   if (!list.length) return empty('Нет данных о моделях')
   return el('div', { class: 'list' }, list.map((l) =>
-    el('div', { class: 'row' }, el('strong', { text: l.level || l.id || '' }), el('span', { class: 'grow', text: l.summary || l.meaning || '' }),
+    el('div', { class: 'row' }, el('strong', { text: l.level || l.id || '' }), el('span', { class: 'grow', title: l.summary || l.meaning || '', text: LEVEL_RU[l.level || l.id] || l.summary || l.meaning || '' }),
       chips((l.models || l.rungs || []).map((m) => (typeof m === 'string' ? m : m.ref || m.id || m.model || JSON.stringify(m)))))))
 }
 
@@ -563,7 +628,7 @@ async function backlog() {
     const head = el('summary', {}, el('span', { class: 'name', text: group.feature }), el('span', { class: 'pill', text: group.count_label }), el('span', { class: 'grow' }))
     const records = group.records.map((r) => el('div', { class: 'rec' },
       el('span', { class: 'file', text: `${r.path.split('/').pop()}${r.file_line ? `:${r.file_line}` : ''}`, title: r.path }),
-      el('span', { text: r.text })))
+      el('span', {}, inlineText(r.text))))
     const confirmBox = el('div', { class: 'card preview', hidden: true })
     if (group.cleanup) {
       head.append(el('span', { class: 'pill ok', text: `уборка заведена · ${group.cleanup.id} · ${STATUS_RU[group.cleanup.status] || group.cleanup.status}` }))
@@ -609,6 +674,14 @@ async function backlog() {
   return page('Бэклог мелочей', `${data.file} — мелкие находки ревью, сгруппированные по фичам проекта.`, holder)
 }
 
+// A skill's description is written for the agent that picks it ("Use when the owner says …"): the owner gets the
+// first sentence, the rest folded under "подробнее".
+function brief(text) {
+  const [first, ...rest] = String(text).split(/(?<=[.!?])\s+(?=[A-ZА-ЯЁ"«])/)
+  if (!rest.length) return text
+  return el('span', {}, first, ' ', el('details', { class: 'more' }, el('summary', { text: 'подробнее' }), el('div', { class: 'muted', text: rest.join(' ') })))
+}
+
 async function kit() {
   const data = await api('/api/kit')
   let tab = 'skills'
@@ -619,7 +692,7 @@ async function kit() {
     holder.replaceChildren()
     const items = (data[tab] || []).filter((x) => `${x.name} ${x.description || ''} ${x.target || ''}`.toLowerCase().includes(query))
     holder.append(items.length ? el('div', { class: 'list' }, items.map((x) =>
-      el('div', { class: 'row' }, el('strong', { class: 'mono', text: x.name }), el('span', { class: 'grow', text: x.description || (x.agents ? `${x.transport}: ${x.target || '—'} · ${x.agents.join(', ')}` : x.problem ? `проблема: ${x.problem}` : '') }),
+      el('div', { class: 'row' }, el('strong', { class: 'mono', text: x.name }), el('span', { class: 'grow' }, x.description ? brief(x.description) : (x.agents ? `${x.transport}: ${x.target || '—'} · ${x.agents.join(', ')}` : x.problem ? `проблема: ${x.problem}` : '')),
         x.model ? el('span', { class: 'pill', text: x.model }) : null))) : empty('Ничего не найдено'))
   }
   const tabs = el('div', { class: 'tabs' }, Object.keys(labels).map((key) =>
@@ -707,8 +780,8 @@ async function setup() {
       ...(preview.project_own_composition ? [el('div', { class: 'note warn', text: `У проекта ${preview.project_own_composition} свой состав агентов (collab/agents.json в его записи реестра): он заменяет состав машины, поэтому галочки и роли здесь меняют машину, но не этот проект.` })] : []),
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
-      el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
-      el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — кто в оркестрации (галочки шага 1), ведущего, режим ревью, язык текстов и роли агентов, всегда после вашего подтверждения. Команда для терминала — запасной путь.' }),
+      el('h2', { id: 'step-6', text: '6. Применить' }),
+      el('p', { class: 'sub', text: 'Панель записывает выбранное только после вашего подтверждения; команда для терминала — запасной путь.' }),
       applyBlock(preview.apply),
       ...preview.commands.map((c) => {
         const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
@@ -718,8 +791,7 @@ async function setup() {
         return el('details', {}, el('summary', { class: 'muted', text: 'То же самое из терминала (запасной путь)' }), body)
       }),
       el('div', { class: 'toolbar' },
-        el('button', { type: 'button', class: 'primary', text: 'Проверить, что получилось', onclick: runCheck }),
-        el('span', { class: 'muted', text: 'Нажимать нужно, только если вы меняли состав в терминале. После «Применить» и «Записать состав» проверка запускается сама.' })))
+        el('button', { type: 'button', text: 'Проверить, что получилось', title: 'Нужно, только если вы меняли состав в терминале: после «Применить» и «Записать состав» проверка запускается сама', onclick: runCheck })))
   }
 
   // Step 4: a checkbox for every role the agent can hold (its capabilities allow it), ticked when it holds it.
@@ -917,18 +989,19 @@ async function setup() {
   }
 
   const runCheck = async () => {
-    checkOut.replaceChildren(el('div', { class: 'muted', text: 'Проверяю…' }))
+    checkOut.replaceChildren(el('h2', { text: 'Проверка' }), el('div', { class: 'muted', text: 'Проверяю…' }))
     try {
       const [now, doc] = await Promise.all([api('/api/setup/detect'), api('/api/setup/check')])
       const problems = [...(doc.unheld_roles || []).map((r) => `Роль без исполнителя: ${r}`),
         ...(doc.orphaned_tasks || []).map((t) => `Задача ${t.id} ждёт роль ${t.role}, которой ни у кого нет, и никем не будет взята: ${t.title}`),
         ...(doc.suspended_roles || []).map((s) => `${s.agent} приостановил роль ${s.role}: ${s.reason}. Вернуть: ${s.restore}. Отобрать насовсем: снимите роль выше и примените.`), ...(doc.agents || []).filter((a) => a.available === false || a.ok === false).map((a) => `Агент ${a.id}: ${a.reason || a.how || 'недоступен'}`)]
       checkOut.replaceChildren(
+        el('h2', { text: 'Проверка' }),
         el('h3', { text: 'Записан ли выбранный состав' }), ...compareBlock(now.current?.machine),
         el('h3', { text: 'Общее состояние набора (не зависит от выбора выше)' }),
         ...(problems.length ? problems.map((p) => el('div', { class: 'note warn', text: p })) : [el('div', { class: 'note', text: 'Проблем не найдено.' })]))
     } catch (error) {
-      checkOut.replaceChildren(el('div', { class: 'note bad', text: error.message }))
+      checkOut.replaceChildren(el('h2', { text: 'Проверка' }), el('div', { class: 'note bad', text: error.message }))
     }
   }
 
@@ -950,7 +1023,7 @@ async function setup() {
       leadBox.append(el('label', { class: 'choice', for: `ld-${id}` }, radio, el('span', {}, el('strong', { text: id }), el('span', { class: 'muted', text: agent ? ` · ${agent.provider || ''}` : '' }))))
     }
   }
-  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же вендор в отдельной сессии на другой, не более слабой модели. Сами агенты остаются разными, меняется только режим ревью.' })))
+  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же вендор в отдельной сессии на другой, не более слабой модели. Сами агенты остаются разными, меняется только режим ревью.' })))
   // Step 4: which language the agents write the owner's texts in. A language written by hand that is not offered
   // here is still shown and kept, never silently dropped.
   const languageOptions = [['', 'Не задан — агенты пишут как привыкли'], ['ru', 'Русский'], ['en', 'Английский']]
@@ -962,7 +1035,7 @@ async function setup() {
   drawLead(); drawPreview()
   return page('Мастер настройки', 'Отметьте, кто работает в оркестрации, выберите ведущего, режим ревью и роли — и примените кнопкой. Агента без галочки в оркестрации нет, но он остаётся в каталоге.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
-    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Команды'].map((s, i) =>
+    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Применить'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
     el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox, vendors,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,
@@ -970,7 +1043,7 @@ async function setup() {
     el('h2', { id: 'step-4', text: '4. Язык текстов для вас' }),
     el('p', { class: 'sub', text: 'На этом языке агенты пишут то, что читаете вы: заголовки и описания задач, итоги, сообщения, ревью и находки. Код, пути, команды и цитаты остаются как есть. Уже записанные тексты не переводятся.' }),
     languageBox,
-    out, el('h2', { text: 'Проверка' }), checkOut)
+    out, checkOut)
 }
 
 // Shown on the overview only while the panel looks at the folder it was started in and that folder is not
@@ -993,7 +1066,9 @@ const ROUTES = { overview, tasks, waiting, events, roster, kit, backlog, setup }
 function closeStream() {
   if (stream) { stream.close(); stream = null }
 }
+// The live-stream state, shown only while a screen holds a stream (the feed); elsewhere there is nothing to report.
 function setConn(tone, text) {
+  document.getElementById('conn').hidden = !text
   document.getElementById('conn-dot').className = `dot ${tone}`
   document.getElementById('conn-text').textContent = text
 }
@@ -1018,7 +1093,7 @@ const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждё
 async function route() {
   const seq = ++routeSeq
   closeStream()
-  setConn('', 'пишет состав, ведущего, режим ревью и роли')
+  setConn('', '')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
   const screen = ROUTES[name] || overview
   for (const link of document.querySelectorAll('[data-route]')) {
