@@ -28,6 +28,21 @@ export function agentInstalled(agent, { which, exists, home }) {
   return exists(dir) ? dir : null
 }
 
+// Whether another agent can start this one on a task from its shell: a command the catalog names for that
+// (`adapter.headless`, or a cli adapter's `binary`) is on PATH. Installed is not enough — an editor without its
+// command-line agent is installed, leads fine (it starts the others), but nobody can start it: work waits in its
+// inbox until the owner opens it. Answers the command's path, or null. Advisory, like agentInstalled: it explains
+// the wizard's choice and refuses nothing.
+export function agentLaunchable(agent, { which }) {
+  const adapter = agent.adapter || {}
+  const commands = [...(Array.isArray(adapter.headless) ? adapter.headless : []), ...(adapter.kind === 'cli' && adapter.binary ? [adapter.binary] : [])]
+  for (const command of commands) {
+    const found = which(command)
+    if (found) return found
+  }
+  return null
+}
+
 // Every role this agent's capabilities satisfy.
 export function rolesItCanHold(agent, roleDefs) {
   const caps = new Set(agent.capabilities || [])

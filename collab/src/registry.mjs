@@ -153,6 +153,9 @@ export function validateRegistry(config) {
         if (!capIds.has(capability)) problems.push(`${where} adapter.cannot names unknown capability "${capability}"`)
       }
     }
+    if (adapter.headless !== undefined && (!Array.isArray(adapter.headless) || !adapter.headless.every((c) => typeof c === 'string' && c !== ''))) {
+      problems.push(`${where} adapter.headless must be a list of command names`)
+    }
     if (!['manual', 'cli'].includes(adapter.kind)) {
       problems.push(`${where} has adapter.kind "${adapter.kind}" — expected "manual" or "cli"`)
     }

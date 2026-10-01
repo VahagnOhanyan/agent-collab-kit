@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
-import { planComposition } from '../src/composition.mjs'
+import { agentLaunchable, planComposition } from '../src/composition.mjs'
 import { createRegistry, loadConfig, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
 import { runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
@@ -242,4 +242,24 @@ test('single_vendor: the author\'s model comes from the latest delegation when n
     m.cleanup()
     sbx.cleanup()
   }
+})
+
+test('an agent is launchable only when a command another agent could start it with is on PATH', () => {
+  const which = (onPath) => (command) => (onPath.includes(command) ? `/bin/${command}` : null)
+  const editor = { id: 'ed', adapter: { kind: 'manual', headless: ['ed-agent', 'agent'] }, detect: 'ed' }
+  // Installed (its editor command is there) is not launchable: only its headless commands count.
+  assert.equal(agentLaunchable(editor, { which: which(['ed']) }), null)
+  assert.equal(agentLaunchable(editor, { which: which(['agent']) }), '/bin/agent')
+  const spawned = { id: 'sp', adapter: { kind: 'cli', binary: 'sp' } }
+  assert.equal(agentLaunchable(spawned, { which: which(['sp']) }), '/bin/sp')
+  assert.equal(agentLaunchable(spawned, { which: which([]) }), null)
+  // A manual agent that names no command cannot be started by anyone.
+  assert.equal(agentLaunchable({ id: 'm', adapter: { kind: 'manual' } }, { which: which(['m']) }), null)
+})
+
+test('a catalog adapter.headless that is not a list of command names is refused', () => {
+  const config = loadConfig()
+  const agents = structuredClone(config.agents)
+  agents.agents[0].adapter.headless = 'claude'
+  assert.ok(validateRegistry({ ...config, agents }).problems.some((p) => p.includes('adapter.headless')))
 })

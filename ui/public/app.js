@@ -611,6 +611,14 @@ function reviewCard(r) {
       el('div', { class: 'muted', text: plain(f.note || f.summary || f.title || '') }))))
 }
 
+// The chosen agents the lead cannot start: not the lead, and no command another agent could start them with on this
+// machine (`launchable` from /api/setup/detect). A server too old to send `launchable` answers nothing — no warning
+// is better than a false one.
+function unledWithoutCli(chosen, lead, launchable) {
+  if (!Array.isArray(launchable)) return []
+  return [...chosen].filter((id) => id !== lead && !launchable.includes(id))
+}
+
 // Ids in a copyable command come from the journal, and agents write the journal: an option id `ok; rm -rf ~`
 // would run when the owner pastes the line. A plain id stays as is, anything else is single-quoted; an id with a
 // control character (a newline would end the command) gets no command at all.
@@ -1145,6 +1153,8 @@ async function setup() {
   // program the kit failed to find is still visible. One already written in the composition stays tickable, so it can
   // be taken out.
   const writtenIds = new Set(written ? written.agents.map((a) => a.id) : [])
+  const notLaunchable = (id) => Array.isArray(detect.launchable) && !detect.launchable.includes(id)
+  const unledAgents = (ids, leadId) => unledWithoutCli(ids, leadId, detect.launchable)
   const choice = (a) => {
     const installed = detect.installed.includes(a.id)
     const box = el('input', { type: 'checkbox', id: `ag-${a.id}`, checked: chosen.has(a.id), onchange: (e) => {
@@ -1154,7 +1164,11 @@ async function setup() {
     const pill = installed
       ? el('span', { class: 'pill ok', text: 'найден на машине' })
       : el('span', { class: 'pill warn', text: 'записан в составе, но на машине не найден' })
-    return el('label', { class: 'choice', for: `ag-${a.id}` }, box, el('span', {}, el('strong', { text: a.name || a.id }), ' ', pill, el('div', { class: 'muted', text: a.provider || '' })))
+    // Installed but without a command another agent could start it with: it may lead, it cannot be led.
+    const noCli = installed && notLaunchable(a.id)
+      ? [' ', el('span', { class: 'pill warn', text: 'без CLI запуска', title: 'Может быть ведущим: сам запускает остальных. Подчинённым — только вручную: ведущий не сможет его запустить, задачи будут ждать во входящих, пока вы сами его не откроете.' })]
+      : null
+    return el('label', { class: 'choice', for: `ag-${a.id}` }, box, el('span', {}, el('strong', { text: a.name || a.id }), ' ', pill, noCli, el('div', { class: 'muted', text: a.provider || '' })))
   }
   const offered = detect.catalog.filter((a) => detect.installed.includes(a.id) || writtenIds.has(a.id))
   const absent = detect.catalog.filter((a) => !offered.includes(a))
@@ -1170,9 +1184,15 @@ async function setup() {
     leadBox.replaceChildren()
     if (!chosen.has(lead)) lead = [...chosen][0] || null
     for (const id of chosen) {
-      const radio = el('input', { type: 'radio', name: 'lead', id: `ld-${id}`, checked: id === lead, onchange: () => { lead = id; drawPreview() } })
+      const radio = el('input', { type: 'radio', name: 'lead', id: `ld-${id}`, checked: id === lead, onchange: () => { lead = id; drawLead(); drawPreview() } })
       const agent = detect.catalog.find((a) => a.id === id)
       leadBox.append(el('label', { class: 'choice', for: `ld-${id}` }, radio, el('span', {}, el('strong', { text: id }), el('span', { class: 'muted', text: agent ? ` · ${agent.provider || ''}` : '' }))))
+    }
+    // The lead starts the others through their command-line programs. A chosen agent without one is fine as the
+    // lead, but as a subordinate nothing can start it: say so here, where the lead is chosen. Nothing is refused.
+    for (const id of unledAgents(chosen, lead)) {
+      const name = detect.catalog.find((a) => a.id === id)?.name || id
+      leadBox.append(el('div', { class: 'note warn', text: `${name}: на машине нет CLI, через который ведущий (${lead}) мог бы его запустить. Задачи и ревью для него будут ждать во входящих, пока вы сами не откроете ${name} и не попросите забрать работу. Ведущим он быть может — тогда остальных запускает он.` }))
     }
   }
   const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же вендор в отдельной сессии на другой, не более слабой модели. Сами агенты остаются разными, меняется только режим ревью.' })))

@@ -2,7 +2,7 @@
   "//": "Built-in agent registry, used by every project without a registry entry that replaces this file. It is the ONLY place a provider name appears in the collaboration layer: the protocol routes by role and capability, never by agent id.",
   "//briefing": "`briefing` is the agent's own instructions, returned by its whoami call. `briefing_file` is relative to this directory.",
   "//roles": "No agent here has roles or capabilities: which agent holds which role is the person's composition (machine agents.json, outside git). An agent may have every capability except the ones its program cannot have in principle (`adapter.cannot`, a fact about the vendor's program, not a decision about roles); every role those capabilities satisfy is offered, and the facts on the machine (probe.mjs) rule out the rest (ADR-0026).",
-  "//adapter": "`adapter.kind` is how a message physically reaches the agent. 'manual' = it lands in the inbox and the agent reads it when its session runs. 'cli' = the layer could spawn it; `enabled:false` means it will not. Adapters are taken from THIS file only: a project agents.json cannot change them.",
+  "//adapter": "`adapter.kind` is how a message physically reaches the agent. 'manual' = it lands in the inbox and the agent reads it when its session runs. 'cli' = the layer could spawn it; `enabled:false` means it will not. `adapter.headless` (manual agents) lists the commands through which ANOTHER agent can start this one on a task from its shell; a 'cli' agent's `binary` is that command. None of them on PATH = the agent can lead (it starts the others) but cannot be the lead's subordinate: work waits in its inbox until the owner opens it. Adapters are taken from THIS file only: a project agents.json cannot change them.",
   "defaults": {
     "lease_seconds": 3600,
     "heartbeat_stale_seconds": 900
@@ -17,6 +17,7 @@
         "kind": "manual",
         "session": "interactive",
         "cannot": [],
+        "headless": ["claude"],
         "install_hint": "Install Claude Code (https://claude.com/claude-code) so that `claude` is on PATH, sign in once, then run the kit's installer again."
       },
       "briefing_file": "briefings/claude.md",
@@ -73,6 +74,7 @@
         "kind": "manual",
         "session": "interactive",
         "cannot": [],
+        "headless": ["cursor-agent", "agent"],
         "note": "Added 2026-10-01 (owner): Cursor's editor agent reads the journal through ~/.cursor/mcp.json, which the installer writes. No CLI adapter yet: without the Cursor CLI (`agent`) nothing can start it on a task, so work reaches it through the inbox. On Windows the editor need not put a `cursor` command on PATH, so ~/.cursor counts as installed (detect_home).",
         "install_hint": "Install Cursor (https://cursor.com) and open it once (that creates ~/.cursor), then run the kit's installer again so collab is registered in ~/.cursor/mcp.json."
       },

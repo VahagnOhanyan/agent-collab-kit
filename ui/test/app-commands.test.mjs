@@ -40,3 +40,14 @@ test('every copyable collab command in the panel goes through shellArg', () => {
   // A new card that interpolates a journal id straight into a command line would reopen the hole.
   assert.doesNotMatch(SOURCE, /`collab [a-z]+ \$\{/)
 })
+
+const { unledWithoutCli } = new Function(`${fn('unledWithoutCli')}\nreturn { unledWithoutCli }`)()
+
+test('the wizard warns about a chosen agent the lead cannot start, never about the lead itself', () => {
+  const chosen = new Set(['a', 'b', 'c'])
+  // b has no command to start it with: warned while it is a subordinate, silent once it leads.
+  assert.deepEqual(unledWithoutCli(chosen, 'a', ['a', 'c']), ['b'])
+  assert.deepEqual(unledWithoutCli(chosen, 'b', ['a', 'c']), [])
+  // A server that does not send `launchable` gives no warning rather than a false one.
+  assert.deepEqual(unledWithoutCli(chosen, 'a', undefined), [])
+})
