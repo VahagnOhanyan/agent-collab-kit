@@ -96,6 +96,11 @@ export function acquireSync(lockPath, { agentId = 'unknown', staleMs = DEFAULTS.
     )
     return { fd, path: lockPath, token, acquired: true }
   } catch (error) {
+    // Windows: while the holder is deleting the lock file on release, the file is "delete pending" and a create
+    // of the same name fails with EPERM (sometimes EACCES), not EEXIST. That is contention, not a permission
+    // problem: wait and try again like any held lock. A real permission problem still ends in LOCK_TIMEOUT.
+    // Six workers on one lock hit this on the first Windows runs, 01.10.2026.
+    if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) return { acquired: false, retry: true }
     if (error.code !== 'EEXIST') throw error
   }
 
