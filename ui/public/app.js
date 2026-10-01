@@ -213,7 +213,7 @@ async function overview() {
     vendors,
     el('h2', { text: 'Агенты' }),
     el('div', { class: 'list' }, s.agents.map((a) =>
-      el('div', { class: 'row' }, pill(a.status), el('strong', { text: a.id }), el('span', { class: 'grow muted', text: a.adapter?.how || '' }),
+      el('div', { class: 'row' }, pill(a.status), el('strong', { class: 'grow', text: a.id }),
         a.current_task_id ? el('a', { href: `#/tasks/${encodeURIComponent(a.current_task_id)}`, class: 'mono', text: a.current_task_id }) : null))),
     el('h2', { text: 'Задачи по статусам' }),
     Object.keys(s.tasks.by_status).length
@@ -926,8 +926,7 @@ async function setup() {
       checkOut.replaceChildren(
         el('h3', { text: 'Записан ли выбранный состав' }), ...compareBlock(now.current?.machine),
         el('h3', { text: 'Общее состояние набора (не зависит от выбора выше)' }),
-        ...(problems.length ? problems.map((p) => el('div', { class: 'note warn', text: p })) : [el('div', { class: 'note', text: 'Проблем не найдено.' })]),
-        el('div', { class: 'list' }, (doc.agents || []).map((a) => el('div', { class: 'row' }, el('strong', { text: a.id }), el('span', { class: 'grow muted', text: a.how || a.detail || '' })))))
+        ...(problems.length ? problems.map((p) => el('div', { class: 'note warn', text: p })) : [el('div', { class: 'note', text: 'Проблем не найдено.' })]))
     } catch (error) {
       checkOut.replaceChildren(el('div', { class: 'note bad', text: error.message }))
     }
