@@ -95,6 +95,10 @@ export function validateFeatures(features) {
     if (!Array.isArray(feature?.paths) || !feature.paths.length || !feature.paths.every((p) => typeof p === 'string' && p.length)) {
       problems.push(`${where} needs a non-empty list of path patterns`)
     }
+    // Optional: the role a cleanup of this feature goes to (an id of the roles in force; the panel refuses one nobody holds).
+    if (feature?.role !== undefined && (typeof feature.role !== 'string' || !/^[a-z][a-z0-9_]{1,63}$/.test(feature.role))) {
+      problems.push(`${where} has a role that is not a role id`)
+    }
   })
   return problems
 }
@@ -102,12 +106,13 @@ export function validateFeatures(features) {
 export function groupByFeature(records, features) {
   const compiled = features.map((feature) => ({ name: feature.name, patterns: feature.paths.map(patternToRegex) }))
   const groups = new Map(features.map((feature) => [feature.name, []]))
+  const roles = new Map(features.map((feature) => [feature.name, feature.role || null]))
   groups.set(NO_FEATURE, [])
   for (const record of records) {
     const owner = compiled.find((feature) => feature.patterns.some((pattern) => pattern.test(record.path)))
     groups.get(owner ? owner.name : NO_FEATURE).push(record)
   }
-  return [...groups.entries()].filter(([, list]) => list.length).map(([name, list]) => ({ feature: name, records: list }))
+  return [...groups.entries()].filter(([, list]) => list.length).map(([name, list]) => ({ feature: name, records: list, role: roles.get(name) || null }))
 }
 
 // A path inside the project root, never outside it — lexically, and again after links are resolved, so a linked
@@ -195,17 +200,16 @@ export function recordsWord(n) {
   return 'записей'
 }
 
-// "Уборка мелочей: Сториз (4)" → "Сториз".
+// "Уборка мелочей: Экспорт (4)" → "Экспорт".
 export function cleanupFeature(title) {
   return title.slice(CLEANUP_TITLE_PREFIX.length).replace(/\s*\(\d+\)\s*$/, '').trim()
 }
 
-// The role a cleanup of these records needs, by where they are: the client, the server, or anything else.
-export function suggestedRole(records) {
-  const paths = records.map((record) => record.path)
-  if (paths.length && paths.every((p) => /^(Tripix|Modules|TripixTests)\//.test(p))) return 'ios_engineer'
-  if (paths.length && paths.every((p) => /^(backend|rail-router)\//.test(p))) return 'backend_engineer'
-  return 'software_engineer'
+// The role a cleanup of a group needs is the project's to say — `role` of the feature in features.json — never
+// guessed from paths here: this module knows no project's layout. No role named: anyone who writes code.
+export const DEFAULT_CLEANUP_ROLE = 'software_engineer'
+export function suggestedRole(group) {
+  return typeof group?.role === 'string' && group.role ? group.role : DEFAULT_CLEANUP_ROLE
 }
 
 export function cleanupTask(group, file) {

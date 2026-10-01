@@ -222,7 +222,7 @@ export async function startPanel({
     const openTasks = api ? await api.listTasks({ open: true }) : []
     const view = readBacklog({ projectDir, projectRoot: project.journalRoot, openTasks })
     const held = api ? Object.keys(api.registry.roles()).filter((role) => api.registry.find({ role }).length) : []
-    return { ...view, roles: held, groups: view.groups.map((group) => ({ ...group, role: suggestedRole(group.records), count_label: `${group.count} ${recordsWord(group.count)}` })) }
+    return { ...view, roles: held, groups: view.groups.map((group) => ({ ...group, role: suggestedRole(group), count_label: `${group.count} ${recordsWord(group.count)}` })) }
   }
 
   // One task for one feature's records, from what the owner saw (`expect`, the backlog file's fingerprint); never a

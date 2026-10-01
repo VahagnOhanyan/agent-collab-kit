@@ -14,9 +14,9 @@ import { startPanel } from '../server.mjs'
 
 const TOKEN = '0123456789abcdef0123456789abcdef0123456789abcdef'
 const BACKLOG = [
-  '- [CC-1/Сториз] Tripix/Story/Export/A.swift — первое',
-  '- [CC-2/Сториз] Tripix/Story/Export/B.swift:10 — второе',
-  '- [CC-3/Бэк] backend/src/x.js — третье'
+  '- [CC-1/Экспорт] app/Export/A.swift — первое',
+  '- [CC-2/Экспорт] app/Export/B.swift:10 — второе',
+  '- [CC-3/Сервер] server/src/x.js — третье'
 ].join('\n')
 const machine = () => ({ home: '/nowhere', platform: 'darwin', which: (b) => `/usr/bin/${b}`, exists: () => false, read: () => null })
 
@@ -28,7 +28,7 @@ function project() {
   writeFileSync(join(root, 'docs', 'backlog.md'), BACKLOG)
   const registryDir = join(base, 'registry')
   writeJson(join(registryDir, 'demo', 'project.json'), { id: 'demo', roots: [root], review_backlog: 'docs/backlog.md' })
-  writeJson(join(registryDir, 'demo', 'features.json'), { features: [{ name: 'Сториз', paths: ['Tripix/Story/**'] }, { name: 'Бэкенд', paths: ['backend/**'] }] })
+  writeJson(join(registryDir, 'demo', 'features.json'), { features: [{ name: 'Экспорт', paths: ['app/Export/**'], role: 'ios_engineer' }, { name: 'Сервер', paths: ['server/**'], role: 'backend_engineer' }] })
   const machineDir = join(base, 'no-machine')
   const options = { cwd: root, registryDir, machineDir, probeEnv: machine() }
   return {
@@ -82,7 +82,7 @@ test('the section shows the backlog grouped by feature, with counts, the thresho
     const view = (await send(started, 'GET', '/api/backlog')).json
     assert.equal(view.configured, true, view.reason)
     assert.deepEqual([view.total, view.threshold, view.writable], [3, 8, true])
-    assert.deepEqual(view.groups.map((g) => [g.feature, g.count, g.role, g.cleanup]), [['Сториз', 2, 'ios_engineer', null], ['Бэкенд', 1, 'backend_engineer', null]])
+    assert.deepEqual(view.groups.map((g) => [g.feature, g.count, g.role, g.cleanup]), [['Экспорт', 2, 'ios_engineer', null], ['Сервер', 1, 'backend_engineer', null]])
   } finally {
     p.cleanup()
   }
@@ -95,16 +95,16 @@ test('a cleanup task is created for one group, once while it is open, and the ba
     if (!started) return
     const before = readFileSync(join(p.root, 'docs', 'backlog.md'), 'utf8')
     const view = (await send(started, 'GET', '/api/backlog')).json
-    const done = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сториз', role: 'ios_engineer', expect: view.expect })
+    const done = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Экспорт', role: 'ios_engineer', expect: view.expect })
     assert.equal(done.status, 200, done.text)
-    assert.equal(done.json.task.title, 'Уборка мелочей: Сториз (2)')
+    assert.equal(done.json.task.title, 'Уборка мелочей: Экспорт (2)')
     const task = await p.apiFactory().getTask({ task_id: done.json.task.id })
     assert.equal(task.role, 'ios_engineer')
     assert.match(task.description, /Создано панелью владельца/)
     assert.equal(task.description.split('\n').filter((l) => l.startsWith('- [')).length, 2)
     const after = (await send(started, 'GET', '/api/backlog')).json
     assert.deepEqual(after.groups[0].cleanup?.id, done.json.task.id)
-    const again = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сториз', role: 'ios_engineer', expect: after.expect })
+    const again = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Экспорт', role: 'ios_engineer', expect: after.expect })
     assert.equal(again.status, 409)
     assert.match(again.json.reason, /уже заведена/)
     assert.equal(readFileSync(join(p.root, 'docs', 'backlog.md'), 'utf8'), before)
@@ -119,7 +119,7 @@ test('refused: a stale backlog, a group that is not there, a role nobody holds, 
     const started = await panel(t, p)
     if (!started) return
     const view = (await send(started, 'GET', '/api/backlog')).json
-    const good = { feature: 'Бэкенд', role: 'backend_engineer', expect: view.expect }
+    const good = { feature: 'Сервер', role: 'backend_engineer', expect: view.expect }
     const cases = [
       ['stale', { ...good, expect: '0'.repeat(64) }, {}, 409],
       ['no such group', { ...good, feature: 'Нет такой' }, {}, 409],
@@ -149,10 +149,10 @@ test('two requests for the same group at once create one task, not two', async (
     const started = await panel(t, p)
     if (!started) return
     const view = (await send(started, 'GET', '/api/backlog')).json
-    const body = { feature: 'Сториз', role: 'ios_engineer', expect: view.expect }
+    const body = { feature: 'Экспорт', role: 'ios_engineer', expect: view.expect }
     const [a, b] = await Promise.all([send(started, 'POST', '/api/backlog/cleanup', body), send(started, 'POST', '/api/backlog/cleanup', body)])
     assert.deepEqual([a.status, b.status].sort(), [200, 409])
-    const open = (await p.apiFactory().listTasks({ open: true })).filter((task) => task.title.startsWith('Уборка мелочей: Сториз'))
+    const open = (await p.apiFactory().listTasks({ open: true })).filter((task) => task.title.startsWith('Уборка мелочей: Экспорт'))
     assert.equal(open.length, 1)
   } finally {
     p.cleanup()
@@ -165,18 +165,18 @@ test('a cleanup in review or blocked is still open; a known role nobody holds is
     const started = await panel(t, p)
     if (!started) return
     const view = (await send(started, 'GET', '/api/backlog')).json
-    const done = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сториз', role: 'ios_engineer', expect: view.expect })
+    const done = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Экспорт', role: 'ios_engineer', expect: view.expect })
     const writer = p.writeApiFactory()
     await writer.claimTask({ task_id: done.json.task.id })
     await writer.blockTask({ task_id: done.json.task.id, reason: 'Waiting for the owner to look at the list.' })
     const blocked = (await send(started, 'GET', '/api/backlog')).json
     assert.equal(blocked.groups[0].cleanup?.status, 'blocked')
-    assert.equal((await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сториз', role: 'ios_engineer', expect: blocked.expect })).status, 409)
+    assert.equal((await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Экспорт', role: 'ios_engineer', expect: blocked.expect })).status, 409)
     // A role the registry knows but nobody holds here.
     const allRoles = Object.keys(writer.registry.roles())
     const vacant = allRoles.find((role) => !blocked.roles.includes(role))
     if (vacant) {
-      const res = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Бэкенд', role: vacant, expect: blocked.expect })
+      const res = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сервер', role: vacant, expect: blocked.expect })
       assert.equal(res.status, 409)
       assert.match(res.json.reason, /никто не держит/)
     }
@@ -192,7 +192,7 @@ test('a panel without the right to write shows the backlog but creates nothing',
     if (!started) return
     const view = (await send(started, 'GET', '/api/backlog')).json
     assert.equal(view.writable, false)
-    const res = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Бэкенд', role: 'backend_engineer', expect: view.expect })
+    const res = await send(started, 'POST', '/api/backlog/cleanup', { feature: 'Сервер', role: 'backend_engineer', expect: view.expect })
     assert.equal(res.status, 403)
   } finally {
     p.cleanup()
