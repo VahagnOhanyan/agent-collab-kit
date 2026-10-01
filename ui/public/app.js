@@ -5,7 +5,6 @@
 
 const main = document.getElementById('main')
 const toastBox = document.getElementById('toast')
-let stream = null
 let toastTimer = null
 let routeSeq = 0 // bumped on every navigation; a slower, older screen must not overwrite a newer one
 
@@ -556,60 +555,6 @@ async function waiting() {
       : empty('Очередь пуста'))
 }
 
-const EVENT_RU = {
-  'agent.status': 'агент: статус', 'agent.exit': 'агент вышел', 'agent.role_suspended': 'агент приостановил роль', 'agent.role_restored': 'роль возвращена',
-  'approval.requested': 'запрошено одобрение', 'approval.resolved': 'ответ на одобрение', 'approval.consumed': 'одобрение использовано',
-  'decision.created': 'открыт спор', 'decision.position': 'позиция в споре', 'decision.escalated': 'спор передан вам', 'decision.resolved': 'спор решён',
-  'message.sent': 'сообщение',
-  'review.requested': 'запрошено ревью', 'review.submitted': 'ревью сдано', 'review.released': 'ревью снято', 'review.handed_over': 'ревью передано',
-  'run.started': 'проверка запущена', 'run.finished': 'проверка завершена',
-  'task.created': 'задача создана', 'task.updated': 'задача обновлена', 'task.assigned': 'задача назначена', 'task.claimed': 'задача взята',
-  'task.released': 'задача отпущена', 'task.completed': 'задача завершена', 'task.handed_over': 'задача передана', 'task.lease_expired': 'аренда задачи истекла',
-  'task.files_claimed': 'файлы закреплены', 'task.delegated': 'делегирование', 'task.delegation_closed': 'делегирование закрыто'
-}
-
-async function events() {
-  const mine = routeSeq
-  const initial = await api('/api/events?limit=100')
-  // The owner may have moved on while the request was in flight; a superseded
-  // screen must not open a stream nobody will close.
-  if (mine !== routeSeq) return []
-  const box = el('div', { class: 'log', id: 'log', tabindex: '0', role: 'log', 'aria-label': 'Лента событий' })
-  const emptyNote = el('div', { class: 'empty', text: 'В журнале пока нет событий', hidden: initial.length > 0 })
-  const noMatch = el('div', { class: 'empty', text: 'Ни одно событие не подходит под фильтр', hidden: true })
-  let filter = ''
-  const rows = []
-  // Recomputed on every change — a filter typed earlier and an event arriving later both move it.
-  const updateNoMatch = () => {
-    noMatch.hidden = !filter || rows.length === 0 || rows.some((row) => !row.node.hidden)
-  }
-  // Newest on top: a new event is put first, so the owner sees it without scrolling; one read lower stays put.
-  const render = (event) => {
-    const node = el('details', { class: 'ev' },
-      el('summary', {}, el('span', { class: 't', text: when(event.ts, { seconds: true }) }), el('span', { class: 'ty', title: event.type, text: EVENT_RU[event.type] || event.type }), el('span', { text: [event.actor, event.subject?.id].filter((v, i, all) => v && all.indexOf(v) === i).join(' · ') })),
-      el('pre', { text: JSON.stringify(event.data ?? {}, null, 2) }))
-    rows.push({ node, text: `${event.type} ${EVENT_RU[event.type] || ''} ${event.actor} ${event.subject?.id} ${JSON.stringify(event.data ?? {})}`.toLowerCase() })
-    node.hidden = Boolean(filter) && !rows[rows.length - 1].text.includes(filter)
-    box.prepend(node)
-    emptyNote.hidden = true
-    updateNoMatch()
-  }
-  initial.forEach(render)
-  const search = el('input', { type: 'search', placeholder: 'Фильтр', 'aria-label': 'Фильтр событий', oninput: (e) => {
-    filter = e.target.value.trim().toLowerCase()
-    for (const row of rows) row.node.hidden = Boolean(filter) && !row.text.includes(filter)
-    updateNoMatch()
-  } })
-  closeStream()
-  stream = new EventSource(withProject(`/api/stream?t=${encodeURIComponent(PANEL_TOKEN)}`)) // EventSource cannot send headers
-  stream.onmessage = (message) => {
-    try { render(JSON.parse(message.data)) } catch { /* a malformed line is skipped, the stream goes on */ }
-  }
-  setConn('', 'подключаюсь…')
-  stream.onopen = () => setConn('ok', 'обновляется вживую')
-  stream.onerror = () => setConn('warn', 'связь потеряна, переподключаюсь…')
-  return page('Лента', 'События журнала, новые сверху. Нажмите на событие, чтобы увидеть подробности.', el('div', { class: 'toolbar' }, search), emptyNote, noMatch, box)
-}
 
 async function roster() {
   const data = await api('/api/roster')
@@ -1101,17 +1046,9 @@ async function connectHint() {
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
-const ROUTES = { overview, tasks, waiting, events, roster, kit, backlog, setup }
-
-function closeStream() {
-  if (stream) { stream.close(); stream = null }
-}
-// The live-stream state, shown only while a screen holds a stream (the feed); elsewhere there is nothing to report.
-function setConn(tone, text) {
-  document.getElementById('conn').hidden = !text
-  document.getElementById('conn-dot').className = `dot ${tone}`
-  document.getElementById('conn-text').textContent = text
-}
+// The raw event feed is gone from the panel (01.10.2026): it repeated what the task pages say, with ids instead of
+// names. The events stay in the journal; `collab log` reads them in a terminal. An old #/events link opens the overview.
+const ROUTES = { overview, tasks, waiting, roster, kit, backlog, setup }
 
 let badgeSeq = 0 // an older answer that arrives late must not overwrite a newer count
 
@@ -1128,12 +1065,10 @@ async function refreshBadge() {
   } catch { /* the badge is a convenience; the screens report real errors */ }
 }
 
-const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждёт вас', events: 'Лента', roster: 'Состав', kit: 'Скиллы и агенты', backlog: 'Бэклог мелочей', setup: 'Мастер настройки' }
+const TITLES = { overview: 'Обзор', tasks: 'Задачи', waiting: 'Ждёт вас', roster: 'Состав', kit: 'Скиллы и агенты', backlog: 'Бэклог мелочей', setup: 'Мастер настройки' }
 
 async function route() {
   const seq = ++routeSeq
-  closeStream()
-  setConn('', '')
   const [name = 'overview', ...rest] = location.hash.replace(/^#\//, '').split('?')[0].split('/')
   const screen = ROUTES[name] || overview
   for (const link of document.querySelectorAll('[data-route]')) {
@@ -1163,8 +1098,8 @@ if (new URL(location.href).searchParams.has('t') && tokenKept) {
   history.replaceState(null, '', location.pathname + (PROJECT ? `?project=${encodeURIComponent(PROJECT)}` : '') + location.hash)
 }
 
-// The switcher: the connected projects of the registry. Choosing one reloads the page on it — every screen and the
-// event stream then read that project's journal. A project with no journal yet is listed but cannot be chosen.
+// The switcher: the connected projects of the registry. Choosing one reloads the page on it — every screen then
+// reads that project's journal. A project with no journal yet is listed but cannot be chosen.
 async function drawProjectSwitch() {
   const box = document.getElementById('project-switch')
   if (!box) return
