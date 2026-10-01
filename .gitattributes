@@ -1,0 +1,3 @@
+# A Windows batch file is read line by line by cmd.exe, which mishandles labels and blocks with bare LF endings.
+*.cmd text eol=crlf
+*.sh text eol=lf
