@@ -177,7 +177,8 @@ function uninitialised(hint) {
 // ── screens ───────────────────────────────────────────────────────────────
 async function overview() {
   const data = await api('/api/overview')
-  if (!data.initialized) return page('Обзор', 'Журнал не найден', uninitialised(data.hint))
+  const connect = await connectHint()
+  if (!data.initialized) return page('Обзор', 'Журнал не найден', connect, uninitialised(data.hint))
   const s = data.status
   // status() counts every pending approval; an expired one can no longer be
   // granted, so it is shown apart instead of inflating "waiting for you".
@@ -200,6 +201,7 @@ async function overview() {
   return page(
     'Обзор',
     s.journal_root || data.journal_root,
+    connect,
     el('div', { class: 'grid' },
       tile(s.tasks.open, 'открытых задач', false, '#/tasks'),
       known
@@ -705,9 +707,7 @@ async function setup() {
       ...(preview.project_own_composition ? [el('div', { class: 'note warn', text: `У проекта ${preview.project_own_composition} свой состав агентов (collab/agents.json в его записи реестра): он заменяет состав машины, поэтому галочки и роли здесь меняют машину, но не этот проект.` })] : []),
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
-      el('h2', { id: 'step-6', text: '6. Проект' }),
-      projectCard(detect.project),
-      el('h2', { id: 'step-7', text: '7. Команды для терминала' }),
+      el('h2', { id: 'step-6', text: '6. Команды для терминала' }),
       el('p', { class: 'sub', text: 'Пока состав не записан, панель записывает его целиком; потом — кто в оркестрации (галочки шага 1), ведущего, режим ревью, язык текстов и роли агентов, всегда после вашего подтверждения. Команда для терминала — запасной путь.' }),
       applyBlock(preview.apply),
       ...preview.commands.map((c) => {
@@ -963,7 +963,7 @@ async function setup() {
   drawLead(); drawPreview()
   return page('Мастер настройки', 'Отметьте, кто работает в оркестрации, выберите ведущего, режим ревью и роли — и примените кнопкой. Агента без галочки в оркестрации нет, но он остаётся в каталоге.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
-    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Проект', 'Команды'].map((s, i) =>
+    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Команды'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
     el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox, vendors,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,
@@ -974,13 +974,18 @@ async function setup() {
     out, el('h2', { text: 'Проверка' }), checkOut)
 }
 
-function projectCard(p) {
-  if (!p) return empty('Нет данных о проекте')
-  const connected = Boolean(p.projectId)
-  return el('div', { class: 'card' },
-    el('div', { class: 'mono', text: p.journalRoot || p.cwd || '' }),
-    el('div', { class: 'chips' }, el('span', { class: `pill ${p.initialized ? 'ok' : 'warn'}`, text: p.initialized ? 'журнал есть' : 'журнала нет' }), el('span', { class: `pill ${connected ? 'ok' : 'warn'}`, text: connected ? `подключён как ${p.projectId}` : 'не подключён к набору' })),
-    connected ? null : [el('p', { class: 'sub', text: 'Посмотреть, что запишет подключение (ничего не пишет):' }), command('collab connect --dry-run', 'команду просмотра подключения'), el('div', { class: 'muted', text: 'Применить подключение — команда collab connect без --dry-run, в терминале проекта.' })])
+// Shown on the overview only while the panel looks at the folder it was started in and that folder is not
+// connected: a project picked in the switcher is connected by definition. The wizard configures the machine and
+// has no project of its own, so this lives here and not there.
+async function connectHint() {
+  if (PROJECT) return null
+  const data = await api('/api/projects').catch(() => null)
+  if (!data || data.started !== null) return null
+  return el('div', { class: 'note warn' },
+    el('div', { text: 'Эта папка не подключена к набору: агенты работают здесь без настроек проекта.' }),
+    el('p', { class: 'sub', text: 'Посмотреть, что запишет подключение (ничего не пишет):' }),
+    command('collab connect --dry-run', 'команду просмотра подключения'),
+    el('div', { class: 'muted', text: 'Подключить — команда collab connect без --dry-run, в терминале этой папки.' }))
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
