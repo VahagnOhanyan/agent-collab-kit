@@ -24,6 +24,13 @@ test('TAP verdict: requires exit 0, tests > 0, and zero fail/skipped/cancelled',
   assert.equal(lib.tapVerdict({ status: 0, stdout: 'ok 1 - x\n' }).ok, false)
   // indented subtest summaries do not count, only the top-level one
   assert.equal(lib.tapVerdict({ status: 0, stdout: `    # skipped 0\n${tap({ ...green, skipped: 2 })}` }).ok, false)
+  // a skip that names its platform is allowed and listed; one without that reason still fails the verdict
+  const platformSkip = 'ok 1 - links # SKIP platform: no file symlinks here\n'
+  const allowed = lib.tapVerdict({ status: 0, stdout: platformSkip + tap({ ...green, pass: 2, skipped: 1 }) })
+  assert.equal(allowed.ok, true, allowed.problems.join())
+  assert.deepEqual(allowed.platformSkips, [{ name: 'links', reason: 'platform: no file symlinks here' }])
+  const bare = lib.tapVerdict({ status: 0, stdout: 'ok 1 - links # SKIP\n' + tap({ ...green, pass: 2, skipped: 1 }) })
+  assert.match(bare.problems.join(), /without a "platform:" reason/)
 })
 
 test('Codex TOML rewrite: replaces only the collab section, bytes elsewhere untouched', () => {

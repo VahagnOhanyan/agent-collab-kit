@@ -11,7 +11,9 @@ import { loadBuiltinAgents } from '../src/registry.mjs'
 import { unadaptedVendors } from '../src/vendors.mjs'
 import { tempDir } from './helpers.mjs'
 
-const skipWindows = process.platform === 'win32'
+// The fake vendor CLIs these tests put on PATH are POSIX shell scripts. The reason starts with "platform:" — the
+// installer accepts a skipped kit test only when it says so (bin/agent-collab-kit-install, tapVerdict).
+const skipWindows = process.platform === 'win32' ? 'platform: the fake vendor CLIs are POSIX shell scripts' : false
 
 function machine() {
   const base = tempDir('collab-vendors-')

@@ -57,7 +57,7 @@ test('the file is not followed through a link and is not shown when oversized; d
     const secret = join(f.base, 'elsewhere.md')
     writeFileSync(secret, 'SOMETHING ELSE ON THE MACHINE')
     if (!linkForTest(secret, join(f.briefings, 'claude.project.md'))) {
-      t.skip('this Windows user may not create a link to a file (needs Developer Mode)')
+      t.skip('platform: this Windows user may not create a link to a file (needs Developer Mode)')
       return
     }
     writeFileSync(join(f.briefings, 'codex.project.md'), 'x'.repeat(PROJECT_BRIEFING_MAX + 1))

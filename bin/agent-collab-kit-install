@@ -742,9 +742,15 @@ function tapVerdict({ status, signal, stdout }) {
     if (counts[key] === undefined) problems.push(`no "# ${key}" line in the TAP summary`)
   }
   if (counts.tests === 0) problems.push('# tests 0 (nothing ran)')
-  for (const key of ['fail', 'cancelled', 'skipped']) if (counts[key] > 0) problems.push(`# ${key} ${counts[key]}`)
+  for (const key of ['fail', 'cancelled']) if (counts[key] > 0) problems.push(`# ${key} ${counts[key]}`)
+  // A skipped test is a failure — a suite that skips is not green — unless the test says the platform cannot run it:
+  // "# SKIP platform: …". Those are listed, never hidden. (Four such skips on Windows held up its install, 01.10.2026.)
+  const skips = [...String(stdout).matchAll(/^\s*ok \d+ - (.*?) # SKIP\s*(.*)$/gm)].map((m) => ({ name: m[1], reason: m[2].trim() }))
+  const platformSkips = skips.filter((s) => s.reason.startsWith('platform:'))
+  const otherSkips = (counts.skipped || 0) - platformSkips.length
+  if (otherSkips > 0) problems.push(`# skipped ${counts.skipped} (${otherSkips} without a "platform:" reason)`)
   const failing = [...String(stdout).matchAll(/^\s*not ok \d+ - (.*)$/gm)].map((m) => m[1]).slice(0, 10)
-  return { ok: problems.length === 0, counts, problems, failing }
+  return { ok: problems.length === 0, counts, problems, failing, platformSkips }
 }
 
 function runKitTests(dir, node) {
@@ -770,7 +776,9 @@ function runKitTests(dir, node) {
     )
   }
   const seconds = Math.round((Date.now() - started) / 1000)
-  out(`kit tests: ${verdict.counts.tests} tests, ${verdict.counts.pass} pass, 0 fail, 0 skipped, 0 cancelled (${seconds}s)`)
+  const skipped = verdict.platformSkips.length
+  out(`kit tests: ${verdict.counts.tests} tests, ${verdict.counts.pass} pass, 0 fail, ${skipped} skipped${skipped ? ' (this platform)' : ''}, 0 cancelled (${seconds}s)`)
+  for (const s of verdict.platformSkips) out(`  skipped here — ${s.name}: ${s.reason.replace(/^platform:\s*/, '')}`)
   return verdict.counts
 }
 
