@@ -728,6 +728,7 @@ async function setup() {
   const rolesSame = (a, b) => Object.keys(a).every((id) => [...(a[id] || [])].sort().join(',') === [...(b[id] || [])].sort().join(','))
   const out = el('div', {})
   const reviewNote = el('div', { class: 'note' })
+  const terminalBox = el('div', {})
   const checkOut = el('div', {})
 
   let previewSeq = 0
@@ -741,6 +742,7 @@ async function setup() {
     const seq = ++previewSeq
     lastPlan = null
     const show = (...nodes) => { out.replaceChildren(...nodes) }
+    terminalBox.replaceChildren()
     if (!chosen.size) {
       reviewNote.textContent = ''
       return show(el('div', { class: 'note warn', text: 'Отметьте хотя бы одного агента.' }))
@@ -772,6 +774,13 @@ async function setup() {
     const missingNote = missing.length
       ? el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` })
       : null
+    // `collab setup` writes what steps 1–3 choose (agents, lead, review mode), so it sits under step 3. When the
+    // panel can write the same thing itself, the command is only the fallback and stays folded.
+    terminalBox.replaceChildren(...preview.commands.filter((c) => c.command.startsWith('collab setup')).map((c) => {
+      const body = el('div', {}, command(c.command, 'команду настройки состава'), c.note ? el('div', { class: 'muted small', text: c.note }) : null)
+      const folded = detect.writable && preview.apply?.available
+      return el('details', { class: 'stale', open: folded ? undefined : true }, el('summary', { text: 'Шаги 1–3 из терминала (запасной путь)' }), body)
+    }))
     reviewNote.textContent = preview.plan.review_mode === 'single_vendor'
       ? 'Один вендор: ревью делает тот же вендор в отдельной сессии на другой модели, не слабее модели автора (та же модель или более слабая не подходит). Независимость ниже, это записывается в каждое ревью.'
       : 'Разные вендоры: ревью никогда не достаётся автору.'
@@ -781,15 +790,8 @@ async function setup() {
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
       el('h2', { id: 'step-6', text: '6. Применить' }),
-      el('p', { class: 'sub', text: 'Панель записывает выбранное только после вашего подтверждения; команда для терминала — запасной путь.' }),
+      el('p', { class: 'sub', text: 'Панель записывает выбранное только после вашего подтверждения.' }),
       applyBlock(preview.apply),
-      ...preview.commands.map((c) => {
-        const body = el('div', {}, el('div', { class: 'muted', text: c.title }), command(c.command), c.note ? el('div', { class: 'muted', text: c.note }) : null)
-        // The panel can write this composition itself: the terminal command is then only the fallback, folded away.
-        // It stays open whenever the button is not available (no right to write, a different set of agents, ...).
-        if (!c.command.startsWith('collab setup') || !detect.writable || !preview.apply?.available) return body
-        return el('details', {}, el('summary', { class: 'muted', text: 'То же самое из терминала (запасной путь)' }), body)
-      }),
       el('div', { class: 'toolbar' },
         el('button', { type: 'button', text: 'Проверить, что получилось', title: 'Нужно, только если вы меняли состав в терминале: после «Применить» и «Записать состав» проверка запускается сама', onclick: runCheck })))
   }
@@ -896,7 +898,7 @@ async function setup() {
   function applyBlock(info) {
     applyBox.replaceChildren()
     if (!detect.writable) {
-      applyBox.append(el('div', { class: 'note warn', text: 'Панель запущена без права записи (из оболочки агента или без терминала): пользуйтесь командами ниже.' }))
+      applyBox.append(el('div', { class: 'note warn', text: 'Панель запущена без права записи (из оболочки агента или без терминала). Шаги 1–3 можно записать командой под шагом 3; язык и роли — только из панели, открытой из вашего терминала.' }))
       return applyBox
     }
     if (!info?.available) {
@@ -1039,7 +1041,7 @@ async function setup() {
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
     el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox, vendors,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,
-    el('h2', { id: 'step-3', text: '3. Режим ревью' }), reviewNote, single,
+    el('h2', { id: 'step-3', text: '3. Режим ревью' }), reviewNote, single, terminalBox,
     el('h2', { id: 'step-4', text: '4. Язык текстов для вас' }),
     el('p', { class: 'sub', text: 'На этом языке агенты пишут то, что читаете вы: заголовки и описания задач, итоги, сообщения, ревью и находки. Код, пути, команды и цитаты остаются как есть. Уже записанные тексты не переводятся.' }),
     languageBox,

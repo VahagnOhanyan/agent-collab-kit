@@ -118,15 +118,13 @@ export function previewSetup({ agents, lead, singleVendor, roles = null, confirm
   const planned = planComposition({ catalog, roleDefs, include: agents, lead, singleVendor: singleVendor === '1' })
   if (!planned.ok) return planned
 
-  const project = describeProject({ cwd, registryDir })
   const setupTokens = ['collab', 'setup', '--agents', agents.join(','), '--lead', lead]
   if (singleVendor === '1') setupTokens.push('--single-vendor')
   // The panel speaks Russian, so the labels the screen shows are Russian; the
   // commands themselves are what the terminal understands and stay as they are.
+  // Connecting a project is not offered here: the wizard configures the machine, and the overview shows that hint
+  // for the folder it actually looks at.
   const commands = [{ title: 'Настроить состав на этой машине', command: command(setupTokens), note: 'Запустите в своём терминале: он спросит подтверждение.' }]
-  if (!project.projectId) {
-    commands.push({ title: 'Подключить этот проект', command: 'collab connect --dry-run', note: 'Сначала посмотрите, куда исполнителям будет разрешено писать, и только потом запускайте без --dry-run.' })
-  }
   return {
     ok: true,
     plan: {
