@@ -698,7 +698,7 @@ async function setup() {
       ? el('div', { class: 'note warn', text: `Не найдено на этой машине: ${missing.join(', ')}. Команда запишет такого агента в состав, но пользоваться им можно будет только после установки его программы.` })
       : null
     reviewNote.textContent = preview.plan.review_mode === 'single_vendor'
-      ? 'Один вендор: ревью делает тот же агент в отдельной сессии. Независимость ниже, это записывается в каждое ревью.'
+      ? 'Один вендор: ревью делает тот же вендор в отдельной сессии на другой модели, не слабее модели автора (та же модель или более слабая не подходит). Независимость ниже, это записывается в каждое ревью.'
       : 'Разные вендоры: ревью никогда не достаётся автору.'
     show(
       ...(missingNote ? [missingNote] : []),
@@ -774,7 +774,7 @@ async function setup() {
       box.append(el('div', { class: 'note bad', text: `Работу роли ${p.role} у ${p.author} некому проверить, кроме автора: дайте роль ${p.reviewer_role} другому агенту.` }))
     }
     for (const n of apply.independence?.notes || []) {
-      box.append(el('div', { class: 'note', text: `Один вендор: работу роли ${n.role} у ${n.author} проверит тот же агент на другой, не более слабой модели.` }))
+      box.append(el('div', { class: 'note', text: `Один вендор: работу роли ${n.role} у ${n.author} проверит ${n.same_vendor ? 'другой агент того же вендора' : 'тот же агент в отдельной сессии'} на другой, не более слабой модели.` }))
     }
     return box
   }
@@ -951,7 +951,7 @@ async function setup() {
       leadBox.append(el('label', { class: 'choice', for: `ld-${id}` }, radio, el('span', {}, el('strong', { text: id }), el('span', { class: 'muted', text: agent ? ` · ${agent.provider || ''}` : '' }))))
     }
   }
-  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же агент в отдельной сессии. Сами агенты остаются разными, меняется только режим ревью.' })))
+  const single = el('label', { class: 'choice' }, el('input', { type: 'checkbox', checked: forceSingle, onchange: (e) => { forceSingle = e.target.checked; drawPreview() } }), el('span', {}, el('span', { text: 'Ревью только внутри одного вендора (--single-vendor)' }), el('div', { class: 'muted', text: 'Включайте, если второго вендора нет или он недоступен: ревью сделает тот же вендор в отдельной сессии на другой, не более слабой модели. Сами агенты остаются разными, меняется только режим ревью.' })))
   // Step 4: which language the agents write the owner's texts in. A language written by hand that is not offered
   // here is still shown and kept, never silently dropped.
   const languageOptions = [['', 'Не задан — агенты пишут как привыкли'], ['ru', 'Русский'], ['en', 'Английский']]
