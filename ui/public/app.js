@@ -1083,8 +1083,18 @@ async function drawProjectSwitch() {
     if (!tokenStored) url.searchParams.set('t', PANEL_TOKEN)
     location.assign(url.pathname + url.search + location.hash)
   } }, options)
-  box.replaceChildren(el('label', { class: 'nav-title', for: 'project-select', text: 'Проект' }), select,
-    data.unusable ? el('div', { class: 'muted small', text: `${data.unusable}. Выберите другой проект.` }) : null)
+  // With nothing else to choose, a drop-down that switches nowhere looks broken: the project is shown as text, with how
+  // to connect another. (And replaceChildren prints null as the word "null", so absent parts are filtered out.)
+  const choosable = options.filter((option) => !option.disabled)
+  const body = choosable.length > 1 || data.unusable
+    ? [select]
+    : [el('div', { class: 'project-name', text: choosable[0]?.textContent || PROJECT || '—' }),
+        el('div', { class: 'muted small', text: 'Другой проект появится здесь после collab connect в его папке.' })]
+  box.replaceChildren(...[
+    el('div', { class: 'nav-title', text: 'Проект' }),
+    ...body,
+    data.unusable ? el('div', { class: 'muted small', text: `${data.unusable}. Выберите другой проект.` }) : null
+  ].filter(Boolean))
 }
 
 window.addEventListener('hashchange', route)
