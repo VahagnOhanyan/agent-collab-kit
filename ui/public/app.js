@@ -192,17 +192,30 @@ function uninitialised(hint) {
   ]
 }
 
-// Unfinished delegations on open tasks, newest first: five in view, the rest folded. The lead declares them; the
-// journal does not check them, which the tooltip says instead of the heading.
+// Unfinished delegations on open tasks. A delegation is not a task: it is the lead's note that a piece of a task went
+// to a subagent, closed with the subagent's outcome. So they are grouped under the task they belong to, and one left
+// open for more than a day is called what it almost always is — a note nobody closed, not work in progress.
+const DAY_MS = 24 * 60 * 60 * 1000
 function delegationsBlock(list) {
-  const sorted = [...list].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))
-  const row = (d) => el('a', { class: 'row', href: `#/tasks/${encodeURIComponent(d.task_id)}` },
-    el('span', { class: 'mono', text: `${d.by} → ${d.to}` }), el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }),
-    el('span', { class: 'grow', text: d.purpose || d.task_title || '' }), el('span', { class: 'muted small', text: when(d.started_at) }))
-  const rest = sorted.slice(5)
-  return [el('h2', { text: 'Делегирование', title: 'Записи ведущего о том, кому он отдал работу; журнал их не проверяет' }),
-    el('div', { class: 'list' }, sorted.slice(0, 5).map(row)),
-    rest.length ? el('details', { class: 'stale' }, el('summary', { text: `ещё ${rest.length}` }), el('div', { class: 'list' }, rest.map(row))) : null]
+  const byTask = new Map()
+  for (const d of list) {
+    if (!byTask.has(d.task_id)) byTask.set(d.task_id, { id: d.task_id, title: d.task_title, status: d.task_status, items: [] })
+    byTask.get(d.task_id).items.push(d)
+  }
+  const latest = (g) => g.items.reduce((m, d) => (String(d.started_at || '') > m ? String(d.started_at || '') : m), '')
+  const groups = [...byTask.values()].sort((a, b) => latest(b).localeCompare(latest(a)))
+  const age = (d) => (d.started_at ? Date.now() - new Date(d.started_at).getTime() : 0)
+  const row = (d) => el('div', { class: 'row' },
+    el('span', { class: 'mono', text: d.to }), el('span', { class: 'pill', text: `${d.model}${d.level ? ` · ${d.level}` : ''}` }),
+    el('span', { class: 'grow', text: d.purpose || '' }),
+    age(d) > DAY_MS ? el('span', { class: 'pill warn', title: `Отдано ${when(d.started_at)}`, text: `не закрыто ${Math.floor(age(d) / DAY_MS)} дн.` }) : el('span', { class: 'muted small', text: when(d.started_at) }))
+  return [
+    el('h2', { text: 'Поручения субагентам без итога' }),
+    el('p', { class: 'sub', text: `${list.length} ${list.length === 1 ? 'поручение' : 'поручений'} в ${groups.length} ${groups.length === 1 ? 'задаче' : 'задачах'}. Поручение — не задача: это запись ведущего, что часть задачи отдана субагенту; она закрывается итогом субагента. Старые незакрытые почти всегда просто забыли закрыть.` }),
+    ...groups.map((g) => el('div', { class: 'card' },
+      el('div', { class: 'row' }, pill(g.status), el('a', { class: 'grow', href: `#/tasks/${encodeURIComponent(g.id)}`, text: g.title || g.id }),
+        el('span', { class: 'muted small', text: `${g.items.length} без итога` })),
+      el('div', { class: 'list' }, [...g.items].sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || ''))).map(row))))]
 }
 
 // ── screens ───────────────────────────────────────────────────────────────

@@ -189,7 +189,7 @@ export function openDelegations(ctx) {
   for (const task of ctx.store.list('tasks', { filter: (t) => !TERMINAL.has(t.status) })) {
     for (const delegation of task.delegations || []) {
       if (delegation.finished_at) continue
-      live.push({ ...delegation, task_id: task.id, task_title: task.title })
+      live.push({ ...delegation, task_id: task.id, task_title: task.title, task_status: task.status })
     }
   }
   return live
