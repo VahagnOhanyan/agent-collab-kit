@@ -248,7 +248,7 @@ async function overview() {
         a.current_task_id ? el('a', { href: `#/tasks/${encodeURIComponent(a.current_task_id)}`, class: 'mono', text: a.current_task_id }) : null))),
     el('h2', { text: 'Задачи по статусам' }),
     Object.keys(s.tasks.by_status).length
-      ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('span', { class: `pill ${STATUS_TONE[k] || ''}`, title: k, text: `${statusText(k)}  ${v}` })))
+      ? el('div', { class: 'chips' }, Object.entries(s.tasks.by_status).map(([k, v]) => el('a', { class: `pill ${STATUS_TONE[k] || ''}`, href: `#/tasks?status=${encodeURIComponent(k)}`, title: `Открыть задачи со статусом «${statusText(k)}»`, text: `${statusText(k)}  ${v}` })))
       : empty('Задач пока нет'),
     s.delegations?.length ? delegationsBlock(s.delegations) : null,
     el('h2', { text: 'Рабочее дерево' }),
@@ -263,12 +263,21 @@ async function overview() {
 
 async function tasks(param) {
   if (param) return taskDetail(param)
-  const url = new URL(location.href)
-  const all = url.hash.includes('all=1')
-  // "All" means no filter at all: open=0 would mean "closed only", the opposite
-  // of what the link promises.
-  const list = await api(all ? '/api/tasks' : '/api/tasks?open=1')
-  const toggle = el('a', { href: all ? '#/tasks' : '#/tasks?all=1', text: all ? 'Только открытые' : 'Показать все, включая закрытые' })
+  const params = new URLSearchParams(location.hash.split('?')[1] || '')
+  const all = params.get('all') === '1'
+  const status = params.get('status') || ''
+  // Every task is read once; the filter — open, all, or one status (the same chips as on the overview) — is applied
+  // here, so each chip can say how many it holds.
+  const everything = await api('/api/tasks')
+  const isOpen = (t) => !TERMINAL.has(t.status)
+  const list = status ? everything.filter((t) => t.status === status) : all ? everything : everything.filter(isOpen)
+  const counts = {}
+  for (const t of everything) counts[t.status] = (counts[t.status] || 0) + 1
+  const chip = (href, text, on, tone = '') => el('a', { class: `pill ${tone}${on ? ' on' : ''}`, href, 'aria-current': on ? 'true' : undefined, text })
+  const toggle = el('div', { class: 'chips' },
+    chip('#/tasks', `открытые ${everything.filter(isOpen).length}`, !all && !status),
+    chip('#/tasks?all=1', `все ${everything.length}`, all && !status),
+    ...Object.entries(counts).map(([k, v]) => chip(`#/tasks?status=${encodeURIComponent(k)}`, `${statusText(k)} ${v}`, status === k, STATUS_TONE[k] || '')))
   // A long list is searched, not scrolled: id, title, owner and the status word
   // (raw or Russian) are all matched.
   // "Not started" and "in work" only repeat the status and the owner beside them; the line under the title is kept
@@ -284,7 +293,7 @@ async function tasks(param) {
       el('span', { class: 'mono muted', text: t.owner || 'без исполнителя' }))
   }))
   const none = el('div', { class: 'empty', text: 'Ничего не найдено', hidden: true })
-  const noun = all ? 'всего' : 'открытых'
+  const noun = status ? `«${statusText(status)}»` : all ? 'всего' : 'открытых'
   const count = el('span', { class: 'muted small', text: `${list.length} ${noun}` })
   const search = el('input', { type: 'search', placeholder: 'Поиск', title: 'Номер, название, исполнитель или статус', 'aria-label': 'Поиск по задачам: номер, название, исполнитель, статус', oninput: (e) => {
     const query = e.target.value.trim().toLowerCase()
@@ -296,7 +305,7 @@ async function tasks(param) {
     none.hidden = shown > 0
     count.textContent = query ? `${shown} из ${list.length}` : `${list.length} ${noun}`
   } })
-  return page('Задачи', all ? 'Все задачи' : 'Открытые задачи', el('div', { class: 'toolbar' }, search, count, toggle),
+  return page('Задачи', status ? `Задачи со статусом «${statusText(status)}»` : all ? 'Все задачи' : 'Открытые задачи', toggle, el('div', { class: 'toolbar' }, search, count),
     list.length ? el('div', { class: 'list' }, rows.map((row) => row.node)) : empty('Задач нет'), none)
 }
 
@@ -792,7 +801,6 @@ async function setup() {
       ...(preview.project_own_composition ? [el('div', { class: 'note warn', text: `У проекта ${preview.project_own_composition} свой состав агентов (collab/agents.json в его записи реестра): он заменяет состав машины, поэтому галочки и роли здесь меняют машину, но не этот проект.` })] : []),
       el('h2', { id: 'step-5', text: '5. Роли' }),
       rolesEditor(preview.plan, apply),
-      el('h2', { id: 'step-6', text: '6. Применить' }),
       applyBlock(preview.apply))
   }
 
@@ -1022,7 +1030,7 @@ async function setup() {
   drawLead(); drawPreview()
   return page('Мастер настройки', 'Отметьте, кто работает в оркестрации, выберите ведущего, режим ревью и роли — и примените кнопкой. Агента без галочки в оркестрации нет, но он остаётся в каталоге.',
     // A plain table of contents: it jumps to a step, it does not claim progress.
-    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли', 'Применить'].map((s, i) =>
+    el('nav', { class: 'steps', 'aria-label': 'Шаги мастера' }, ['Кто участвует', 'Ведущий', 'Режим ревью', 'Язык', 'Роли'].map((s, i) =>
       el('button', { type: 'button', class: 'chip', onclick: () => jump(`step-${i + 1}`), text: `${i + 1}. ${s}` }))),
     el('h2', { id: 'step-1', text: '1. Кто участвует' }), agentsBox, vendors,
     el('h2', { id: 'step-2', text: '2. Кто ведущий' }), el('p', { class: 'sub', text: 'Ведущий — агент, в котором вы сами работаете; он распределяет работу, остальные берут задачи через журнал.' }), leadBox,

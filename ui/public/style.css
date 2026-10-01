@@ -81,6 +81,9 @@ a.row:hover { background: var(--surface-2); text-decoration: none; }
 .pill.ok { color: var(--ok); }
 .pill.warn { color: var(--warn); }
 .pill.bad { color: var(--bad); }
+a.pill { text-decoration: none; padding: 2px 10px; }
+a.pill:hover { outline: 1px solid var(--line); }
+a.pill.on { outline: 2px solid var(--accent); color: var(--text); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 
 table { border-collapse: collapse; width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
