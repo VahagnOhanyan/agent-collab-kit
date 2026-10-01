@@ -905,34 +905,12 @@ async function setup() {
       applyBox.append(el('div', { class: 'note warn', text: info?.reason || 'Применить отсюда нельзя.' }))
       return applyBox
     }
-    // Putting the saved composition back is a write like any other: what returns is shown first, and a second click
-    // confirms it. Only the lead and the review mode of the saved composition come back.
-    const back = info.revert?.available ? (() => {
-      const row = el('div', { class: 'toolbar', hidden: true })
-      const undo = async () => {
-        row.querySelectorAll('button').forEach((b) => { b.disabled = true })
-        try {
-          const done = await post('/api/setup/revert', { expect: info.revert.expect })
-          await finish(`Прежний состав возвращён.${handoverText(done?.handover)}`)
-        } catch (error) {
-          row.querySelectorAll('button').forEach((b) => { b.disabled = false })
-          applyBox.append(el('div', { class: 'note bad', text: error.message }))
-        }
-      }
-      row.append(el('span', { text: 'Отменить прошлое изменение?' }),
-        el('button', { type: 'button', class: 'primary', text: 'Да, отменить', onclick: undo }),
-        el('button', { type: 'button', text: 'Нет', onclick: () => { row.hidden = true } }))
-      return el('div', { class: 'card' },
-        el('strong', { text: 'Отменить прошлое изменение' }),
-        el('div', { class: 'muted', text: `Вернётся: ${info.revert.changes.map(changeText).join('; ')}.` }),
-        el('div', { class: 'toolbar' }, el('button', { type: 'button', text: 'Отменить', onclick: () => { row.hidden = false } })), row)
-    })() : null
     // Nothing chosen differs from what is written: the button stays, greyed, and says why — no separate sentence.
+    // An earlier change is undone the same way it was made: tick the old choice and apply.
     if (!info.changes.length) {
       applyBox.append(
         el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', disabled: true, text: 'Применить' }),
-          el('span', { class: 'muted', text: 'Нечего применять: выбор выше совпадает с тем, что записано.' })),
-        ...(back ? [back] : []))
+          el('span', { class: 'muted', text: 'Нечего применять: выбор выше совпадает с тем, что записано.' })))
       return applyBox
     }
     const confirmRow = el('div', { class: 'toolbar', hidden: true })
@@ -952,7 +930,7 @@ async function setup() {
     confirmRow.append(
       el('span', { text: info.first_setup
         ? 'Записать состав на эту машину? Панель создаст agents.json и памятки агентов; вернуть отсюда нельзя — файл удаляется вручную.'
-        : 'Записать это на машину? Прежний состав сохранится, его можно вернуть.' }),
+        : 'Записать это на машину?' }),
       el('button', { type: 'button', class: 'primary', text: 'Да, записать', onclick: apply }),
       el('button', { type: 'button', text: 'Отмена', onclick: () => { confirmRow.hidden = true } }))
     applyBox.append(
@@ -962,7 +940,7 @@ async function setup() {
           : el('div', { class: 'row' }, el('span', { text: `${FIELD_RU[c.field] || c.field}${c.agent ? ` ${c.agent}` : ''}: ` }), el('span', { class: 'muted', text: valueRu(c.field, c.from) }), el('span', { text: ' → ' }), el('strong', { text: valueRu(c.field, c.to) })))),
       ...removedNotes(info),
       el('div', { class: 'toolbar' }, el('button', { type: 'button', class: 'primary', text: info.first_setup ? 'Записать состав' : 'Применить', onclick: () => { confirmRow.hidden = false } })),
-      confirmRow, ...(back ? [back] : []))
+      confirmRow)
     return applyBox
   }
 
