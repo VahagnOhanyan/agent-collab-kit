@@ -8,14 +8,29 @@
 // as the unverified local-cache evidence they are; and no price, context width or capability is
 // guessed for either. The catalog alone still validates — the rest of the registry is covered
 // elsewhere, not mirrored here.
+//
+// The second half is the owner's PROPOSED composition (docs/minimax-grok-composition.proposed.json):
+// all three agents on this machine, every one of them able to implement, research, decide
+// architecture and review. It is applied here the way `collab setup` applies one — written into a
+// temporary machine directory, briefings and all, then read back through loadConfig — so what is
+// checked is the shipped file and not a fixture resembling it. What must hold: it validates; the
+// lead and review mode are the ones the owner chose; nobody holds a role its capabilities do not
+// support and the flexible kinds (implementation, research, architecture, review) are all covered
+// for everybody; and no agent is ever the only reviewer of its own change. What is deliberately
+// NOT checked: that it has been activated anywhere, that any of these clients has run.
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { adapterFor } from '../src/adapters/index.mjs'
-import { agentLaunchable } from '../src/composition.mjs'
-import { briefingPath, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
+import { agentLaunchable, rolesItCanHold, writeComposition } from '../src/composition.mjs'
+import { independenceReport } from '../src/independence.mjs'
+import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
+import { briefingPath, checkBriefings, createRegistry, loadConfig, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
+import { tempDir } from './helpers.mjs'
 
 const config = loadConfigFrom()
 const agentOf = (id) => config.agents.agents.find((a) => a.id === id)
@@ -112,4 +127,87 @@ test('the catalog with both of them is still a registry that validates', () => {
   assert.ok(validateRegistry(copy).problems.some((p) => p.includes('cannot combine fallback_policy')))
   model.fallback = null
   assert.deepEqual(validateRegistry(copy).problems, [])
+})
+
+// ── the owner's proposed composition: three agents, no fixed division of labour ──
+
+const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const PROPOSED = join(KIT_ROOT, 'docs', 'minimax-grok-composition.proposed.json')
+const ROSTER = ['codex', 'minimax', 'grok']
+
+// The four kinds of work a flexible composition has to leave everybody able to do, by the shape of the
+// role catalog rather than by a list of ids: the lead, the routine implementer and the reviewer are
+// the same three agents here, so each kind must reach each of them.
+const KINDS = {
+  architecture: ['architect'],
+  implementation: ['software_engineer', 'ios_engineer', 'backend_engineer', 'product_engineer', 'test_engineer'],
+  research: ['researcher'],
+  review: ['code_reviewer', 'security_reviewer', 'ux_reviewer']
+}
+
+// The file the owner would apply, as a composition this machine would really hold.
+function applied() {
+  const base = tempDir('collab-proposed-composition-')
+  const dir = join(base, 'machine')
+  const proposed = JSON.parse(readFileSync(PROPOSED, 'utf8'))
+  // The real write path, not a hand-made directory: agents.json plus the briefings it points at.
+  writeComposition(dir, proposed, { catalogDir: DEFAULT_CONFIG_DIR })
+  const loaded = loadConfig({ machineDir: dir, registryDir: join(base, 'no-registry') })
+  return { config: loaded, registry: createRegistry(loaded), cleanup: () => rmSync(base, { recursive: true, force: true }) }
+}
+
+test('the proposed composition is a registry that validates once it is a machine composition', () => {
+  const world = applied()
+  try {
+    assert.deepEqual(validateRegistry(world.config).problems, [], 'the file must be applicable as it stands')
+    assert.deepEqual(checkBriefings(world.config), [], 'every briefing_file resolves to a file that is there')
+    assert.deepEqual(world.config.agents.agents.map((a) => a.id), ROSTER)
+    assert.equal(world.config.agents.lead, 'codex')
+    assert.equal(world.config.agents.review_mode, 'cross_vendor', 'cross_vendor is what makes self-review unreachable')
+    // Adapters are not the owner's to write: the composition carries none and the built-in ones stay in force.
+    for (const agent of world.registry.agents()) {
+      const builtin = config.agents.agents.find((a) => a.id === agent.id)
+      assert.deepEqual(agent.adapter, builtin.adapter, `${agent.id} runs on its built-in adapter, whatever the composition says`)
+    }
+  } finally {
+    world.cleanup()
+  }
+})
+
+test('all three can implement, research, decide architecture and review, and nothing more than their capabilities support', () => {
+  const world = applied()
+  try {
+    for (const agent of world.registry.agents()) {
+      for (const [kind, roles] of Object.entries(KINDS)) {
+        for (const role of roles) {
+          assert.ok(agent.roles.includes(role), `${agent.id} cannot do ${kind} (${role}) — the point of the proposal`)
+        }
+      }
+      const permitted = new Set(rolesItCanHold(agent, world.config.roles.roles))
+      for (const role of agent.roles) {
+        assert.ok(permitted.has(role), `${agent.id} holds ${role}, which its capabilities do not support`)
+      }
+    }
+  } finally {
+    world.cleanup()
+  }
+})
+
+test('no agent is ever its own reviewer: every author has another vendor to send the review to', () => {
+  const world = applied()
+  try {
+    const report = independenceReport({ agents: world.config.agents.agents, roleDefs: world.config.roles.roles })
+    assert.deepEqual(report.problems, [], 'every author role has another holder of its reviewing roles')
+    assert.equal(report.single_vendor, false, 'three providers, so a same-vendor review is not the fallback being relied on')
+    for (const author of world.registry.agents()) {
+      const candidates = world.registry.find({ role: 'code_reviewer', exclude: [author.id] })
+      assert.deepEqual(
+        candidates.map((a) => a.id).sort(),
+        ROSTER.filter((id) => id !== author.id).sort(),
+        `${author.id}'s work can be reviewed by either of the other two, by nobody else and by not itself`
+      )
+    }
+  } finally {
+    world.cleanup()
+  }
 })
