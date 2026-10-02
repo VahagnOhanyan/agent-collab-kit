@@ -11,22 +11,25 @@
 <a class="skip" href="#main">К содержимому</a>
 <div class="shell">
   <nav class="side" aria-label="Разделы">
-    <div class="brand">Agent Collab Kit</div>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="17" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="17" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.6 9.6l1.2 4.6M14.4 9.6l-1.2 4.6M10.2 8h3.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>Agent Collab Kit</span>
+    </div>
     <div class="project-switch" id="project-switch"></div>
     <div class="nav-group">
-      <a href="#/overview" data-route="overview">Обзор</a>
-      <a href="#/tasks" data-route="tasks">Задачи</a>
-      <a href="#/waiting" data-route="waiting">Ждёт вас <span class="count" id="waiting-count" hidden></span></a>
+      <a href="#/overview" data-route="overview"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span class="label">Обзор</span></a>
+      <a href="#/tasks" data-route="tasks"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M3.8 6.5l1.2 1.2 2.2-2.4M3.8 12l1.2 1.2 2.2-2.4M3.8 17.5l1.2 1.2 2.2-2.4"/></svg><span class="label">Задачи</span></a>
+      <a href="#/waiting" data-route="waiting"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span class="label">Ждёт вас</span> <span class="count" id="waiting-count" hidden></span></a>
     </div>
     <div class="nav-title">Система</div>
     <div class="nav-group">
-      <a href="#/roster" data-route="roster">Состав</a>
-      <a href="#/kit" data-route="kit">Скиллы и агенты</a>
-      <a href="#/backlog" data-route="backlog">Бэклог мелочей</a>
+      <a href="#/roster" data-route="roster"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.5"/><path d="M16 14.2c2.5-.2 4.2 1.4 4.6 4"/></svg><span class="label">Состав</span></a>
+      <a href="#/kit" data-route="kit"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l8 4.5-8 4.5-8-4.5z"/><path d="M4 12.5l8 4.5 8-4.5"/><path d="M4 16.5l8 4.5 8-4.5"/></svg><span class="label">Скиллы и агенты</span></a>
+      <a href="#/backlog" data-route="backlog"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span class="label">Бэклог мелочей</span></a>
     </div>
     <div class="nav-title">Настройка</div>
     <div class="nav-group">
-      <a href="#/setup" data-route="setup">Мастер настройки</a>
+      <a href="#/setup" data-route="setup"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg><span class="label">Мастер настройки</span></a>
     </div>
   </nav>
   <main id="main" tabindex="-1" aria-live="polite"></main>

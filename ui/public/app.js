@@ -104,7 +104,8 @@ async function copy(text) {
 const STATUS_TONE = {
   completed: 'ok', approved: 'ok', available: 'ok', granted: 'ok',
   blocked: 'bad', failed: 'bad', rejected: 'bad', offline: 'muted',
-  changes_requested: 'warn', waiting_for_user: 'warn', waiting_for_agent: 'warn', pending: 'warn', busy: 'warn', waiting: 'warn'
+  changes_requested: 'warn', waiting_for_user: 'warn', waiting_for_agent: 'warn', pending: 'warn', busy: 'warn', waiting: 'warn',
+  in_progress: 'info', review: 'info', running: 'info', cancelled: 'muted', released: 'muted'
 }
 // Values the ledger stores as English words are shown in Russian; the raw value
 // stays in the tooltip, because it is what the terminal commands and logs use.
