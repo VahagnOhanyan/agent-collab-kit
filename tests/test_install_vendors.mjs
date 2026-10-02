@@ -259,6 +259,8 @@ const geminiEntry = (home) => ({
 
 test('Gemini config: created fresh with disabled:false, an existing unrelated server and disabled:true are kept', () => {
   const W = makeWorld('gemini-fresh')
+  // A local profile marks this client as present without requiring a real agy CLI.
+  mkdirSync(join(W.home, '.gemini'))
   let r = W.run(['--source', world.source, '--skip-kit-tests'])
   assert.equal(r.status, 0, r.all)
   assert.match(r.stdout, /gemini: created .*mcp_config\.json with mcpServers\.collab/)
@@ -395,6 +397,7 @@ test('a vendor with no CLI but a pre-existing config is still kept in sync, not 
 
 test('dry-run runs the checks and the smoke test but changes nothing', () => {
   const W = makeWorld('dry')
+  mkdirSync(join(W.home, '.gemini'))
   const before = W.snapshot()
   const r = W.run(['--source', world.source, '--skip-kit-tests', '--dry-run'])
   assert.equal(r.status, 0, r.all)

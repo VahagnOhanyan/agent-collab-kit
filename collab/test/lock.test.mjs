@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { acquireSync, isStale, readOwner, releaseSync, withLock } from '../src/lock.mjs'
+import { acquireSync, isStale, readOwner, releaseSync, trackedLockPaths, withLock } from '../src/lock.mjs'
 import { CODES } from '../src/errors.mjs'
 import { removeTree } from './helpers.mjs'
 
@@ -195,6 +195,69 @@ test('two callers inside one process queue instead of racing', async () => {
     ])
     // Whoever goes first, the sections must not interleave.
     assert.deepEqual(order.slice(0, 2), order[0] === 'a-in' ? ['a-in', 'a-out'] : ['b-in', 'b-out'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The queue is a promise chain in a Map, and the key has to be deleted by whoever
+// queued last — otherwise every state root this process ever writes leaves behind
+// a settled promise and a closure for good. The bug it guards: the map held
+// `previous.then(() => mine)` while the cleanup compared `mine`, so the two were
+// never the same object and the delete never ran.
+
+test('the in-process queue forgets a path once its last waiter is done', async () => {
+  const { dir, lock } = scratch()
+  try {
+    let insideQueue = false
+    await withLock(lock, async () => {
+      insideQueue = trackedLockPaths().includes(lock)
+    })
+    assert.equal(insideQueue, true, 'the path is tracked while a section runs, so the check below is not vacuous')
+    assert.equal(trackedLockPaths().includes(lock), false, 'a finished waiter must not leave its key behind')
+    // A second round over the same path, then over fresh ones: the map must not
+    // grow an entry per use either.
+    for (let i = 0; i < 3; i += 1) await withLock(lock, async () => i)
+    for (let i = 0; i < 5; i += 1) await withLock(join(dir, `other-${i}.lock`), async () => i)
+    assert.deepEqual(trackedLockPaths(), [], 'nothing stays tracked once every section has returned')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a section that throws releases the key and does not poison the queue', async () => {
+  const { dir, lock } = scratch()
+  try {
+    await assert.rejects(withLock(lock, async () => {
+      throw new Error('the write failed')
+    }), /the write failed/)
+    assert.equal(trackedLockPaths().includes(lock), false, 'a rejected section still leaves the queue')
+
+    // The next caller must not queue behind a promise nobody will ever resolve —
+    // and must not be refused as if the lock were still held.
+    assert.equal(await withLock(lock, async () => 'after the failure'), 'after the failure')
+    assert.equal(trackedLockPaths().includes(lock), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an early waiter does not drop the waiters queued behind it', async () => {
+  // The cleanup compares the stored promise with its own, so a waiter that is not
+  // last must leave the key alone. If it deleted instead, the caller after it would
+  // start from an empty queue and two sections would overlap.
+  const { dir, lock } = scratch()
+  const order = []
+  const section = (name, holdMs) =>
+    withLock(lock, async () => {
+      order.push(`${name}-in`)
+      await new Promise((r) => setTimeout(r, holdMs))
+      order.push(`${name}-out`)
+    })
+  try {
+    await Promise.all([section('a', 40), section('b', 20), section('c', 0)])
+    assert.deepEqual(order, ['a-in', 'a-out', 'b-in', 'b-out', 'c-in', 'c-out'], 'three sections, no overlap, in order')
+    assert.deepEqual(trackedLockPaths(), [], 'the last waiter is the one that clears the key')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

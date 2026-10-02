@@ -162,20 +162,36 @@ export function touchSync(handle) {
 // instead of race. Keyed by path so separate state roots (tests) do not share it.
 const queues = new Map()
 
+// Read-only, for the test that proves the map above does not keep an entry per
+// state root for the life of the process. It hands out the paths, never the map,
+// and nothing in the layer calls it.
+export function trackedLockPaths() {
+  return [...queues.keys()]
+}
+
 export async function withLock(lockPath, fn, options = {}) {
   const previous = queues.get(lockPath) || Promise.resolve()
   let release
   const mine = new Promise((resolve) => {
     release = resolve
   })
-  queues.set(lockPath, previous.then(() => mine))
+  // The promise stored under the path must be the one the finally block compares
+  // against, or nothing is ever deleted. Storing `previous.then(() => mine)` — a
+  // different promise — made `queues.get(lockPath) === mine` false on every run,
+  // so the entry survived the last waiter and the map grew by one settled promise
+  // and its closure per state root the process ever touched.
+  const queued = previous.then(() => mine)
+  queues.set(lockPath, queued)
   await previous.catch(() => {})
 
   try {
     return await withFileLock(lockPath, fn, options)
   } finally {
     release()
-    if (queues.get(lockPath) === mine) queues.delete(lockPath)
+    // Only the last waiter may clear the key: if someone queued behind us, the map
+    // already holds *their* promise and deleting it would hand the next caller an
+    // empty queue, running two sections at once.
+    if (queues.get(lockPath) === queued) queues.delete(lockPath)
   }
 }
 

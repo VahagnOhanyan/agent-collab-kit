@@ -24,15 +24,26 @@ jobs:
       # The collab library's own suite — the part of the layer every platform
       # runs identically, including the Windows-specific link-strategy and
       # PATHEXT-resolution branches added for portability.
+      #
+      # The files are named, not handed over as a directory: `node --test
+      # collab/test/` used to mean "everything under it" and Node 22 reads the
+      # path as a file instead (MODULE_NOT_FOUND, no test run at all), which is
+      # what stopped the installer's own kit-test step. shell: bash on every
+      # runner is what expands the glob — windows-latest's default shell is
+      # PowerShell, which passes `*.test.mjs` through unexpanded, and Node 20
+      # does not glob for us either. (The installer itself needs no shell at
+      # all: bin/agent-collab-kit-install enumerates the same files in Node.)
       - name: collab test suite
-        working-directory: collab
-        run: node --test test/
+        shell: bash
+        run: node --test collab/test/*.test.mjs ui/test/*.test.mjs
 
       # The installer's own suite — the only place that actually exercises a
       # real install end to end (git archive, tar extraction, the release
       # symlink/junction switch, the link strategy, Codex/Gemini config
-      # rewriting) rather than just unit-testing pieces of it.
+      # rewriting) rather than just unit-testing pieces of it. Same reason for
+      # the explicit shell and the glob as above.
       - name: installer test suite
+        shell: bash
         run: node --test tests/test_install_*.mjs
         env:
           AGENT_COLLAB_KIT_TEST_SOURCE: ${{ github.workspace }}

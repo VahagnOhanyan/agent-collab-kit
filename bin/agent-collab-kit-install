@@ -758,10 +758,49 @@ function tapVerdict({ status, signal, stdout }) {
   return { ok: problems.length === 0, counts, problems, failing, platformSkips }
 }
 
+// Node 22.22.0 treats `node --test collab/test/` as a module path and fails
+// before running tests. Enumerate files in Node and pass argv without relying
+// on shell glob expansion, which also keeps installation portable to Windows.
+const KIT_TEST_DIR = 'collab/test'
+const KIT_TEST_SUFFIX = '.test.mjs'
+
+// Every *.test.mjs under `rel`, relative to `root`, forward-slashed and sorted, so
+// two runs of the same commit build the same argv. Subdirectories are walked: a
+// suite split into collab/test/<part>/ is still a suite. Paths come back relative
+// to `root` because that is the cwd the run uses.
+function listTestFiles(root, rel = KIT_TEST_DIR) {
+  const found = []
+  const walk = (dir) => {
+    let entries
+    try {
+      entries = fs.readdirSync(path.join(root, dir), { withFileTypes: true })
+    } catch (error) {
+      throw new InstallError(`could not read ${dir} of the build copy to find the kit's tests: ${error.message}`)
+    }
+    for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const relPath = `${dir}/${entry.name}`
+      if (entry.isDirectory()) walk(relPath)
+      else if (entry.isFile() && entry.name.endsWith(KIT_TEST_SUFFIX)) found.push(relPath)
+    }
+  }
+  walk(rel)
+  return found
+}
+
+// The argv of the kit's own test run, or a clear refusal: a build copy with no
+// test file in it is a broken release, not a green one, and "no "# tests" line in
+// the TAP summary" says nothing about where to look.
+function kitTestArgv(root) {
+  const files = listTestFiles(root)
+  if (!files.length) throw new InstallError(`no *${KIT_TEST_SUFFIX} test file under ${KIT_TEST_DIR} in the build copy: the kit cannot be installed without its own tests`)
+  return ['--test', ...files]
+}
+
 function runKitTests(dir, node) {
-  out('kit tests: node --test collab/test/ (in the build copy; about a minute)…')
+  const argv = kitTestArgv(dir)
+  out(`kit tests: node --test (${argv.length - 1} files under ${KIT_TEST_DIR}, in the build copy; about a minute)…`)
   const started = Date.now()
-  const r = spawnSync(node, ['--test', 'collab/test/'], {
+  const r = spawnSync(node, argv, {
     cwd: dir,
     env: childEnv(),
     encoding: 'utf8',
@@ -3324,6 +3363,15 @@ module.exports = {
   resolveClaudeConfigDirs,
   assertConfigDirsInside,
   tapVerdict,
+  // Exported for tests only: the kit-test run is a minute of child process inside
+  // an install, and the argv it builds is the whole of the MODULE_NOT_FOUND
+  // regression (Node 22 refuses a directory argument). listTestFiles and
+  // kitTestArgv are pure functions of a directory, so a test can check the
+  // enumeration; runKitTests is exported because it is the caller that has to keep
+  // using that argv, and only running it proves which one it passes.
+  listTestFiles,
+  kitTestArgv,
+  runKitTests,
   rewriteCodexToml,
   codexBlock,
   parseClaudeGet,
