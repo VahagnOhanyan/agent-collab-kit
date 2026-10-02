@@ -1,0 +1,84 @@
+{
+  "//": "This person's composition: which agents they have, who leads, who holds which role. Written by `collab setup`, editable by hand; a project's own agents.json narrows it.",
+  "lead": "codex",
+  "review_mode": "cross_vendor",
+  "defaults": {
+    "lease_seconds": 3600,
+    "heartbeat_stale_seconds": 900
+  },
+  "agents": [
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "provider": "openai",
+      "briefing_file": "briefings/codex.md",
+      "briefing": "You are the Codex CLI agent on this project. whoami says whether you lead (you plan, route, integrate and report to the owner) or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities (the owner confirms it). If you cannot do one of your roles here, suspend_role. Full instructions: collab brief codex.",
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "run_application",
+        "use_mcp_tool",
+        "research",
+        "record_decision"
+      ],
+      "roles": [
+        "architect",
+        "product_engineer",
+        "researcher"
+      ]
+    },
+    {
+      "id": "minimax",
+      "name": "MiniMax (the owner's minimax-dev launcher)",
+      "provider": "minimax",
+      "briefing_file": "briefings/minimax.md",
+      "briefing": "You are the MiniMax agent (the minimax-dev launcher) on this project, a different vendor from the rest of the roster — which is what makes an independent opinion worth having. whoami says whether you lead or take work and reviews from the lead: the person's composition decides, not this catalog. Your work arrives as a bounded task in a task file, not as a conversation: do the task it names, keep to it, and say what you did not check. Dirty files that no task claims are somebody else's work in progress — never fold them into yours. Ask for an independent review by ROLE (code_reviewer) before you call the work done. Full instructions: collab brief minimax.",
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "run_application",
+        "use_mcp_tool",
+        "research",
+        "record_decision"
+      ],
+      "roles": [
+        "software_engineer",
+        "ios_engineer",
+        "backend_engineer",
+        "test_engineer"
+      ]
+    },
+    {
+      "id": "grok",
+      "name": "Grok (the official xAI CLI)",
+      "provider": "xai",
+      "briefing_file": "briefings/grok.md",
+      "briefing": "You are the Grok agent (the official xAI CLI) on this project, a different vendor from the rest of the roster — which is the point of you, since an error that does not correlate with the author's is worth more than a second careful look by the same model. whoami says which roles you hold here; the person's composition decides, not this catalog, and being registered as a general client is not a statement about what to do in a given run. A review is a review: read-only, no edits, no delegation, no paid run started without the owner's authority. Answer with submit_review and say what you checked and how you could have been wrong. Full instructions: collab brief grok.",
+      "capabilities": [
+        "read_code",
+        "modify_code",
+        "run_tests",
+        "run_gates",
+        "review_code",
+        "inspect_git",
+        "run_application",
+        "use_mcp_tool",
+        "research",
+        "record_decision"
+      ],
+      "roles": [
+        "code_reviewer",
+        "security_reviewer",
+        "ux_reviewer"
+      ]
+    }
+  ]
+}

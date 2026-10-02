@@ -51,6 +51,18 @@
       "verified": "owner",
       "verified_at": "2026-09-15",
       "note": "The npm package @google/gemini-cli is dead for this purpose — Google cut free/Pro/Ultra individual access to it on 2026-06-18. The working client is Antigravity CLI (`agy`), which has no local catalog file for `doctor` to check automatically; `agy models` was run by hand on 2026-09-15 and its output copied below, with a real headless call confirmed against collab's own whoami on the cheapest rung (gemini-3.6-flash-low)."
+    },
+    "minimax": {
+      "agent": "minimax",
+      "catalog_file": null,
+      "verified": "unverified",
+      "note": "There is no catalog file here to check against, so `doctor` reports this vendor as unverifiable rather than ok. `minimax-dev --check` (2026-10-02) confirmed the one thing it can: the launcher accepts the route minimax-coding-plan/MiniMax-M3.1-Flash-Preview. That is the launcher agreeing with a request, NOT an upstream catalog confirming the id, so it is recorded as unverified and nobody should read more into it."
+    },
+    "xai": {
+      "agent": "grok",
+      "catalog_file": null,
+      "verified": "unverified",
+      "note": "The ids below come from the account's own saved catalog on disk, dated 2026-09-18, and nothing else. Refreshing it failed with 401 \u2014 the saved login is expired \u2014 so `doctor` reports this vendor as unverifiable rather than ok, and neither id is claimed to be reachable today. Nobody has read the account's credentials to check it, and the price, the context width and what each id can do are deliberately left blank rather than guessed."
     }
   },
   "models": [
@@ -295,6 +307,43 @@
       "latency_class": "slow",
       "fallback": "gemini-pro-low",
       "note": "The critical rung — arbitration and the hardest independent review. Confirmed live 2026-09-15 via `agy models`; runs on the owner's Google AI Pro subscription, with overage credits at Google's Enterprise Agent Platform pricing above the plan's baseline quota."
+    },
+    {
+      "ref": "minimax-worker",
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "vendor": "minimax",
+      "agent": "minimax",
+      "level": "L1",
+      "max_level": "L2",
+      "maturity": "preview",
+      "verified": "unverified",
+      "fallback": null,
+      "note": "Pinned preview route for bounded implementation. No alternate MiniMax route or GPT fallback is authorized. If the route fails, stop and report to the owner; never switch models automatically. Launcher validation is confirmed; independent upstream catalog verification is pending.",
+      "fallback_policy": "stop"
+    },
+    {
+      "ref": "grok-basic",
+      "id": "grok-4.5",
+      "vendor": "xai",
+      "agent": "grok",
+      "level": "L1",
+      "max_level": "L2",
+      "maturity": "unverified",
+      "verified": "unverified",
+      "fallback": null,
+      "note": "Ordinary implementation and ordinary review on a different vendor, which is where its value is: an error that does not correlate with the author's. The id was read out of the account's own saved catalog on disk, dated 2026-09-18, and from nowhere else; the login that would confirm it is expired (refresh 401), so this is unverified twice over \u2014 nobody has watched this model run, and it may not be reachable on that account at all. Maturity is `unverified` rather than a guess, and no cost, context width or capability is recorded: those are exactly the fields a registry starts lying in. There is no fallback to another vendor's model."
+    },
+    {
+      "ref": "grok-review",
+      "id": "grok-4.6",
+      "vendor": "xai",
+      "agent": "grok",
+      "level": "L2",
+      "max_level": "L3",
+      "maturity": "unverified",
+      "verified": "unverified",
+      "fallback": null,
+      "note": "The deeper rung \u2014 independent review, cross-module reasoning, the work whose cost of being wrong is real. The level says how hard the work has to be to belong here; it says nothing about what this account can reach. Same evidence, same absence of it: an id from a saved catalog dated 2026-09-18, an expired login, no live call, no vendor catalog to drift against. A review on this rung still runs read-only with subagents off and no permission bypass \u2014 that is a property of the invocation the owner starts, not a limit of the model or of the CLI."
     }
   ]
 }

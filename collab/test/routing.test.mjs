@@ -20,7 +20,8 @@ import { loadConfigFrom, validateModels, validateRegistry } from '../src/registr
 import { apis, sandbox, tempDir, writeJson } from './helpers.mjs'
 
 const builtinModels = () => JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'models.json'), 'utf8'))
-const agentIds = new Set(['claude', 'codex', 'gemini'])
+const builtinModelsAgents = () => JSON.parse(readFileSync(join(DEFAULT_CONFIG_DIR, 'agents.json'), 'utf8')).agents.map((a) => a.id)
+const agentIds = new Set(builtinModelsAgents().filter((id) => id !== 'cursor'))
 
 test('the built-in ladder is complete: every level is served, every agent has a model, nothing contradicts', () => {
   const models = builtinModels()

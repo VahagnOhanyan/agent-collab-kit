@@ -519,8 +519,14 @@ export function validateModels(models, { agentIds = new Set(), policyClasses = n
       problems.push(`${where} has verified "${model?.verified}" — expected one of ${MODEL_VERIFIED.join(', ')}`)
     }
     // A preview model may be withdrawn or change under you mid-task, so the
-    // registry refuses to offer one without somewhere to fall back to.
-    if (model?.maturity === 'preview' && !model?.fallback) {
+    // registry requires a fallback or an explicit policy to stop for the owner.
+    if (model?.fallback_policy !== undefined && model.fallback_policy !== 'stop') {
+      problems.push(`${where} has unsupported fallback_policy`)
+    }
+    if (model?.fallback_policy === 'stop' && model?.fallback) {
+      problems.push(`${where} cannot combine fallback_policy stop with a fallback`)
+    }
+    if (model?.maturity === 'preview' && !model?.fallback && model?.fallback_policy !== 'stop') {
       problems.push(`${where} is preview with no fallback — a preview model is not somewhere work can be left stranded`)
     }
     if (model?.verified !== 'catalog' && vendors[model?.vendor]?.catalog_file) {
