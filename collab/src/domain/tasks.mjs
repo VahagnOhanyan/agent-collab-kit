@@ -19,6 +19,7 @@ import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
 import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
+import { holdsReviewerRole } from './reviewer-roles.mjs'
 
 const DEFAULT_LEASE_SECONDS = 3600
 
@@ -439,7 +440,8 @@ export function handOverFromAbsent(ctx, { lead = null } = {}) {
       const near = new Set([review.author, task?.owner, ...(task?.contributors || [])].filter(Boolean))
       const authorVendor = review.author && ctx.registry.has(review.author) ? ctx.registry.agent(review.author).provider : null
       const candidates = ctx.registry.agents()
-        .filter((a) => !near.has(a.id) && (review.requested_role ? ctx.registry.hasRole(a.id, review.requested_role) : true) && (!authorVendor || a.provider !== authorVendor))
+        // A reviewer at all (a read-only role, not suspended), whether the review asked for a role or a capability.
+        .filter((a) => !near.has(a.id) && (review.requested_role ? ctx.registry.hasRole(a.id, review.requested_role) : true) && holdsReviewerRole(ctx, a.id, review.requested_role) && (!authorVendor || a.provider !== authorVendor))
         .sort(byLoad)
       const target = candidates[0]?.id || null
       if (!target) {

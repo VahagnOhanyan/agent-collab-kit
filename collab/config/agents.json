@@ -2,7 +2,7 @@
   "//": "Built-in agent registry, used by every project without a registry entry that replaces this file. It is the ONLY place a provider name appears in the collaboration layer: the protocol routes by role and capability, never by agent id.",
   "//briefing": "`briefing` is the agent's own instructions, returned by its whoami call. `briefing_file` is relative to this directory.",
   "//roles": "No agent here has roles or capabilities: which agent holds which role is the person's composition (machine agents.json, outside git). An agent may have every capability except the ones its program cannot have in principle (`adapter.cannot`, a fact about the vendor's program, not a decision about roles); every role those capabilities satisfy is offered, and the facts on the machine (probe.mjs) rule out the rest (ADR-0026).",
-  "//adapter": "`adapter.kind` is how a message physically reaches the agent. 'manual' = it lands in the inbox and the agent reads it when its session runs. 'cli' = the layer could spawn it; `enabled:false` means it will not. `adapter.headless` (manual agents) lists the commands through which ANOTHER agent can start this one on a task from its shell; a 'cli' agent's `binary` is that command. None of them on PATH = the agent can lead (it starts the others) but cannot be the lead's subordinate: work waits in its inbox until the owner opens it. Adapters are taken from THIS file only: a project agents.json cannot change them.",
+  "//adapter": "`adapter.kind` is how a message physically reaches the agent. 'manual' = it lands in the inbox and the agent reads it when its session runs. 'cli' = the layer could spawn it; `enabled:false` means it will not. `adapter.headless` (manual agents) lists the commands through which ANOTHER agent can start this one on a task from its shell; a 'cli' agent's `binary` is that command. None of them on PATH = the agent can lead (it starts the others) but cannot be the lead's subordinate: work waits in its inbox until the owner opens it. `adapter.review_launch` is the command that runs the agent on a review WITHOUT the right to write (`read_only_by`: sandbox, permissions or hook; `verified`: the date and what a write-attempt probe showed). An agent without one cannot hold a read_only role (roles.json): a role does not stop a session with edit rights from editing, the launch does. Adapters are taken from THIS file only: a project agents.json cannot change them.",
   "defaults": {
     "lease_seconds": 3600,
     "heartbeat_stale_seconds": 900
@@ -18,6 +18,17 @@
         "session": "interactive",
         "cannot": [],
         "headless": ["claude"],
+        "review_launch": {
+          "argv": ["claude", "-p", "--model", "<model>", "--setting-sources", "", "--tools", "Read,Grep,Glob", "--allowedTools", "mcp__collab__whoami,mcp__collab__get_messages,mcp__collab__get_task,mcp__collab__submit_review", "--permission-mode", "manual", "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", "<collab-only mcp.json>", "--add-dir", "<evidence dir>"],
+          "read_only_by": "permissions",
+          "skill": "claude-review",
+          "platforms": ["darwin", "linux"],
+          "verified": {
+            "date": "2026-10-02",
+            "version": "2.1.287",
+            "evidence": "haiku, temp tree whose .claude/settings.json has SessionStart and PreToolUse hooks that write files: asked to read a file, create PROBE.txt by any tool, call collab whoami and start_run. Read worked; Write was disabled; start_run was refused (not in the allowed tools, no prompt surface); no file appeared — neither from the model nor from the hooks. Control without --setting-sources \"\": both hook files appeared."
+          }
+        },
         "install_hint": "Install Claude Code (https://claude.com/claude-code) so that `claude` is on PATH, sign in once, then run the kit's installer again."
       },
       "briefing_file": "briefings/claude.md",
@@ -40,6 +51,17 @@
           "--cd",
           "."
         ],
+        "review_launch": {
+          "argv": ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "-m", "<model>", "-C", "<tree>"],
+          "read_only_by": "sandbox",
+          "skill": "codex-review",
+          "platforms": ["darwin", "linux"],
+          "verified": {
+            "date": "2026-10-02",
+            "version": "0.159.3",
+            "evidence": "codex exec -s read-only, gpt-5.6-terra, empty temp tree: asked to read a file, create PROBE.txt by shell redirection and apply_patch, and call collab whoami. Read worked; the shell write failed with 'operation not permitted', apply_patch was rejected by the read-only sandbox, no file was created; whoami answered NOT_INITIALIZED."
+          }
+        },
         "note": "Owner decision 2026-09-10: queue first, launch by hand. Nothing here starts a paid agent on its own.",
         "verified_against": "codex-cli 0.154.0 — flags read from `codex exec --help` on 2026-09-10, not from memory. There is no --ask-for-approval on `exec`: it is non-interactive already, and the sandbox flag is what bounds it.",
         "install_hint": "npm install -g @openai/codex, then register the collab MCP server for Codex with COLLAB_AGENT_ID=codex and re-run: collab doctor"

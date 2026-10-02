@@ -22,6 +22,7 @@ import { TASK_STATUS, TERMINAL, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { projectAgent } from './agents.mjs'
 import { assertOwnerOrContributor } from './gate.mjs'
+import { holdsReviewerRole } from './reviewer-roles.mjs'
 import { boundaryWarnings } from './spec.mjs'
 
 export const VERDICTS = Object.freeze(['approved', 'changes_requested'])
@@ -277,10 +278,18 @@ export function requestReview(ctx, {
       if (reviewer === author && !singleVendor) {
         throw new CollabError(CODES.SELF_REVIEW, `${author} cannot review their own work`, { task_id, author })
       }
+      if (!holdsReviewerRole(ctx, reviewer, reviewer_capability ? null : reviewer_role)) {
+        throw new CollabError(
+          CODES.NOT_PERMITTED,
+          `${reviewer} holds no read-only reviewer role here: it has no launch that cannot write, so it may not review`,
+          { task_id, reviewer, role: reviewer_role }
+        )
+      }
     } else {
       const query = { role: reviewer_capability ? null : reviewer_role, capability: reviewer_capability }
-      let candidates = ctx.registry.find({ ...query, exclude: [author] })
-      if (!candidates.length && singleVendor) candidates = ctx.registry.find(query)
+      const reviewers = (list) => list.filter((c) => holdsReviewerRole(ctx, c.id, query.role))
+      let candidates = reviewers(ctx.registry.find({ ...query, exclude: [author] }))
+      if (!candidates.length && singleVendor) candidates = reviewers(ctx.registry.find(query))
       if (!candidates.length) {
         throw new CollabError(
           CODES.NO_AGENT_AVAILABLE,
@@ -411,6 +420,15 @@ export function submitReview(ctx, { review_id, verdict, summary = '', findings =
         id: review_id,
         reviewer: review.reviewer
       })
+    }
+
+    // Routed before the agent lost its reviewer role (a composition change, a launch the facts now rule out).
+    if (!holdsReviewerRole(ctx, ctx.agentId, review.requested_role)) {
+      throw new CollabError(
+        CODES.NOT_PERMITTED,
+        `${ctx.agentId} no longer holds a read-only reviewer role, so review ${review_id} cannot be answered by it; release it (release_review) so it goes to a reviewer`,
+        { id: review_id, reviewer: ctx.agentId }
+      )
     }
 
     const task = tx.get('tasks', review.task_id)

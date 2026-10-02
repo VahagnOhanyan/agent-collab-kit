@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { createApi } from '../src/api.mjs'
+import { loadConfigFrom } from '../src/registry.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const CLI = join(HERE, '..', 'src', 'cli.mjs')
@@ -19,6 +20,14 @@ export const LAUNCHER = join(HERE, '..', '..', 'bin', 'collab')
 export const KIT_REGISTRY = join(HERE, '..', '..', 'projects')
 
 export const tempDir = (prefix = 'collab-') => realpathSync(mkdtempSync(join(tmpdir(), prefix)))
+
+// The built-in roles with every `read_only` mark removed — what a project roles.json written before the rule looks
+// like. Loading it must raise the marks back (review-launch.test.mjs): a project cannot make a reviewer writable.
+export function rolesWithoutReadOnly() {
+  const roles = structuredClone(loadConfigFrom().roles)
+  for (const role of Object.values(roles.roles)) delete role.read_only
+  return roles
+}
 
 // A link a test plants to check that it is not followed. A directory link on Windows is a junction — any user may make
 // one, and Node reports it as a symbolic link like the real thing. A link to a FILE on Windows needs Developer Mode or

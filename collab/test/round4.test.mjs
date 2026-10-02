@@ -35,8 +35,10 @@ test('R4-1: complete_task and request_review are refused for a caller who is nei
     const handed = claude.getTask({ task_id: shared.id })
     assert.equal(handed.owner, 'codex')
     assert.ok(handed.contributors.includes('claude'))
-    const byContributor = await claude.requestReview({ task_id: shared.id, reviewer_capability: 'review_code' })
-    assert.ok(byContributor.routed_to)
+    // The contributor may ask: the request gets past the permission check. Nobody but the author (codex) holds a
+    // reviewer role in this fixture, and asking by capability no longer routes to a holder of review_code without
+    // one (claude) — so the answer is "no reviewer", never "not permitted".
+    await assert.rejects(claude.requestReview({ task_id: shared.id, reviewer_capability: 'review_code' }), (e) => e.code === CODES.NO_AGENT_AVAILABLE)
   } finally {
     sbx.cleanup()
   }

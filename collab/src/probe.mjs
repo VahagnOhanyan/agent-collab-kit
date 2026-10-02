@@ -56,6 +56,25 @@ function sessionSandbox(agent, env) {
   return null
 }
 
+// Whether the agent can be launched on a review so that it CANNOT write. A role is only a routing label: it does not
+// stop a session with edit rights from editing. What stops it is how the review is launched — a CLI sandbox, a
+// permission mode, a hook — and the catalog names that launch (`adapter.review_launch`). Same three answers as a
+// capability: no launch in the catalog → missing (reviewer roles are taken away); a launch not proven by a probe
+// (a write attempt that must fail) → unknown (kept, marked); proven → confirmed.
+// A launch that cannot run HERE is no launch: the program missing, or a platform the launch was not written for. The
+// role would then route reviews to an agent nobody can start safely, and a session with edit rights would answer.
+function reviewLaunchAnswer(agent, installed, env) {
+  const adapter = agent.adapter || (loadBuiltinAgents().agents || []).find((known) => known.id === agent.id)?.adapter
+  const launch = adapter?.review_launch
+  if (!launch) return { status: 'missing', reason: 'в каталоге нет запуска на ревью без права записи (adapter.review_launch): ревьюером его ничто не удержит от правок' }
+  if (!installed) return { status: 'missing', reason: 'программа агента не найдена на этой машине: запустить его на ревью без права записи нечем' }
+  if (Array.isArray(launch.platforms) && !launch.platforms.includes(env.platform)) {
+    return { status: 'missing', reason: `запуск на ревью без права записи написан для ${launch.platforms.join(', ')}, а эта машина — ${env.platform}` }
+  }
+  if (!launch.verified) return { status: 'unknown', reason: `запуск на ревью есть (${launch.read_only_by}), но пробой не проверен` }
+  return { status: 'confirmed', reason: `запуск на ревью без права записи (${launch.read_only_by}) проверен ${launch.verified.date} на версии ${launch.verified.version}` }
+}
+
 // Anything an application can be run and looked at with: a simulator toolchain or a browser.
 function applicationRunners(env) {
   const found = []
@@ -118,7 +137,7 @@ export function probeAgent(agent, capabilityIds, env = machineEnv()) {
     }
     capabilities[capability] = answer
   }
-  return { agent: agent.id, installed: Boolean(installed), sandbox, capabilities }
+  return { agent: agent.id, installed: Boolean(installed), sandbox, capabilities, review_launch: reviewLaunchAnswer(agent, installed, env) }
 }
 
 // The facts for a whole composition, one place for the panel, `collab setup` and doctor to ask.
@@ -188,6 +207,8 @@ export function factConflicts(agents, facts) {
 
 // Which roles the facts allow. A role is BLOCKED when a capability it requires is missing, or when the agent's
 // composition does not declare it at all; UNVERIFIED when one it requires is unknown; allowed otherwise.
+// A `read_only` role (a reviewer) is judged on the agent's review launch too — a fact about the program, not a
+// capability the composition lists, so a composition written before the rule needs no rewriting for it.
 export function rolesByFacts(agent, roleDefs, probe) {
   const declared = new Set(agent.capabilities || [])
   const allowed = []
@@ -197,19 +218,21 @@ export function rolesByFacts(agent, roleDefs, probe) {
     const requires = definition.requires || []
     const undeclared = requires.filter((capability) => !declared.has(capability))
     const missing = requires.filter((capability) => probe.capabilities[capability]?.status === 'missing')
-    if (undeclared.length || missing.length) {
+    const launch = definition.read_only ? probe.review_launch : null
+    if (undeclared.length || missing.length || launch?.status === 'missing') {
       blocked.push({
         role,
         reasons: [
           ...undeclared.map((capability) => `нет способности ${capability} в составе`),
-          ...missing.map((capability) => `${capability}: ${probe.capabilities[capability].reason}`)
+          ...missing.map((capability) => `${capability}: ${probe.capabilities[capability].reason}`),
+          ...(launch?.status === 'missing' ? [launch.reason] : [])
         ]
       })
       continue
     }
     allowed.push(role)
     const unknown = requires.filter((capability) => probe.capabilities[capability]?.status === 'unknown')
-    if (unknown.length) unverified.push(role)
+    if (unknown.length || launch?.status === 'unknown') unverified.push(role)
   }
   return { allowed, unverified, blocked }
 }

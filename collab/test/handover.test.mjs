@@ -66,7 +66,8 @@ test('on a tie the lead takes it; a role nobody holds sends the task back to the
   const w = world()
   try {
     w.compose(three(), 'codex')
-    const tie = await taskHeldBy(w.api, 'gemini', 'code_reviewer')
+    // A writing role: gemini cannot hold a reviewer role at all (no launch that cannot write).
+    const tie = await taskHeldBy(w.api, 'gemini', 'software_engineer')
     const orphan = await taskHeldBy(w.api, 'gemini', 'researcher')
     const blocked = await taskHeldBy(w.api, 'gemini', 'software_engineer')
     await w.api('gemini').blockTask({ task_id: blocked, reason: 'Waiting for the owner to choose the API shape.' })
@@ -87,16 +88,17 @@ test('on a tie the lead takes it; a role nobody holds sends the task back to the
 test('a pending review of an excluded reviewer goes to another vendor\'s reviewer; the new holder is never the task\'s reviewer', async () => {
   const w = world()
   try {
-    // At the time of the request only gemini reviews, so the review is routed to it.
-    w.compose([agent('claude', 'anthropic', BOTH), agent('codex', 'openai', ['software_engineer']), agent('gemini', 'google', BOTH)])
-    const task = await taskHeldBy(w.api, 'claude', 'software_engineer')
-    await w.api('claude').requestReview({ task_id: task, reviewer_role: 'code_reviewer' })
-    assert.equal((await w.api('claude').listReviews({ task_id: task })).at(-1).reviewer, 'gemini')
-    // gemini leaves; codex now reviews too.
-    w.compose(withoutGemini())
+    // At the time of the request only codex reviews (gemini, the author, cannot: it has no review launch).
+    const writer = (id, provider) => agent(id, provider, ['software_engineer'])
+    w.compose([writer('gemini', 'google'), writer('claude', 'anthropic'), agent('codex', 'openai', BOTH)])
+    const task = await taskHeldBy(w.api, 'gemini', 'software_engineer')
+    await w.api('gemini').requestReview({ task_id: task, reviewer_role: 'code_reviewer' })
+    assert.equal((await w.api('gemini').listReviews({ task_id: task })).at(-1).reviewer, 'codex')
+    // codex leaves; claude now reviews too.
+    w.compose([writer('gemini', 'google'), agent('claude', 'anthropic', BOTH)])
     const result = await w.api('claude', { later: true }).handOverFromAbsent()
-    assert.deepEqual(result.reviews.map((r) => [r.from, r.to]), [['gemini', 'codex']], 'not the author (claude): another vendor')
-    assert.equal((await w.api('claude').listReviews({ task_id: task })).at(-1).reviewer, 'codex')
+    assert.deepEqual(result.reviews.map((r) => [r.from, r.to]), [['codex', 'claude']], 'not the author (gemini): another vendor')
+    assert.equal((await w.api('claude').listReviews({ task_id: task })).at(-1).reviewer, 'claude')
     assert.ok(w.api('claude').events({}).some((e) => e.type === 'review.handed_over'))
   } finally {
     w.cleanup()

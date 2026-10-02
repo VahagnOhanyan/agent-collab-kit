@@ -74,6 +74,10 @@ export function validateRegistry(config) {
     for (const cap of role.requires || []) {
       if (!capIds.has(cap)) problems.push(`roles.json: role "${roleId}" requires unknown capability "${cap}"`)
     }
+    // A typo here ("true" as a string) would silently let a session with edit rights hold a reviewer role.
+    if (role.read_only !== undefined && typeof role.read_only !== 'boolean') {
+      problems.push(`roles.json: role "${roleId}" read_only must be true or false`)
+    }
     if (role.reviewed_by !== undefined && !Array.isArray(role.reviewed_by)) {
       problems.push(`roles.json: role "${roleId}" reviewed_by must be a list of roles`)
     }
@@ -151,6 +155,24 @@ export function validateRegistry(config) {
       if (!Array.isArray(adapter.cannot)) problems.push(`${where} adapter.cannot must be a list of capabilities`)
       else for (const capability of adapter.cannot) {
         if (!capIds.has(capability)) problems.push(`${where} adapter.cannot names unknown capability "${capability}"`)
+      }
+    }
+    if (adapter.review_launch !== undefined) {
+      const launch = adapter.review_launch
+      // An argument may be empty (`--setting-sources ""` loads no settings at all); the program name may not.
+      if (!launch || !Array.isArray(launch.argv) || !launch.argv.length || !launch.argv.every((a) => typeof a === 'string') || !launch.argv[0]) {
+        problems.push(`${where} adapter.review_launch.argv must be a list of strings starting with the program`)
+      }
+      if (!['sandbox', 'permissions', 'hook'].includes(launch?.read_only_by)) {
+        problems.push(`${where} adapter.review_launch.read_only_by must be sandbox, permissions or hook`)
+      }
+      // A verified launch names when and what the probe showed: "verified" with nothing behind it is a claim.
+      // A probe proves the program it ran: the version goes with the date, so a later CLI is seen as unproven by eye.
+      if (launch?.verified !== undefined && !(launch.verified && /^\d{4}-\d{2}-\d{2}$/.test(launch.verified.date || '') && typeof launch.verified.version === 'string' && launch.verified.version && typeof launch.verified.evidence === 'string' && launch.verified.evidence)) {
+        problems.push(`${where} adapter.review_launch.verified must give a date (YYYY-MM-DD), the CLI version and the evidence`)
+      }
+      if (launch?.platforms !== undefined && !(Array.isArray(launch.platforms) && launch.platforms.length && launch.platforms.every((p) => ['darwin', 'linux', 'win32'].includes(p)))) {
+        problems.push(`${where} adapter.review_launch.platforms must list darwin, linux or win32`)
       }
     }
     if (adapter.headless !== undefined && (!Array.isArray(adapter.headless) || !adapter.headless.every((c) => typeof c === 'string' && c !== ''))) {
@@ -626,6 +648,19 @@ export function loadConfigFrom(overrideDir = null, source = { kind: 'built-in' }
     meta.files.models = join(builtinDir, 'models.json')
     meta.dirs.models = builtinDir
     meta.overridden.models = false
+  }
+  // A reviewer role is read-only whatever a replacing roles.json says (owner, 02.10.2026). A role is a routing label;
+  // only `read_only` makes the facts ask how the holder is launched. A project written before the rule — or one that
+  // simply leaves the key out — would otherwise let an agent with no safe launch review. Raised back, and said.
+  if (meta.overridden.roles) {
+    const builtinRoles = readConfig(join(builtinDir, 'roles.json'), 'roles.json').roles || {}
+    for (const [id, role] of Object.entries(builtinRoles)) {
+      const replaced = config.roles?.roles?.[id]
+      if (role.read_only === true && replaced && replaced.read_only !== true) {
+        replaced.read_only = true
+        meta.warnings.push(`roles.json: role "${id}" is read-only in the built-in roles, so ${meta.files.roles} cannot make it otherwise`)
+      }
+    }
   }
   Object.defineProperty(config, 'meta', { value: meta, enumerable: false })
   return config

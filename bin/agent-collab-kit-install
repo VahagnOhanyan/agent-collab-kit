@@ -77,6 +77,7 @@ const REQUIRED_PATHS = Object.freeze([
   'rules/terminology.md',
   'rules/apple-toolchain.md',
   'skills/codex-review/SKILL.md',
+  'skills/claude-review/SKILL.md',
   'skills/ui-review/SKILL.md',
   'skills/ux-guidance/SKILL.md',
   'skills/ux-critic-review/SKILL.md',
@@ -1209,6 +1210,9 @@ function linkSpecs(ctx) {
     // project-neutral, so they go to every account like the two above.
     { dest: path.join(dir, 'skills', 'ux-guidance'), rel: 'skills/ux-guidance', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'skills', 'ux-critic-review'), rel: 'skills/ux-critic-review', kind: 'dir', posixCopy: true },
+    // A review routed to Claude, run in a session that cannot write (02.10.2026): the open session has edit rights,
+    // and a role does not take them away. Every account, because any lead may need it.
+    { dest: path.join(dir, 'skills', 'claude-review'), rel: 'skills/claude-review', kind: 'dir', posixCopy: true },
     // Project-neutral procedures of the lead session (29.09.2026): the audit
     // with per-finding refutation and the session hand-off document.
     { dest: path.join(dir, 'skills', 'adversarial-audit'), rel: 'skills/adversarial-audit', kind: 'dir', posixCopy: true },
@@ -1981,7 +1985,7 @@ function applyCodex(ctx, plan, journal, changes) {
 const CODEX_RULES_BEGIN = '<!-- agent-collab-kit: begin — managed by agent-collab-kit-install; edit ~/agent-collab-kit, not this block -->'
 const CODEX_RULES_END = '<!-- agent-collab-kit: end -->'
 const CODEX_RULES_SOURCES = ['rules/orchestration.md', 'rules/modules.md', 'rules/terminology.md', 'rules/apple-toolchain.md']
-const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review', 'vendor-probe']
+const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review', 'claude-review', 'vendor-probe']
 
 function skillDescription(file) {
   const text = fs.readFileSync(file, 'utf8')

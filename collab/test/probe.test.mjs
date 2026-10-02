@@ -160,3 +160,45 @@ test('collab setup proposes only what the facts allow on this machine', () => {
   }
 })
 
+
+test('a reviewer role is held only through a launch that cannot write: none takes it away, an unproven one marks it', () => {
+  const env = machine({ binaries: ['claude', 'codex', 'agy', 'cursor'] })
+  const reviewers = Object.entries(ROLES).filter(([, r]) => r.read_only).map(([id]) => id)
+  assert.deepEqual(reviewers.sort(), ['code_reviewer', 'security_reviewer', 'ux_reviewer'])
+  // Codex and Claude: a launch proven by a write-attempt probe — the reviewer roles stay, unmarked.
+  for (const id of ['codex', 'claude']) {
+    const probe = probeAgent(agentOf(id), CAPS, env)
+    assert.equal(probe.review_launch.status, 'confirmed', id)
+    const roles = rolesByFacts({ ...agentOf(id), capabilities: CAPS }, ROLES, probe)
+    assert.ok(reviewers.every((r) => roles.allowed.includes(r)), id)
+  }
+  // Gemini and Cursor: no review launch in the catalog — the reviewer roles are blocked, with the reason.
+  for (const id of ['gemini', 'cursor']) {
+    const probe = probeAgent(agentOf(id), CAPS, env)
+    assert.equal(probe.review_launch.status, 'missing', id)
+    const roles = rolesByFacts({ ...agentOf(id), capabilities: CAPS }, ROLES, probe)
+    assert.ok(reviewers.every((r) => !roles.allowed.includes(r)), id)
+    assert.match(roles.blocked.find((b) => b.role === 'code_reviewer').reasons.join(), /review_launch/)
+    assert.ok(roles.allowed.includes('software_engineer'), `${id} still writes code`)
+  }
+  // A launch the catalog names but no probe proved: kept, marked unverified.
+  const unproven = structuredClone(agentOf('codex'))
+  delete unproven.adapter.review_launch.verified
+  const probe = probeAgent(unproven, CAPS, env)
+  assert.equal(probe.review_launch.status, 'unknown')
+  const roles = rolesByFacts({ ...unproven, capabilities: CAPS }, ROLES, probe)
+  assert.ok(roles.allowed.includes('code_reviewer') && roles.unverified.includes('code_reviewer'))
+})
+
+test('the catalog refuses a review launch without a read-only mechanism, and a non-boolean read_only', () => {
+  const config = loadConfigFrom()
+  const agents = structuredClone(config.agents)
+  agents.agents.find((a) => a.id === 'codex').adapter.review_launch.read_only_by = 'prompt'
+  agents.agents.find((a) => a.id === 'claude').adapter.review_launch.verified = { date: 'yesterday' }
+  const roles = structuredClone(config.roles)
+  roles.roles.code_reviewer.read_only = 'true'
+  const problems = validateRegistry({ ...config, agents, roles }).problems
+  assert.ok(problems.some((p) => /read_only_by must be/.test(p)))
+  assert.ok(problems.some((p) => /verified must give a date/.test(p)))
+  assert.ok(problems.some((p) => /read_only must be true or false/.test(p)))
+})

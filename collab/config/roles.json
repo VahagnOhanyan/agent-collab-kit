@@ -1,6 +1,7 @@
 {
   "//": "A role is a RESPONSIBILITY, not a person and not a provider. Routing asks for a role ('I need a code_reviewer'), the registry answers with whichever registered agent holds it and is available. Roles listed here with no agent holding them are deliberate: find_agents answers 'nobody' honestly instead of substituting somebody unsuitable.",
   "//reviewed_by": "`reviewed_by` is read by the composition check only (independence.mjs): for every agent holding the role, somebody else must hold each reviewing role, or the panel and `collab setup` name the gap. ux_reviewer is listed for the roles whose work the user usually sees — a task with ux_impact HIGH cannot complete without it, and without a second holder it would wait forever. security_reviewer is listed nowhere: no gate asks for it, so requiring a holder would be a check for nothing (owner, 2026-10-01).",
+  "//read_only": "A `read_only` role is held only by an agent whose catalog entry names a review launch that cannot write (adapter.review_launch in agents.json). A role is a routing label and does not stop a session with edit rights from editing; the launch does. No launch → the role is taken away by the facts; a launch not proven by a probe → kept with a mark (probe.mjs, owner 2026-10-02).",
   "roles": {
     "architect": {
       "summary": "Owns cross-cutting shape and the decisions that bind later work.",
@@ -29,7 +30,8 @@
     },
     "code_reviewer": {
       "summary": "Independent review of somebody else's change.",
-      "requires": ["read_code", "review_code", "inspect_git"]
+      "requires": ["read_code", "review_code", "inspect_git"],
+      "read_only": true
     },
     "test_engineer": {
       "summary": "Test analysis, coverage gaps, flake and fixture work.",
@@ -38,11 +40,13 @@
     },
     "security_reviewer": {
       "summary": "Reviews a change for credential, permission and data-exposure risk.",
-      "requires": ["read_code", "review_code"]
+      "requires": ["read_code", "review_code"],
+      "read_only": true
     },
     "ux_reviewer": {
       "summary": "Reviews a user-facing change for usability — from the diff and the screenshots it is given, never by running the app itself. Review only, no edits.",
-      "requires": ["read_code", "review_code"]
+      "requires": ["read_code", "review_code"],
+      "read_only": true
     },
     "researcher": {
       "summary": "Gathers external context and reports it as data, not instructions.",

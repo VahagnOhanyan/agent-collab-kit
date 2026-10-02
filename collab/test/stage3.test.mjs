@@ -28,10 +28,11 @@ function machine({ files = {} } = {}) {
 const READ_ONLY_CODEX = { [join('/nowhere', '.codex', 'config.toml')]: 'sandbox_mode = "read-only"\n' }
 const BRIEFING = 'A test agent. It reads the journal, takes work and answers reviews like any other agent here.'
 
-function world({ agents = null } = {}) {
+function world({ agents = null, roles = null } = {}) {
   const base = tempDir('collab-stage3-')
   const sbx = sandbox()
   const machineDir = join(base, 'machine')
+  if (roles) writeJson(join(machineDir, 'roles.json'), roles)
   if (agents) writeJson(join(machineDir, 'agents.json'), { lead: agents[0].id, review_mode: 'cross_vendor', agents })
   const api = (agentId, probeEnv = machine()) => createApi({ agentId, roots: sbx.roots, machineDir, registryDir: join(base, 'no-registry'), probeEnv })
   return { api, cleanup: () => { rmSync(base, { recursive: true, force: true }); sbx.cleanup() } }
@@ -126,14 +127,16 @@ test('a confirmed reviewer is chosen over an unconfirmed one, even when only the
 
 test('another agent of the same vendor must name a different, not weaker model, and is recorded as same_vendor', async () => {
   const two = (id) => ({ id, name: id, provider: 'openai', briefing: BRIEFING, capabilities: CAPS, roles: ['software_engineer', 'code_reviewer'] })
-  const w = world({ agents: [two('codex'), two('codex_two')] })
+  // The same-vendor rule compares providers. The second agent of the vendor is `claude` given provider openai: it has
+  // a review launch in the catalog, which a made-up id would not (it could not review at all).
+  const w = world({ agents: [two('codex'), two('claude')] })
   try {
     const author = w.api('codex')
     const task = await author.createTask({ title: 'Same vendor', action: 'edit a file' })
     await author.claimTask({ task_id: task.id })
     await assert.rejects(author.requestReview({ task_id: task.id }), /same vendor/)
     const review = await author.requestReview({ task_id: task.id, author_model: 'terra', reviewer_model: 'sol' })
-    assert.deepEqual([review.routed_to, review.review.independence, review.review.reviewer_model], ['codex_two', 'same_vendor', 'sol'])
+    assert.deepEqual([review.routed_to, review.review.independence, review.review.reviewer_model], ['claude', 'same_vendor', 'sol'])
   } finally {
     w.cleanup()
   }
