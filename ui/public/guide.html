@@ -322,7 +322,7 @@ node --test tests/test_install_*.mjs           # установщик, ~3 мин
 <tr><td><strong>Codex</strong></td><td>Раздел в <code>~/.codex/config.toml</code>, <code>COLLAB_AGENT_ID=codex</code></td><td>Блок-указатель в <code>~/.codex/AGENTS.md</code> (какие файлы правил прочитать). Сам Codex читает не больше 32 КиБ всех <code>AGENTS.md</code></td><td><code>codex-guard</code> в <code>~/.codex/hooks.json</code>; Codex запустит его, только когда владелец один раз подтвердит командой <code>/hooks</code></td></tr>
 <tr><td><strong>Cursor</strong></td><td><code>~/.cursor/mcp.json</code></td><td>Только брифинг через <code>whoami</code></td><td>нет</td></tr>
 <tr><td><strong>Gemini</strong> (<code>agy</code>)</td><td>Регистрация в его настройках</td><td>Только брифинг через <code>whoami</code></td><td>нет</td></tr>
-<tr><td><strong>Grok, MiniMax</strong> (после слияния PR #1)</td><td>Установщик <strong>не</strong> пишет: секцию добавляют руками</td><td>Только брифинг</td><td>нет</td></tr>
+<tr><td><strong>Grok, MiniMax</strong></td><td>Установщик <strong>не</strong> пишет: секцию добавляют руками</td><td>Только брифинг</td><td>нет</td></tr>
 </tbody></table>
 <p>На macOS и Linux всё, что читает человек и Claude Code, кладётся <strong>настоящими копиями</strong> из релиза: ссылку Claude Code не видит (проверено). Владение копиями отслеживается по хэшу в <code>posix-copies.json</code>. На Windows скиллы — junction на <code>current</code>, а агенты и правила — копии (<code>windows-links.json</code>). Лаунчер <code>collab</code> — симлинк на POSIX и <code>.cmd</code>-шим на Windows.</p>
 <p>Личное (свои вендоры, тарифы, лимиты) лежит в <code>personal/rules/personal.md</code> и ставится туда же, если файл есть. Вне git.</p>
@@ -414,8 +414,8 @@ node --test tests/test_install_*.mjs           # установщик, ~3 мин
 <tr><td><strong>Codex</strong></td><td><code>cli</code>, <code>enabled: false</code> (ручной запуск)</td><td><code>codex exec</code> с явной моделью</td><td>Скилл <code>codex-review</code>: <code>-s read-only</code>; проверено</td></tr>
 <tr><td><strong>Gemini</strong></td><td><code>cli</code> (<code>agy -p</code>), <code>enabled: false</code></td><td><code>agy</code></td><td>Нет: роли ревьюера сняты</td></tr>
 <tr><td><strong>Cursor</strong></td><td><code>manual</code>, CLI нет</td><td>Нельзя: работа ждёт во входящих, пока владелец не откроет редактор. Ведущим быть может</td><td>Нет</td></tr>
-<tr><td><strong>Grok</strong> (после слияния PR #1)</td><td><code>manual</code>, <code>headless: grok</code></td><td><code>grok --prompt-file …</code>; живой вызов не проверялся (вход истёк)</td><td>Нет: <code>--sandbox read-only</code> не проверен пробой</td></tr>
-<tr><td><strong>MiniMax</strong> (после слияния PR #1)</td><td><code>manual</code>, <code>headless: minimax-dev</code></td><td><code>minimax-dev --dir … --task-file …</code> (лаунчер поверх OpenCode)</td><td>Нет: лаунчер правит файлы и запускает оболочку</td></tr>
+<tr><td><strong>Grok</strong></td><td><code>manual</code>, <code>headless: grok</code></td><td><code>grok --prompt-file …</code>; живой вызов не проверялся (вход истёк)</td><td>Нет: <code>--sandbox read-only</code> не проверен пробой</td></tr>
+<tr><td><strong>MiniMax</strong></td><td><code>manual</code>, <code>headless: minimax-dev</code></td><td><code>minimax-dev --dir … --task-file …</code> (лаунчер поверх OpenCode)</td><td>Нет: лаунчер правит файлы и запускает оболочку</td></tr>
 </tbody></table>
 <p>Почему запуск на ревью отдельно: роль ревьюера — это метка для маршрутизации, и право правки она не отнимает. Открытая сессия Claude может править файлы, каким бы ни был её промпт. Удерживает именно способ запуска.</p>
 <h3>Почему у агентов разные адаптеры</h3>
