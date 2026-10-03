@@ -65,6 +65,10 @@ test('M3 data needs the token as a header, never a cookie; the page itself carri
   assert.equal(page.status, 200)
   assert.equal(page.headers['set-cookie'], undefined, 'no cookie: every port of 127.0.0.1 would receive it')
   assert.equal((await get(started, '/app.js')).status, 200, 'static code without a token')
+  const guide = await get(started, '/guide.html')
+  assert.equal(guide.status, 200, 'the guide is a static page: it opens without a token')
+  assert.match(guide.text, /руководство разработчика/i)
+  assert.equal((await get(started, '/guide.css')).status, 200)
 })
 
 test('M3b a request from another origin is refused whatever token it carries', async (t) => {

@@ -1,0 +1,61 @@
+/* The developer guide page. It reuses the panel's tokens (style.css) and adds only what a long reading page needs:
+   a contents column, a comfortable text width, wide tables and the two diagrams. No inline styles anywhere: the
+   panel's CSP allows only files. */
+.guide { max-width: 1240px; margin: 0 auto; padding: 0 32px 96px; display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 56px; align-items: start; }
+.guide-bar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.guide-bar-in { max-width: 1240px; margin: 0 auto; padding: 12px 32px; display: flex; align-items: center; gap: 12px; }
+.guide-bar .brand-mark { margin: 0; }
+.guide-bar strong { font-size: 14.5px; }
+.guide-bar .muted { font-size: 12.5px; }
+
+.toc { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow-y: auto; padding: 24px 0; font-size: 13.5px; }
+.toc h2 { margin: 18px 0 6px; padding: 0 10px; }
+.toc h2:first-child { margin-top: 0; }
+.toc a { display: block; padding: 4px 10px; border-radius: var(--radius-sm); color: var(--muted); }
+.toc a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+
+.doc { padding-top: 32px; min-width: 0; }
+.doc h1 { font-size: 30px; letter-spacing: -.02em; margin: 0 0 6px; }
+.doc .byline { color: var(--muted); margin: 0 0 8px; }
+.doc section { padding-top: 8px; margin-top: 40px; scroll-margin-top: 64px; }
+.doc section:first-of-type { margin-top: 24px; }
+.doc h2 { font-size: 22px; text-transform: none; letter-spacing: -.01em; color: var(--text); margin: 0 0 14px; padding-top: 12px; border-top: 1px solid var(--line); font-weight: 650; }
+.doc h3 { font-size: 16px; color: var(--text); margin: 26px 0 8px; font-weight: 650; }
+/* Text, tables and diagrams share one column and one right edge: no line-length cap on prose. */
+.doc p { margin: 0 0 12px; line-height: 1.65; }
+.doc ul, .doc ol { margin: 0 0 14px; padding-left: 22px; line-height: 1.65; }
+.doc li { margin: 4px 0; }
+.doc li > ul, .doc li > ol { margin: 4px 0 4px; }
+.doc code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; overflow-wrap: anywhere; }
+.doc pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
+.doc pre code { background: none; border: 0; padding: 0; font-size: 12.5px; white-space: pre; overflow-wrap: normal; }
+.doc table { margin: 4px 0 18px; }
+.doc td, .doc th { vertical-align: top; }
+.doc td code { white-space: normal; }
+.doc .lead { font-size: 15.5px; color: var(--text); }
+.doc .callout { margin: 14px 0; }
+
+.fig { margin: 18px 0 8px; }
+.fig svg { display: block; width: 100%; height: auto; }
+.fig figcaption { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+
+/* Diagram parts: classes instead of attributes with colours, so both themes follow the tokens. */
+.dg-band { fill: none; stroke: var(--line-strong); stroke-width: 1.2; }
+.dg-band-hi { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 2; }
+.dg-band-soft { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1.2; }
+.dg-band-warn { fill: color-mix(in srgb, var(--warn) 12%, transparent); stroke: var(--warn); stroke-width: 1.2; }
+.dg-chip { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+.dg-chip-hi { fill: color-mix(in srgb, var(--accent) 14%, var(--surface)); stroke: var(--accent); stroke-width: 2; }
+.dg-line { fill: none; stroke: var(--line-strong); stroke-width: 1.3; }
+.dg-dash { stroke-dasharray: 4 4; }
+.dg-arrow { fill: var(--line-strong); }
+.dg-h { fill: var(--text); font-weight: 650; font-size: 13px; }
+.dg-n { fill: var(--text); font-weight: 650; font-size: 13px; text-anchor: middle; }
+.dg-s { fill: var(--muted); font-size: 11.5px; text-anchor: middle; }
+.dg-e { fill: var(--muted); font-size: 11.5px; }
+
+@media (max-width: 900px) {
+  .guide { grid-template-columns: 1fr; gap: 0; padding: 0 16px 64px; }
+  .guide-bar-in { padding: 10px 16px; }
+  .toc { position: static; max-height: none; border-bottom: 1px solid var(--line); padding: 16px 0; }
+}

@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Руководство разработчика · Agent Collab Kit</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<header class="guide-bar">
+  <div class="guide-bar-in">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="17" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="17" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.6 9.6l1.2 4.6M14.4 9.6l-1.2 4.6M10.2 8h3.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <strong>Agent Collab Kit</strong><span class="muted">руководство разработчика</span>
+  </div>
+</header>
+
+<div class="guide">
+<nav class="toc" aria-label="Содержание">
+  <h2>Начать</h2>
+  <a href="#what">Что это</a>
+  <a href="#layout">Устройство</a>
+  <a href="#install">Установка</a>
+  <a href="#setup">Настройка</a>
+  <a href="#update">Обновление и откат</a>
+  <h2>Как это работает</h2>
+  <a href="#flow">Как идёт работа</a>
+  <a href="#files">Карта файлов</a>
+  <a href="#project">Встреча с проектом</a>
+  <a href="#layers">Слои настроек</a>
+  <a href="#installer">Установщик по шагам</a>
+  <a href="#agents-install">Что получает каждый агент</a>
+  <a href="#hooks">Хуки</a>
+  <a href="#journal">Журнал проекта</a>
+  <a href="#core">Ядро collab</a>
+  <a href="#agents">Особенности агентов</a>
+  <a href="#panel">Панель и тесты</a>
+  <h2>Если что-то не так</h2>
+  <a href="#problems">Частые проблемы</a>
+  <h2>Поддержка</h2>
+  <a href="#maintain">Как поддерживать это руководство</a>
+</nav>
+
+<main class="doc">
+<h1>agent-collab-kit — руководство разработчика</h1>
+<p class="byline">Сверено с релизом <code>88874f9</code>, 3 октября 2026. Файл лежит в репозитории набора: <code>ui/public/guide.html</code>.</p>
+
+<!-- ───────────────────────── НАЧАТЬ ───────────────────────── -->
+<section id="what">
+<h2>Что это</h2>
+<p class="lead">agent-collab-kit — машинный набор, который позволяет нескольким AI-агентам (Claude Code, Codex, Gemini, Cursor и другим) работать над одним проектом как команда. Один агент — <strong>ведущий</strong>: в нём работает человек, он планирует и раздаёт работу. Остальные берут задачи и ревью через общий журнал. Набор ставится один раз на машину и действует во всех её проектах.</p>
+<p>Что он даёт на практике:</p>
+<ul>
+<li><strong>Общий журнал <code>collab</code></strong> — задачи, ревью, решения и одобрения владельца лежат в файлах, а не в контексте одного агента. Его видит любой агент через MCP и человек через CLI и веб-панель.</li>
+<li><strong>Правила работы</strong> — план до первой правки, уровни сложности L0–L3, кто кого проверяет, словарь терминов до начала задачи. Ставятся каждому агенту в его формате.</li>
+<li><strong>Хуки-ограничители</strong> — не дают сделать то, что правила запрещают: вызвать субагента без явной модели, править код без плана, пушить мимо гейта, писать вне разрешённых путей.</li>
+<li><strong>Субагенты и скиллы</strong> — <code>implementer</code> (пишет только в разрешённых областях), <code>verifier</code> (только читает и гоняет проверки), процедуры <code>handoff</code>, <code>adversarial-audit</code>, <code>ui-review</code>, <code>codex-review</code>, <code>claude-review</code>, <code>ux-guidance</code> и другие.</li>
+<li><strong>Панель <code>collab ui</code></strong> — страница в браузере: задачи, ревью, состав агентов и мастер настройки.</li>
+</ul>
+<p>В наборе не зашит ни ведущий, ни вендор. Каталог только описывает, что умеет каждый агент. Кто есть у вас и кто в какой роли — ваш <strong>состав</strong>, его выбирают в мастере.</p>
+</section>
+
+<section id="layout">
+<h2>Устройство</h2>
+<figure class="fig">
+<svg viewBox="22 44 716 510" role="img" aria-label="Агенты читают установленный релиз, а не исходник: четыре слоя — исходник, машина, агенты, журнал проекта">
+<defs><marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="dg-arrow"/></marker></defs>
+<path class="dg-line" d="M380 160V198" marker-end="url(#arr1)"/><path class="dg-line" d="M380 304V342" marker-end="url(#arr1)"/><path class="dg-line" d="M380 448V486" marker-end="url(#arr1)"/>
+<text class="dg-e" x="392" y="184">установщик: тесты → git archive → релиз</text>
+<text class="dg-e" x="392" y="328">копии правил и скиллов, MCP, хуки</text>
+<text class="dg-e" x="392" y="472">инструменты MCP collab</text>
+
+<rect class="dg-band" x="24" y="56" width="712" height="104" rx="8"/>
+<text class="dg-h" x="40" y="78">Исходник — ~/agent-collab-kit (git)</text>
+<rect class="dg-chip" x="40" y="88" width="158" height="56" rx="8"/><rect class="dg-chip" x="214" y="88" width="158" height="56" rx="8"/><rect class="dg-chip" x="388" y="88" width="158" height="56" rx="8"/><rect class="dg-chip" x="562" y="88" width="158" height="56" rx="8"/>
+<text class="dg-n" x="119" y="112">rules/</text><text class="dg-s" x="119" y="128">правила работы</text>
+<text class="dg-n" x="293" y="112">skills/ agents/</text><text class="dg-s" x="293" y="128">скиллы, субагенты</text>
+<text class="dg-n" x="467" y="112">hooks/</text><text class="dg-s" x="467" y="128">хуки-гейты</text>
+<text class="dg-n" x="641" y="112">collab/ ui/</text><text class="dg-s" x="641" y="128">журнал и панель</text>
+
+<rect class="dg-band-hi" x="24" y="200" width="712" height="104" rx="8"/>
+<text class="dg-h" x="40" y="222">Машина — ~/.agent-collab-kit</text>
+<rect class="dg-chip" x="40" y="232" width="158" height="56" rx="8"/><rect class="dg-chip" x="214" y="232" width="158" height="56" rx="8"/><rect class="dg-chip" x="388" y="232" width="158" height="56" rx="8"/><rect class="dg-chip" x="562" y="232" width="158" height="56" rx="8"/>
+<text class="dg-n" x="119" y="256">current</text><text class="dg-s" x="119" y="272">→ releases/&lt;коммит&gt;</text>
+<text class="dg-n" x="293" y="256">collab/agents.json</text><text class="dg-s" x="293" y="272">состав машины</text>
+<text class="dg-n" x="467" y="256">projects/&lt;id&gt;/</text><text class="dg-s" x="467" y="272">реестр проектов</text>
+<text class="dg-n" x="641" y="256">collab</text><text class="dg-s" x="641" y="272">команда в PATH</text>
+
+<rect class="dg-band" x="24" y="344" width="712" height="104" rx="8"/>
+<text class="dg-h" x="40" y="366">Агенты — каждый в своём формате</text>
+<rect class="dg-chip" x="40" y="376" width="124" height="56" rx="8"/><rect class="dg-chip" x="179" y="376" width="124" height="56" rx="8"/><rect class="dg-chip" x="318" y="376" width="124" height="56" rx="8"/><rect class="dg-chip" x="457" y="376" width="124" height="56" rx="8"/><rect class="dg-chip" x="596" y="376" width="124" height="56" rx="8"/>
+<text class="dg-n" x="102" y="400">Claude Code</text><text class="dg-s" x="102" y="416">rules, хуки</text>
+<text class="dg-n" x="241" y="400">Codex</text><text class="dg-s" x="241" y="416">AGENTS.md + MCP</text>
+<text class="dg-n" x="380" y="400">Cursor</text><text class="dg-s" x="380" y="416">~/.cursor/mcp.json</text>
+<text class="dg-n" x="519" y="400">Gemini</text><text class="dg-s" x="519" y="416">agy + MCP</text>
+<text class="dg-n" x="658" y="400">Другие</text><text class="dg-s" x="658" y="416">по адаптеру</text>
+
+<rect class="dg-band-soft" x="24" y="488" width="712" height="56" rx="8"/>
+<text class="dg-n" x="380" y="512">Проект — журнал .collab/ (вне git)</text><text class="dg-s" x="380" y="528">задачи, ревью, решения, одобрения владельца</text>
+</svg>
+<figcaption>Агенты читают установленный релиз, а не исходник.</figcaption>
+</figure>
+<p>Правки в исходнике ничего не меняют, пока их не закоммитили и не установили: агенты читают <code>~/.agent-collab-kit/current</code> и копии, разложенные установщиком. Состав и реестр проектов лежат там же, но вне релиза и переживают обновления.</p>
+</section>
+
+<section id="install">
+<h2>Установка</h2>
+<p>Установка занимает около 2 минут: установщик сам прогоняет тесты набора и при любом сбое откатывает всё, что успел изменить. Работает на macOS и Windows, на обеих проверено живой установкой.</p>
+<p><strong>Нужно заранее:</strong> git, Node.js 20.19 или новее, доступ к репозиторию набора (он приватный) и хотя бы один установленный агент — Claude Code, Codex CLI, Gemini (<code>agy</code>) или Cursor.</p>
+<ol>
+<li><strong>Склонировать</strong> репозиторий в домашнюю папку: <code>~/agent-collab-kit</code> (Windows: <code>%USERPROFILE%\agent-collab-kit</code>). Проще всего через GitHub Desktop: на странице репозитория <strong>Code → Open with GitHub Desktop</strong>. Обычный <code>git clone</code> тоже подойдёт, если git умеет входить в GitHub (GitHub Desktop, VS Code или Git Credential Manager).</li>
+<li><strong>Запустить установщик</strong> из папки набора: на macOS и Linux — <code>./install.sh</code>, на Windows — дважды щёлкнуть <code>install.cmd</code>.</li>
+<li><strong>Открыть новый терминал</strong>: старый не знает команду <code>collab</code>. Проверка: <code>collab doctor</code>.</li>
+<li><strong>Перезапустить открытые сессии агентов</strong>, чтобы они увидели MCP <code>collab</code>, правила и скиллы.</li>
+<li><strong>Настроить состав</strong> — раздел <a href="#setup">«Настройка»</a>.</li>
+</ol>
+<p>Что делает установщик:</p>
+<table class="data">
+<thead><tr><th>Шаг</th><th>Что происходит</th></tr></thead>
+<tbody>
+<tr><td>Сборка релиза</td><td>Берёт только закоммиченное (<code>git archive</code>), грязное дерево не ставит</td></tr>
+<tr><td>Тесты</td><td>Прогоняет тесты журнала в копии релиза: 0 падений, пропуск допустим только с причиной <code>platform:</code></td></tr>
+<tr><td>Дымовой тест MCP</td><td>Сверяет список инструментов и что без журнала ничего не создаётся</td></tr>
+<tr><td>Переключение</td><td>Атомарно переводит <code>~/.agent-collab-kit/current</code> на новый релиз</td></tr>
+<tr><td>Раскладка</td><td>Копирует правила, скиллы и субагентов в каждый каталог настроек Claude Code; Codex получает блок-указатель в <code>~/.codex/AGENTS.md</code></td></tr>
+<tr><td>Регистрация MCP</td><td>Прописывает <code>collab</code> у Claude, Codex (<code>~/.codex/config.toml</code>) и Cursor (<code>~/.cursor/mcp.json</code>)</td></tr>
+<tr><td>Хуки</td><td>Вписывает <code>model-guard</code>, <code>plan-gate</code> и другие в <code>settings.json</code> каждого каталога Claude Code; чужие хуки не трогает</td></tr>
+<tr><td>Команда <code>collab</code></td><td>Кладёт лаунчер в PATH: симлинк на macOS, <code>.cmd</code>-шим на Windows</td></tr>
+</tbody></table>
+<p><strong>Несколько аккаунтов Claude Code.</strong> У каждого свой каталог настроек (<code>~/.claude</code>, <code>~/.claude-account-2</code>), и сессия читает правила только из своего. Дополнительный каталог передаётся флагом <code>--claude-config-dir &lt;путь&gt;</code> (можно повторять) или берётся из <code>CLAUDE_CONFIG_DIR</code>.</p>
+<p><strong>Правила не править в установленной копии</strong> (<code>~/.claude/rules/…</code>). Изменённая руками копия остановит следующую установку с ошибкой «was not created by this installer». Правится исходник в <code>~/agent-collab-kit/rules/</code>, дальше коммит и переустановка.</p>
+</section>
+
+<section id="setup">
+<h2>Настройка</h2>
+<p>Настройка — два шага: один раз на машину выбрать состав агентов и один раз в каждом проекте подключить его.</p>
+<h3>Состав агентов — мастер панели</h3>
+<p>Запустите <code>collab ui</code> в своём терминале и откройте «Мастер настройки». Панель записывает только кнопкой «Применить» и только когда запущена из вашего терминала. Состав ложится в <code>~/.agent-collab-kit/collab/agents.json</code>, вне git.</p>
+<table class="data">
+<thead><tr><th>Шаг</th><th>Что выбираете</th><th>На что смотреть</th></tr></thead>
+<tbody>
+<tr><td>1. Кто участвует</td><td>Галочки у агентов, найденных на машине</td><td>Плашка «без CLI запуска»: такой агент может быть ведущим, но не подчинённым</td></tr>
+<tr><td>2. Кто ведущий</td><td>Агент, в котором вы сами работаете</td><td>Предупреждение, если подчинённого ведущий запустить не сможет</td></tr>
+<tr><td>3. Режим ревью</td><td><code>cross_vendor</code> или <code>single_vendor</code></td><td>С одним вендором ревью делает тот же агент в отдельной сессии на другой, не более слабой модели</td></tr>
+<tr><td>4. Язык</td><td>Язык текстов, которые агенты пишут вам</td><td>—</td></tr>
+<tr><td>5. Роли</td><td>Какие роли держит каждый агент</td><td>Красные дыры независимости делают «Применить» серой</td></tr>
+</tbody></table>
+<p>То же из терминала: <code>collab setup --agents claude,codex --lead claude</code>.</p>
+<p><strong>Роли и кто кого проверяет.</strong> Роль — это обязанность, а не агент. У рабочих ролей есть ревьюеры, и каждого из них должен держать кто-то кроме автора:</p>
+<table class="data">
+<thead><tr><th>Роль исполнителя</th><th>Кто проверяет</th></tr></thead>
+<tbody>
+<tr><td><code>ios_engineer</code>, <code>product_engineer</code>, <code>software_engineer</code></td><td><code>code_reviewer</code> + <code>ux_reviewer</code></td></tr>
+<tr><td><code>backend_engineer</code>, <code>architect</code>, <code>test_engineer</code></td><td><code>code_reviewer</code></td></tr>
+<tr><td><code>researcher</code> и сами ревьюеры</td><td>никто</td></tr>
+</tbody></table>
+<p>При двух вендорах дыра (ревьюера держит только автор) — ошибка, при одном — заметка. <code>security_reviewer</code> не требуется никому: его зовёт ведущий сам, когда нужно. То же можно записать без панели: <code>collab setup --agents claude,codex --lead claude</code>.</p>
+<p><strong>Ревьюер не может писать — и это держит запуск, а не роль.</strong> Роль только говорит, кому поручать ревью; права правки она не отнимает. Поэтому у каждого агента в каталоге записан <strong>запуск на ревью</strong> (<code>adapter.review_launch</code>) — команда, которой его запускают без права записи, и чем это держится. Роли <code>code_reviewer</code>, <code>ux_reviewer</code>, <code>security_reviewer</code> (признак <code>read_only</code> в <code>roles.json</code>) даются только агенту с таким запуском; без него мастер снимает их с причиной, с непроверенным — оставляет с пометкой.</p>
+<table class="data">
+<thead><tr><th>Агент</th><th>Запуск на ревью</th><th>Чем держится «только чтение»</th><th>Проба</th></tr></thead>
+<tbody>
+<tr><td>Codex</td><td>скилл <code>codex-review</code>: <code>codex exec -s read-only</code></td><td>Системная песочница Codex</td><td>Пройдена 02.10.2026</td></tr>
+<tr><td>Claude Code</td><td>скилл <code>claude-review</code>: <code>claude -p --tools "Read,Grep,Glob"</code>, только журнал <code>collab</code></td><td>В сессии нет инструментов правки и оболочки, настройки и хуки не грузятся, из журнала доступны четыре инструмента</td><td>Пройдена 02.10.2026, включая проект с хуком, пишущим файл</td></tr>
+<tr><td>Gemini, Cursor</td><td>нет</td><td>—</td><td>Роли ревьюера недоступны</td></tr>
+</tbody></table>
+<p>Ревью по роли делается только этими скиллами, не в открытой сессии агента: у неё есть право правки. Новому вендору запуск на ревью записывают после пробы: агента просят создать файл в пустой папке, и файл не должен появиться. Журнал тоже держит правило: ревью нельзя отправить агенту без роли ревьюера ни по имени, ни по способности, а агент, потерявший роль, не может сдать вердикт по ждущему ревью — его снимает <code>release_review</code>. Проектный <code>roles.json</code> признак <code>read_only</code> с роли ревьюера снять не может.</p>
+<p><strong>Предел, о котором надо помнить.</strong> Журнал видит, <em>какой</em> агент отвечает на ревью, но не <em>как</em> запущена его сессия. Открытая сессия Claude с правом правки под тем же именем <code>claude</code> технически может ответить. Гарантию держат две вещи вместе: роль ревьюера есть только у агента с проверенным безопасным запуском, и ревью запускается только скиллом (<code>codex-review</code>, <code>claude-review</code>), а не в открытой сессии.</p>
+
+<h3>Подключение проекта</h3>
+<p>В папке проекта, в своём терминале:</p>
+<ol>
+<li><code>collab connect --dry-run</code> — показать, что будет записано.</li>
+<li><code>collab connect</code> — подключить. Делает только человек, агенту эта команда закрыта: запись в реестре выдаёт агентам права.</li>
+</ol>
+<p>Реестр проекта лежит в <code>~/.agent-collab-kit/projects/&lt;id&gt;/</code>, вне репозитория, и читается сразу, без переустановки:</p>
+<table class="data">
+<thead><tr><th>Файл</th><th>Что задаёт</th></tr></thead>
+<tbody>
+<tr><td><code>project.json</code></td><td>id и корень; <code>gate</code> — скрипт проверок перед push; <code>plan_gate</code> — какие пути нельзя править без плана; <code>post_edit</code> — гейты после правки контракта</td></tr>
+<tr><td><code>scopes.json</code></td><td>Куда может писать <code>implementer</code></td></tr>
+<tr><td><code>readonly-guard.json</code></td><td>Какие команды разрешены <code>verifier</code></td></tr>
+<tr><td><code>collab/*.json</code></td><td>Свои роли, раннеры, политика; проверка — <code>collab check-config</code></td></tr>
+</tbody></table>
+<p>Личное — свои вендоры, тарифы, лимиты — каждый пишет в <code>personal/rules/personal.md</code> в своей копии набора, вне git. Без него работают только общие правила.</p>
+</section>
+
+<section id="update">
+<h2>Обновление и откат</h2>
+<p>Обновление — это та же установка свежего коммита. Машина пользуется установленным релизом <code>~/.agent-collab-kit/current</code>, а не рабочим деревом, поэтому <code>git pull</code> без установки ничего не меняет.</p>
+<ol>
+<li>В папке набора забрать свежий <code>main</code>: <code>git pull</code> или «Fetch → Pull» в GitHub Desktop.</li>
+<li>Проверить без изменений: <code>bin/agent-collab-kit-install --dry-run</code>.</li>
+<li>Установить: <code>./install.sh</code> (Windows — <code>install.cmd</code>) или <code>bin/agent-collab-kit-install</code>.</li>
+<li>Перезапустить открытые сессии агентов и <code>collab ui</code>, если панель была открыта.</li>
+<li>Проверить состав: мастер → «Команда выполнена — проверить». Новый релиз может добавить правило, которому прежний состав не отвечает: панель назовёт его и не даст применить новое, пока дыра не закрыта.</li>
+</ol>
+<p><strong>Откат</strong> к предыдущему релизу: <code>bin/agent-collab-kit-install --rollback</code>. Установщик в конце каждого прогона печатает точную команду со всеми нужными <code>--claude-config-dir</code>. Релизы лежат в <code>~/.agent-collab-kit/releases/</code>, старые чистятся сами.</p>
+<p><strong>Своя правка набора.</strong> Правится исходник, затем тесты, коммит и установка. Тесты:</p>
+<pre><code>node --test                                   # журнал и панель
+node --test tests/test_*_guard.mjs             # хуки, ~40 с
+node --test tests/test_install_*.mjs           # установщик, ~3 мин</code></pre>
+<p>Публикация в общий репозиторий идёт только потомком предыдущей публикации, без <code>--force</code>. Перед push проверьте, что в коде нет имён своих проектов, личных данных и ключей.</p>
+</section>
+
+<!-- ───────────────────────── КАК ЭТО РАБОТАЕТ ───────────────────────── -->
+<section id="flow">
+<h2>Как идёт работа</h2>
+<figure class="fig">
+<svg viewBox="10 66 729 312" role="img" aria-label="Поток задачи от просьбы владельца до закрытия: ведущий, журнал, исполнитель, ревью, гейт закрытия">
+<defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="dg-arrow"/></marker></defs>
+<path class="dg-line" d="M180 110H206" marker-end="url(#arr2)"/><path class="dg-line" d="M360 110H386" marker-end="url(#arr2)"/><path class="dg-line" d="M540 110H566" marker-end="url(#arr2)"/><path class="dg-line" d="M664 138V220" marker-end="url(#arr2)"/><path class="dg-line" d="M568 250H530" marker-end="url(#arr2)"/><path class="dg-line" d="M400 250H362" marker-end="url(#arr2)"/><path class="dg-line" d="M208 250H182" marker-end="url(#arr2)"/><path class="dg-line" d="M464 210V170H620V140" marker-end="url(#arr2)"/><path class="dg-line dg-dash" d="M28 110H14V342H22" marker-end="url(#arr2)"/>
+<rect class="dg-chip" x="28" y="82" width="152" height="56" rx="8"/><text class="dg-n" x="104" y="106">Владелец</text><text class="dg-s" x="104" y="124">просьба</text>
+<rect class="dg-chip" x="208" y="82" width="152" height="56" rx="8"/><text class="dg-n" x="284" y="106">Ведущий</text><text class="dg-s" x="284" y="124">план, уровни L0–L3</text>
+<rect class="dg-chip" x="388" y="82" width="152" height="56" rx="8"/><text class="dg-n" x="464" y="106">Журнал collab</text><text class="dg-s" x="464" y="124">задача по роли</text>
+<rect class="dg-chip" x="568" y="82" width="152" height="56" rx="8"/><text class="dg-n" x="644" y="106">Исполнитель</text><text class="dg-s" x="644" y="124">берёт задачу, правит</text>
+<rect class="dg-chip" x="568" y="222" width="152" height="56" rx="8"/><text class="dg-n" x="644" y="246">Ревью</text><text class="dg-s" x="644" y="264">другой агент по роли</text>
+<polygon class="dg-chip" points="400,250 464,210 528,250 464,290"/><text class="dg-n" x="464" y="254">Одобрено?</text>
+<rect class="dg-chip" x="208" y="222" width="152" height="56" rx="8"/><text class="dg-n" x="284" y="246">Гейт закрытия</text><text class="dg-s" x="284" y="264">UX-ревью при HIGH</text>
+<rect class="dg-chip-hi" x="28" y="222" width="152" height="56" rx="8"/><text class="dg-n" x="104" y="246">Задача закрыта</text><text class="dg-s" x="104" y="264">complete_task</text>
+<text class="dg-e" x="542" y="162" text-anchor="middle">нет — исправить</text><text class="dg-e" x="381" y="240" text-anchor="middle">да</text>
+<rect class="dg-band-warn" x="24" y="318" width="712" height="48" rx="8"/>
+<text class="dg-h" x="40" y="339">Деньги, прод, удаление данных, секреты</text>
+<text class="dg-e" x="40" y="356">request_user_approval — задача ждёт, пока владелец не ответит в своём терминале</text>
+</svg>
+<figcaption>Поток задачи: готово объявляет не автор, а одобренное ревью другого агента.</figcaption>
+</figure>
+<p>Ведущий пишет план до первой правки, заводит задачу в журнале и адресует её роли, а не имени агента. Исполнитель ставит <code>claim_task</code> и <code>claim_files</code> — дерево общее, чужой живой захват отвергается. Свою же задачу автор не ревьюит: <code>request_review</code> откажет. При одном вендоре ревью делает тот же агент в отдельной сессии на модели не слабее авторской.</p>
+<p>Разногласие двух агентов не решается тем, кто сказал последним: позиции записываются в решение, и закрыть спор может только владелец. Одобрений не выдаёт ни один агент и ни панель: только <code>collab approve</code> в интерактивном терминале владельца.</p>
+<h3>Что требует слова владельца и почему</h3>
+<p>Одобрение появляется не потому, что агент так захотел. Когда агент заводит задачу, журнал прогоняет текст её <strong>действия</strong> через таблицу политики (<code>policy.json</code>) и относит к классу: деньги, прод, удаление, секреты, «наружу» (push, письмо, публикация), правка, чтение. Опасный класс требует одобрения, и задача встаёт в «ждёт владельца».</p>
+<p>Действие — это то, что агент <strong>будет делать</strong>: глагол и объект («fix the frame crop on iPhone Duo», «написать тесты модели»), а не название задачи и не симптом. Действие, которого таблица не узнала, не создаёт задачу: агент получает отказ <code>ACTION_UNRECOGNISED</code> с подсказкой и переформулирует сам; необязательное поле <code>action_kind</code> (<code>read</code>, <code>edit</code>, <code>test</code>, <code>publish</code>, <code>delete</code>, <code>secrets</code>, <code>deploy</code>, <code>pay</code>) заменяет глагол и может только <em>повысить</em> класс. Опасное по словам всё равно идёт владельцу.</p>
+</section>
+
+<section id="files">
+<h2>Карта файлов</h2>
+<p>Набор живёт в четырёх местах, и у каждого своя роль. Главное правило: <strong>состояние работы — в проекте, настройки проекта — вне репозитория, код набора — в установленном релизе</strong>.</p>
+<table class="data">
+<thead><tr><th>Где</th><th>Что там</th><th>Кто пишет</th><th>В git</th></tr></thead>
+<tbody>
+<tr><td><code>~/agent-collab-kit/</code></td><td><strong>Исходник набора:</strong> <code>collab/</code> (код и встроенные настройки), <code>ui/</code> (панель), <code>hooks/</code>, <code>skills/</code>, <code>agents/</code>, <code>rules/</code>, <code>bin/</code> (установщик, лаунчер), <code>tests/</code></td><td>Разработчик набора</td><td>да (свой репозиторий)</td></tr>
+<tr><td><code>~/.agent-collab-kit/releases/&lt;sha&gt;/</code> и <code>current</code></td><td><strong>Установленный релиз:</strong> копия исходника на момент установки; <code>current</code> — ссылка на активный. Хранится три последних</td><td>Установщик</td><td>нет</td></tr>
+<tr><td><code>~/.agent-collab-kit/collab/agents.json</code></td><td><strong>Состав машины:</strong> какие агенты есть, кто ведущий, режим ревью, роли. Рядом <code>agents.json.prev</code> (копия для «Вернуть прежний»), <code>briefings/</code>, при необходимости <code>adapters/</code></td><td>Мастер панели или <code>collab setup</code></td><td>нет</td></tr>
+<tr><td><code>~/.agent-collab-kit/projects/&lt;id&gt;/</code></td><td><strong>Реестр проекта:</strong> <code>project.json</code>, <code>scopes.json</code>, <code>readonly-guard.json</code>, <code>features.json</code>, <code>ui-review.json</code>, <code>collab/*.json</code></td><td><code>collab connect</code> (человек) и вручную</td><td>нет</td></tr>
+<tr><td><code>~/.agent-collab-kit/history.jsonl</code>, <code>posix-copies.json</code></td><td><strong>Учёт установщика:</strong> история релизов для отката; какие копии он разложил и их хэши</td><td>Установщик</td><td>нет</td></tr>
+<tr><td><code>&lt;проект&gt;/.collab/</code></td><td><strong>Журнал проекта:</strong> задачи, ревью, сообщения, решения, одобрения, прогоны, лента событий</td><td>Сервер <code>collab</code> (агенты и CLI)</td><td>нет (в <code>.gitignore</code>)</td></tr>
+<tr><td><code>~/.claude*/</code> (rules, skills, agents, <code>settings.json</code>)</td><td><strong>Копии для Claude Code</strong> и хуки</td><td>Установщик</td><td>нет</td></tr>
+<tr><td><code>~/.codex/</code>, <code>~/.cursor/</code>, Gemini</td><td><strong>Регистрация журнала</strong> у других агентов; у Codex ещё блок в <code>AGENTS.md</code> и хук</td><td>Установщик</td><td>нет</td></tr>
+</tbody></table>
+<p>Почему реестр проекта лежит вне репозитория: он выдаёт агентам права (куда исполнителю писать, какие проверки запускать). Лежи он в репозитории, агент мог бы выдать их себе сам. Поэтому <code>collab connect</code> делает только человек, а агент может лишь показать <code>--dry-run</code>.</p>
+<p>Журнал проекта один на репозиторий: все рабочие копии (worktree) пишут в один <code>.collab/</code>. Задачи одного проекта не видны из другого.</p>
+</section>
+
+<section id="project">
+<h2>Как набор встречается с проектом</h2>
+<p>Один раз человек подключает проект, а дальше всё происходит само при каждой сессии агента.</p>
+<p><strong>Подключение (один раз, человек в терминале).</strong> В папке проекта <code>collab connect --dry-run</code> показывает предложение, <code>collab connect</code> записывает его. Команда смотрит на проект и создаёт в реестре <code>projects/&lt;id&gt;/</code>: <code>project.json</code> (id, корень, гейт, <code>plan_gate</code>, <code>post_edit</code>), <code>scopes.json</code> (куда исполнителю можно писать — все отслеживаемые git папки верхнего уровня, кроме скрытых), <code>readonly-guard.json</code> (группа команд сборки, если в проекте есть Xcode или Swift). И создаёт журнал <code>.collab/</code> в проекте. Из оболочки агента и без терминала команда откажет.</p>
+<p><strong>Каждая сессия агента в проекте:</strong></p>
+<ol>
+<li><strong>Агент стартует</strong> и читает свои инструкции: у Claude — <code>rules/</code> из его папки настроек, у Codex — блок в <code>AGENTS.md</code>.</li>
+<li><strong>Хуки срабатывают на действиях агента</strong> (у Claude они в <code>settings.json</code>): <code>session-start</code> при запуске, <code>model-guard</code>, <code>plan-gate</code> и <code>push-gate</code> перед действием, <code>post-edit</code> после правки. Каждый хук находит настройки проекта по рабочей папке: ищет в реестре проект, чей корень содержит эту папку, и читает его <code>project.json</code>. Нет проекта или настройки — хук молча пропускает.</li>
+<li><strong>Запускается сервер журнала</strong> (<code>collab/src/mcp/server.mjs</code>) как дочерний процесс агента. Переменная <code>COLLAB_AGENT_ID</code> говорит ему, с кем он разговаривает. Он определяет корень проекта по рабочей папке и открывает <code>.collab/</code>.</li>
+<li><strong>Агент вызывает инструменты</strong> (<code>create_task</code>, <code>claim_task</code>, <code>request_review</code>…). Сервер отвечает через единый фасад <code>api.mjs</code>: проверяет политику, роли и состояния и пишет в журнал под замком.</li>
+<li><strong>Субагенты ограничены отдельно.</strong> <code>implementer</code> пишет только в области из <code>scopes.json</code> (хук <code>scope-guard</code> в его описании), <code>verifier</code> ничего не правит и запускает только разрешённые команды (<code>readonly-guard</code>).</li>
+</ol>
+<p>Корень проекта один на все рабочие копии (worktree) репозитория, поэтому агент в ветке и агент в основном дереве видят одни и те же задачи.</p>
+</section>
+
+<section id="layers">
+<h2>Слои настроек: что что заменяет</h2>
+<p>Настройки читаются слоями, и более близкий к проекту слой заменяет более общий. Заменяется <strong>файл целиком</strong>, а не по ключам.</p>
+<table class="data">
+<thead><tr><th>Слой</th><th>Где</th><th>Что даёт</th></tr></thead>
+<tbody>
+<tr><td>1. Проект</td><td><code>~/.agent-collab-kit/projects/&lt;id&gt;/collab/*.json</code></td><td>Свои роли, раннеры, политика, состав (<code>agents.json</code>) и инструкции для этого проекта</td></tr>
+<tr><td>2. Машина</td><td><code>~/.agent-collab-kit/collab/agents.json</code></td><td>Состав: кто есть, кто ведущий, роли</td></tr>
+<tr><td>3. Встроенное</td><td><code>current/collab/config/*.json</code></td><td>Каталог агентов, роли, способности, политика, модели, раннеры</td></tr>
+</tbody></table>
+<p><strong>Что проект изменить не может</strong> (набор отвергает или молча игнорирует):</p>
+<ul>
+<li><strong>Политика</strong> (<code>policy.json</code>): проект может добавить классы и правила, но не убрать и не ослабить встроенные; добавленное правило не может быть мягче класса «не узнал». Ослабление требует явной пометки и обоснования.</li>
+<li><strong>Роли ревьюера:</strong> признак <code>read_only</code> у <code>code_reviewer</code>, <code>ux_reviewer</code>, <code>security_reviewer</code> вернётся на место, даже если проектный <code>roles.json</code> его не содержит.</li>
+<li><strong>Адаптеры агентов</strong> (как запускать): берутся только из встроенного каталога.</li>
+<li><strong>Модели и уровни</strong> (<code>models.json</code>): только встроенные, проектная копия игнорируется с предупреждением.</li>
+</ul>
+<p>Из репозитория проекта настройки не читаются вообще: ни раннеры, ни политику, ни состав он подсунуть не может. Это граница, ради которой реестр лежит вне репозитория.</p>
+</section>
+
+<section id="installer">
+<h2>Установщик по шагам</h2>
+<p>Установщик (<code>bin/agent-collab-kit-install</code>) берёт <strong>только закоммиченное состояние</strong> и ставит его как новый релиз. Каждый шаг, который что-то меняет, записывает в свой журнал, как его отменить: при сбое всё откатывается в обратном порядке.</p>
+<ol>
+<li><strong>Проверка источника.</strong> Дерево чистое, определён коммит; старая установка под прежним именем переносится.</li>
+<li><strong>План.</strong> Установщик заранее считает, что будет записано, и отказывает, если на месте копии лежит чужой файл или копию правили руками («was not created by this installer»).</li>
+<li><strong>Сборка.</strong> <code>git archive</code> коммита → папка <code>releases/&lt;sha&gt;</code>. В ней прогоняются тесты <code>collab</code> (0 падений, пропуск допустим только с причиной <code>platform:</code>) и дымовой тест MCP: сверка списка инструментов и то, что без журнала ничего не создаётся.</li>
+<li><strong>Переключение.</strong> Ссылка <code>current</code> атомарно переводится на новый релиз.</li>
+<li><strong>Раскладка по агентам</strong> (следующий раздел): копии правил, скиллов и субагентов, хуки, регистрация журнала, лаунчер <code>collab</code> в <code>PATH</code>.</li>
+<li><strong>Учёт и уборка.</strong> Запись в <code>history.jsonl</code>, остаются три последних релиза.</li>
+</ol>
+<p><strong>Откат</strong> к прежнему релизу: <code>bin/agent-collab-kit-install --rollback</code>. Он читает <code>history.jsonl</code> и возвращает <code>current</code> на предыдущий релиз.</p>
+<table class="data">
+<thead><tr><th>Флаг</th><th>Что делает</th></tr></thead>
+<tbody>
+<tr><td><code>--dry-run</code></td><td>Все проверки и тесты, ничего не меняет</td></tr>
+<tr><td><code>--rollback</code></td><td>Вернуть предыдущий релиз</td></tr>
+<tr><td><code>--source &lt;папка&gt;</code></td><td>Ставить из другого клона</td></tr>
+<tr><td><code>--home &lt;папка&gt;</code></td><td>Чужой домашний каталог (для проверок, настоящий аккаунт не затрагивается)</td></tr>
+<tr><td><code>--bindir &lt;папка&gt;</code></td><td>Куда положить команду <code>collab</code></td></tr>
+<tr><td><code>--claude-config-dir &lt;путь&gt;</code></td><td>Ещё один каталог настроек Claude Code (повторяемый)</td></tr>
+<tr><td><code>--skip-claude</code>, <code>--skip-codex</code>, <code>--skip-cursor</code>, <code>--skip-gemini</code></td><td>Не трогать этого агента</td></tr>
+<tr><td><code>--adopt-profile &lt;profile.json&gt;</code></td><td>Принять вендора из разведки <code>vendor-probe</code> как адаптер машины; только владелец в терминале, после его «да»</td></tr>
+</tbody></table>
+</section>
+
+<section id="agents-install">
+<h2>Что установщик кладёт каждому агенту</h2>
+<p>Каждая программа читает инструкции и подключает инструменты по-своему, поэтому набор раскладывает всё в её формате.</p>
+<table class="data">
+<thead><tr><th>Агент</th><th>Журнал <code>collab</code> (MCP)</th><th>Инструкции</th><th>Хуки</th></tr></thead>
+<tbody>
+<tr><td><strong>Claude Code</strong> (в каждом каталоге настроек: <code>~/.claude</code>, <code>~/.claude-account-2</code>…)</td><td>Запись уровня пользователя (<code>claude mcp</code>), <code>COLLAB_AGENT_ID=claude</code></td><td>Копии <code>rules/</code> (оркестрация, терминология, модули, Apple-инструменты), <code>skills/</code> и <code>agents/</code> (<code>implementer</code>, <code>verifier</code>)</td><td>В <code>settings.json</code>: <code>model-guard</code>, <code>plan-gate</code>, <code>push-gate</code>, <code>post-edit</code>, <code>session-start</code></td></tr>
+<tr><td><strong>Codex</strong></td><td>Раздел в <code>~/.codex/config.toml</code>, <code>COLLAB_AGENT_ID=codex</code></td><td>Блок-указатель в <code>~/.codex/AGENTS.md</code> (какие файлы правил прочитать). Сам Codex читает не больше 32 КиБ всех <code>AGENTS.md</code></td><td><code>codex-guard</code> в <code>~/.codex/hooks.json</code>; Codex запустит его, только когда владелец один раз подтвердит командой <code>/hooks</code></td></tr>
+<tr><td><strong>Cursor</strong></td><td><code>~/.cursor/mcp.json</code></td><td>Только брифинг через <code>whoami</code></td><td>нет</td></tr>
+<tr><td><strong>Gemini</strong> (<code>agy</code>)</td><td>Регистрация в его настройках</td><td>Только брифинг через <code>whoami</code></td><td>нет</td></tr>
+<tr><td><strong>Grok, MiniMax</strong> (после слияния PR #1)</td><td>Установщик <strong>не</strong> пишет: секцию добавляют руками</td><td>Только брифинг</td><td>нет</td></tr>
+</tbody></table>
+<p>На macOS и Linux всё, что читает человек и Claude Code, кладётся <strong>настоящими копиями</strong> из релиза: ссылку Claude Code не видит (проверено). Владение копиями отслеживается по хэшу в <code>posix-copies.json</code>. На Windows скиллы — junction на <code>current</code>, а агенты и правила — копии (<code>windows-links.json</code>). Лаунчер <code>collab</code> — симлинк на POSIX и <code>.cmd</code>-шим на Windows.</p>
+<p>Личное (свои вендоры, тарифы, лимиты) лежит в <code>personal/rules/personal.md</code> и ставится туда же, если файл есть. Вне git.</p>
+</section>
+
+<section id="hooks">
+<h2>Хуки</h2>
+<p>Хуки — это проверки перед действием агента (или сразу после). Все написаны на Node (<code>hooks/*.mjs</code>), один код для macOS и Windows; хост запускает их через лаунчер <code>bin/agent-collab-kit-hook &lt;имя&gt;</code>. Они ограничивают, а не просят: словесная просьба в промпте — контекст, а хук — проверка перед записью.</p>
+<table class="data">
+<thead><tr><th>Хук</th><th>Где работает</th><th>Что делает</th><th>Чем настраивается</th></tr></thead>
+<tbody>
+<tr><td><code>model-guard</code></td><td>Ведущий Claude, перед вызовом субагента</td><td>Отменяет вызов субагента без явной <code>model</code> (кроме <code>fork</code>)</td><td>Ничем: одинаков для всех проектов</td></tr>
+<tr><td><code>plan-gate</code></td><td>Ведущий Claude, перед правкой файла</td><td>Правка кода проекта только при плане со строками «Маршрут:» и <code>ux_impact:</code></td><td><code>plan_gate</code> в <code>project.json</code>; без неё проверки нет</td></tr>
+<tr><td><code>push-gate</code></td><td>Ведущий Claude, перед командой Bash</td><td><code>git push</code> только через зелёный гейт проекта; <code>--force</code>, <code>-f</code>, <code>--no-verify</code> блокируются всегда. Правило «блок при сомнении»: команда с подстановкой (<code>$</code>, обратные кавычки) или сложной оболочкой не пропускается</td><td><code>gate</code> в <code>project.json</code></td></tr>
+<tr><td><code>post-edit</code></td><td>Ведущий Claude, после правки</td><td>Правка файла, за которым стоит гейт, сразу гонит этот гейт; красный возвращается агенту в тот же ход</td><td><code>post_edit</code> в <code>project.json</code></td></tr>
+<tr><td><code>session-start</code></td><td>Ведущий Claude, при старте</td><td>Включает git-хуки проекта (<code>core.hooksPath</code>)</td><td><code>githooks_dir</code> в <code>project.json</code></td></tr>
+<tr><td><code>scope-guard</code></td><td>Субагент <code>implementer</code>, перед правкой</td><td>Правка вне разрешённой области блокируется; при любой неясности отказывает (fail-closed)</td><td><code>scopes.json</code> проекта</td></tr>
+<tr><td><code>readonly-guard</code></td><td>Субагент <code>verifier</code>, перед командой Bash</td><td>Разрешён только перечисленный список команд, всё остальное — блок; ничего не меняет</td><td><code>readonly-guard.json</code> (платформенные группы, например <code>apple</code>)</td></tr>
+<tr><td><code>codex-guard</code></td><td>Ведущий Codex</td><td>То же, что <code>model-guard</code> и <code>plan-gate</code>, для Codex: запрет <code>codex exec</code> и <code>claude -p</code> без явной модели, правка без плана</td><td><code>plan_gate</code> в <code>project.json</code></td></tr>
+</tbody></table>
+<div class="note callout"><strong>Хуки ведущей сессии — не граница безопасности:</strong> непонятный вход, нет <code>collab</code> или нет настройки — действие проходит. Жёсткими (fail-closed) сделаны только <code>scope-guard</code> и <code>readonly-guard</code> у исполнителей. Модель угроз и остаточные риски — <code>hooks/SECURITY-hooks.md</code>.</div>
+</section>
+
+<section id="journal">
+<h2>Журнал проекта <code>.collab/</code></h2>
+<p>Журнал — это обычные файлы в папке проекта, без базы данных. Его читают и пишут сервер <code>collab</code> (для агентов), CLI и панель (для человека), и все они ходят через один фасад <code>collab/src/api.mjs</code>.</p>
+<table class="data">
+<thead><tr><th>Папка или файл</th><th>Что хранит</th></tr></thead>
+<tbody>
+<tr><td><code>journal.json</code></td><td>Метка журнала: версия формата, дата создания, корень проекта</td></tr>
+<tr><td><code>tasks/</code></td><td>Задачи: название, действие, класс действия, статус, исполнитель, файлы, уровни, спецификация, аренда</td></tr>
+<tr><td><code>reviews/</code></td><td>Запросы ревью и вердикты: кто просил, кто отвечает, раунд, находки с доказательствами</td></tr>
+<tr><td><code>approvals/</code></td><td>Просьбы об одобрении: действие, класс, причина, срок, решение, использовано ли</td></tr>
+<tr><td><code>decisions/</code></td><td>Вопросы и споры: варианты, позиции агентов, итог</td></tr>
+<tr><td><code>messages/</code></td><td>Входящие каждого агента</td></tr>
+<tr><td><code>agents/</code></td><td>Состояние агентов: когда виден последний раз</td></tr>
+<tr><td><code>runs/</code></td><td>Результаты проверок, которые запускал <code>start_run</code></td></tr>
+<tr><td><code>locks/</code></td><td>Короткие замки на время записи</td></tr>
+<tr><td><code>events.jsonl</code></td><td>Лента событий, только дописывается: кто и что сделал, когда</td></tr>
+</tbody></table>
+<p><strong>Как пишется.</strong> Любое изменение идёт транзакцией (<code>store.transact</code>): берётся замок (файл создаётся с флагом «только если нет», чужой замок определяется по процессу и возрасту), запись проверяет версию записи и откажет, если её успел изменить другой агент, и событие дописывается в ленту. Два агента не затрут правки друг друга: второй получит отказ с просьбой перечитать.</p>
+<p><strong>Чего журнал не принимает как журнал:</strong> папку <code>.collab/</code>, закоммиченную в репозиторий; журнал, скопированный в другой корень (пока владелец не привяжет его командой <code>init --adopt</code>); <code>.collab/</code>-символьную ссылку; полупостроенный журнал без метки. Это защита от подмены состояния.</p>
+<p><strong>Состояния задачи</strong> (<code>transitions.mjs</code>): <code>created</code> → <code>assigned</code> → <code>in_progress</code> → <code>review</code> → <code>approved</code> → <code>completed</code>; вбок — <code>waiting_for_user</code>, <code>waiting_for_agent</code>, <code>changes_requested</code>, <code>blocked</code>; конечные — <code>completed</code>, <code>cancelled</code>. Что таблица переходов держит сама, а не просьба в промпте:</p>
+<ul>
+<li>в <code>in_progress</code> задача попадает только после допуска: если действию нужно одобрение, оно должно быть выдано;</li>
+<li>в <code>review</code> — только если у задачи <code>needs_review</code> не выключен;</li>
+<li><code>completed</code> у задачи с <code>ux_impact: HIGH</code> требует одобренного ревью <code>ux_reviewer</code>;</li>
+<li>владелец закрывает и возвращает задачи отдельным путём (<code>collab close</code> / <code>reopen</code>, панель), вне таблицы переходов; агентам этого пути нет.</li>
+</ul>
+</section>
+
+<section id="core">
+<h2>Ядро <code>collab</code>: карта модулей</h2>
+<p>Код журнала лежит в <code>collab/src/</code>. Главное, что нужно помнить: <strong>одна точка входа</strong> (<code>api.mjs</code>), а всё остальное — модули за ней.</p>
+<table class="data">
+<thead><tr><th>Модуль</th><th>Что делает</th></tr></thead>
+<tbody>
+<tr><td><code>api.mjs</code></td><td>Единый фасад: из него построены и MCP-инструменты, и CLI, и панель. В фасаде нет <code>approve</code>, поэтому агент выдать одобрение не может</td></tr>
+<tr><td><code>mcp/server.mjs</code>, <code>mcp/tools.mjs</code></td><td>MCP-сервер и список инструментов (38 штук) с описаниями, которые читает модель</td></tr>
+<tr><td><code>cli.mjs</code></td><td>Окно человека: <code>collab status</code>, <code>setup</code>, <code>connect</code>, <code>approve</code>, <code>close</code>, <code>check-config</code>, <code>doctor</code></td></tr>
+<tr><td><code>store.mjs</code>, <code>lock.mjs</code></td><td>Транзакции записи, версии, замки между процессами</td></tr>
+<tr><td><code>domain/*.mjs</code></td><td>Бизнес-правила: <code>tasks</code>, <code>approvals</code>, <code>reviews</code>, <code>decisions</code>, <code>messages</code>, <code>delegations</code>, <code>agents</code>, <code>gate</code> (допуск к работе), <code>reviewer-roles</code> (кто вправе ревьюить), <code>owner</code> (закрытие и возврат задач владельцем), <code>spec</code> (уровни и <code>ux_impact</code>)</td></tr>
+<tr><td><code>policy.mjs</code></td><td>Классификация действия по таблице: чем опасно, нужно ли одобрение; отпечаток действия</td></tr>
+<tr><td><code>transitions.mjs</code></td><td>Таблица допустимых переходов статуса задачи</td></tr>
+<tr><td><code>registry.mjs</code>, <code>paths.mjs</code>, <code>projects.mjs</code></td><td>Слои настроек, проверка их корректности, поиск проекта по рабочей папке</td></tr>
+<tr><td><code>composition.mjs</code>, <code>probe.mjs</code></td><td>Состав машины и факты машины: какие программы установлены, какие роли агент вправе держать</td></tr>
+<tr><td><code>independence.mjs</code></td><td>Проверка, что у работы есть ревьюер, отличный от автора</td></tr>
+<tr><td><code>models.mjs</code></td><td>Лестница уровней L0–L3 и модели вендоров</td></tr>
+<tr><td><code>runs.mjs</code></td><td>Запуск проверок из белого списка (<code>runners.json</code>)</td></tr>
+<tr><td><code>adapters/</code></td><td>Определение программ вендоров и запуск</td></tr>
+</tbody></table>
+<p><strong>Поток одного вызова:</strong> инструмент (<code>tools.mjs</code>) → фасад (<code>api.mjs</code>) → правило (<code>domain/…</code>, с проверкой политики и состояния) → транзакция записи (<code>store.mjs</code>) → ответ с объяснением или отказ с кодом ошибки.</p>
+</section>
+
+<section id="agents">
+<h2>Особенности агентов: как кого запускают</h2>
+<p>Каталог (<code>collab/config/agents.json</code>) описывает каждого агента полем <code>adapter</code>. Главные слова:</p>
+<ul>
+<li><strong><code>kind: manual</code></strong> — сообщение попадает во входящие, агент читает его, когда его сессия работает. <strong><code>kind: cli</code></strong> — слой мог бы запустить программу сам; <code>enabled: false</code> означает, что не запустит. Владелец решил: платный агент сам по событию не стартует.</li>
+<li><strong><code>headless</code></strong> — команда, которой другой агент может запустить этого на задачу. Без неё агент может быть ведущим, но не подчинённым: мастер показывает плашку «без CLI запуска». Есть ли команда в <code>PATH</code>, проверяется, а что запуск завершится успехом — нет.</li>
+<li><strong><code>cannot</code></strong> — чего программа не умеет в принципе.</li>
+<li><strong><code>review_launch</code></strong> — команда запуска на ревью без права записи, с датой, версией программы и доказательством пробы.</li>
+</ul>
+<p><strong>Факты машины</strong> (<code>probe.mjs</code>) решают, что агент вправе держать именно здесь: программа не найдена, сессия Codex настроена только на чтение, нет запуска на ревью — и мастер снимает соответствующие роли с причиной. Непроверенное оставляет роль с пометкой.</p>
+<table class="data">
+<thead><tr><th>Агент</th><th>Тип</th><th>Как запускают на задачу</th><th>Запуск на ревью</th></tr></thead>
+<tbody>
+<tr><td><strong>Claude Code</strong></td><td><code>manual</code>, открытая сессия</td><td><code>claude -p</code> (команда <code>claude</code>)</td><td>Скилл <code>claude-review</code>: без инструментов правки, без оболочки, без настроек проекта; только macOS/Linux; проверено</td></tr>
+<tr><td><strong>Codex</strong></td><td><code>cli</code>, <code>enabled: false</code> (ручной запуск)</td><td><code>codex exec</code> с явной моделью</td><td>Скилл <code>codex-review</code>: <code>-s read-only</code>; проверено</td></tr>
+<tr><td><strong>Gemini</strong></td><td><code>cli</code> (<code>agy -p</code>), <code>enabled: false</code></td><td><code>agy</code></td><td>Нет: роли ревьюера сняты</td></tr>
+<tr><td><strong>Cursor</strong></td><td><code>manual</code>, CLI нет</td><td>Нельзя: работа ждёт во входящих, пока владелец не откроет редактор. Ведущим быть может</td><td>Нет</td></tr>
+<tr><td><strong>Grok</strong> (после слияния PR #1)</td><td><code>manual</code>, <code>headless: grok</code></td><td><code>grok --prompt-file …</code>; живой вызов не проверялся (вход истёк)</td><td>Нет: <code>--sandbox read-only</code> не проверен пробой</td></tr>
+<tr><td><strong>MiniMax</strong> (после слияния PR #1)</td><td><code>manual</code>, <code>headless: minimax-dev</code></td><td><code>minimax-dev --dir … --task-file …</code> (лаунчер поверх OpenCode)</td><td>Нет: лаунчер правит файлы и запускает оболочку</td></tr>
+</tbody></table>
+<p>Почему запуск на ревью отдельно: роль ревьюера — это метка для маршрутизации, и право правки она не отнимает. Открытая сессия Claude может править файлы, каким бы ни был её промпт. Удерживает именно способ запуска.</p>
+<h3>Почему у агентов разные адаптеры</h3>
+<p><strong>Коротко:</strong> адаптер описывает физический путь, которым работа доходит до конкретной программы. Программы у вендоров устроены по-разному, поэтому и пути разные. Один общий адаптер был бы враньём: он обещал бы запуск там, где запустить нечем.</p>
+<table class="data">
+<thead><tr><th>От чего зависит</th><th>Пример</th><th>Что меняется в адаптере</th></tr></thead>
+<tbody>
+<tr><td><strong>Есть ли у программы режим без интерактива</strong> — команда, которой её можно запустить с заданием</td><td>У Codex есть <code>codex exec</code>, у Gemini — <code>agy -p</code>. У Cursor консольной команды нет — это редактор</td><td>Есть команда → <code>kind: cli</code> или <code>headless</code>. Нет → <code>manual</code>: работа ждёт во входящих, пока владелец сам не откроет программу</td></tr>
+<tr><td><strong>Как программой обычно пользуются</strong></td><td>Claude Code и Cursor — открытые сессии, где работает человек: они читают входящие сами, когда живут</td><td><code>manual</code> и <code>session: interactive</code>. У Claude при этом есть <code>claude -p</code>, поэтому <code>headless: ["claude"]</code> указан: ведущий Codex может запустить его на задачу</td></tr>
+<tr><td><strong>Решение владельца, а не свойство программы</strong></td><td>Платный агент сам по событию не стартует. У Codex и Gemini запуск возможен, но <code>enabled: false</code> (решения от 10 и 15 сентября)</td><td>Очередь сначала, запуск только вручную. Набор не начинает платную работу сам</td></tr>
+<tr><td><strong>Что проверено</strong></td><td>У Grok и MiniMax команда запуска есть, но живой вызов ни разу не доходил до конца</td><td><code>manual</code> с <code>headless</code>, без автозапуска и без запуска на ревью, пока нет проб</td></tr>
+</tbody></table>
+<p><strong>Что адаптер не определяет.</strong> Роль, уровень модели и права агента адаптер не задаёт: роли и состав выбирает владелец в мастере, уровни лежат в <code>models.json</code>, а «может ли агент быть ревьюером» зависит от отдельного поля <code>review_launch</code>. Адаптер отвечает на один вопрос: <em>как до этой программы дотянуться</em>.</p>
+<p><strong>Почему адаптеры лежат только во встроенном каталоге.</strong> Адаптер решает, может ли набор запустить процесс на машине. Если бы его можно было объявить в проекте, репозиторий мог бы заставить набор выполнить любую команду. Поэтому проектный <code>agents.json</code> адаптер изменить не может: объявленный там игнорируется, и набор пишет предупреждение. Нового вендора добавляют в каталог набора после разведки <code>vendor-probe</code>, а не в проекте.</p>
+</section>
+
+<section id="panel">
+<h2>Панель и тесты</h2>
+<p><strong>Панель</strong> (<code>collab ui</code>, код в <code>ui/</code>) — страница в браузере над теми же данными, что и CLI.</p>
+<ul>
+<li><code>server.mjs</code> — HTTP-сервер на <code>127.0.0.1</code> с токеном в адресе; <code>views.mjs</code> — функции «журнал → JSON» для экранов; <code>setup-wizard.mjs</code> — логика мастера настройки; <code>public/</code> — страница, стили, скрипт и это руководство. Статические файлы (в том числе руководство) отдаются без токена.</li>
+<li><strong>Безопасность:</strong> только <code>127.0.0.1</code>; токен; проверки <code>Host</code> и <code>Origin</code>; CSP <code>default-src 'self'</code> (поэтому стили только в файле, без встроенных); текст журнала пишут агенты, поэтому на страницу он выводится как текст, а не как разметка.</li>
+<li><strong>Что панель пишет:</strong> состав машины (мастер), задачу «уборка мелочей», закрытие и возврат задач владельцем — и только если она запущена из терминала владельца. <strong>Одобрений панель не выдаёт никогда:</strong> она показывает задачу, причину и команду, которую владелец выполняет в терминале.</li>
+</ul>
+<p><strong>Тесты — три набора:</strong></p>
+<table class="data">
+<thead><tr><th>Команда</th><th>Что проверяет</th><th>Время</th></tr></thead>
+<tbody>
+<tr><td><code>node --test</code> (всё в <code>collab/test</code> и <code>ui/test</code>)</td><td>Журнал, политику, роли, панель</td><td>около минуты</td></tr>
+<tr><td><code>node --test tests/test_*_guard.mjs tests/test_agent_hook_commands.mjs</code></td><td>Хуки</td><td>около 40 с</td></tr>
+<tr><td><code>node --test tests/test_install_*.mjs</code></td><td>Установщик целиком: релизы, откат, копии, регистрации</td><td>около 3 минут</td></tr>
+</tbody></table>
+<p>Набор установщика прогоняет тесты <code>collab</code> сам в копии релиза перед переключением, поэтому красный тест не даст установить релиз. В CI те же наборы идут на macOS, Linux и Windows.</p>
+</section>
+
+<!-- ───────────────────────── ЕСЛИ ЧТО-ТО НЕ ТАК ───────────────────────── -->
+<section id="problems">
+<h2>Частые проблемы</h2>
+<table class="data">
+<thead><tr><th>Симптом</th><th>Причина</th><th>Что делать</th></tr></thead>
+<tbody>
+<tr><td><code>collab: command not found</code></td><td>Терминал открыт до установки</td><td>Открыть новый терминал</td></tr>
+<tr><td>Агент не видит инструменты <code>collab</code></td><td>Сессия старше установки</td><td>Перезапустить сессию агента</td></tr>
+<tr><td><code>no agent "…" is registered</code></td><td>Агент стоит на машине, но не отмечен в составе</td><td>Отметить его на шаге 1 мастера и применить</td></tr>
+<tr><td>Установка: «was not created by this installer»</td><td>Установленная копия правила или скилла правлена руками</td><td>Перенести правку в исходник, а файл вернуть</td></tr>
+<tr><td>Установка отказывает из-за грязного дерева</td><td>Ставится только закоммиченное</td><td>Закоммитить или убрать правки</td></tr>
+<tr><td>«Применить» в мастере серая</td><td>Дыра независимости: ревьюера держит только автор</td><td>Отдать роль ревьюера другому агенту на шаге 5</td></tr>
+<tr><td>Роль ревьюера «недоступна» в мастере, <code>collab doctor</code> называет конфликт</td><td>У агента нет запуска на ревью без права записи (<code>adapter.review_launch</code>)</td><td>Снять роль на шаге 5 и отдать её Codex или Claude; либо записать запуск в каталог после пробы</td></tr>
+<tr><td>Задача висит в «Ждёт вас», а одобрять нечего</td><td>Её одобрение просрочено (живёт сутки) или его не запрашивали; часто класс — «Безопасность — на всякий случай»: журнал не узнал действие</td><td>Панель → «Ждёт вас» → «Задачи ждут вас»: там сказано, почему, и дана команда — попросить агента запросить заново или <code>collab close</code></td></tr>
+<tr><td>Агент получает <code>ACTION_UNRECOGNISED</code> при <code>create_task</code></td><td>В действии нет глагола, который знает таблица: агент написал название задачи или симптом. Раньше такая задача ждала одобрения «на всякий случай»</td><td>Агент переформулирует сам: глагол + объект или <code>action_kind</code> (<code>read</code>, <code>edit</code>, <code>test</code>, <code>publish</code>, <code>delete</code>, <code>secrets</code>, <code>deploy</code>, <code>pay</code>). Владельцу делать ничего не нужно</td></tr>
+<tr><td>Задача лежит во входящих и не берётся</td><td>Агент без CLI: ведущий не может его запустить</td><td>Открыть агента и попросить забрать работу, либо поставить его CLI</td></tr>
+<tr><td><code>request_review</code> отказывает с <code>reviewer_model</code></td><td>Ревью внутри одного вендора</td><td>Назвать модель ревьюера из <code>collab models</code>, не слабее модели автора</td></tr>
+<tr><td>Панель отвечает <code>403</code></td><td>Открыта без токена</td><td>Открыть адрес, который печатает <code>collab ui</code></td></tr>
+<tr><td>Панель пустая</td><td>Она смотрит не тот журнал</td><td><code>collab project --json</code> покажет, какой</td></tr>
+</tbody></table>
+<p>Общая диагностика: <code>collab doctor</code> — состояние журнала, реестра и дрейф id моделей.</p>
+</section>
+
+<!-- ───────────────────────── ПОДДЕРЖКА ───────────────────────── -->
+<section id="maintain">
+<h2>Как поддерживать это руководство</h2>
+<p>У руководства <strong>две копии с одним содержанием</strong>:</p>
+<ul>
+<li><strong>Эта страница</strong> (<code>ui/public/guide.html</code> в репозитории набора) — основная. Её отдаёт панель (пункт «Руководство» в меню), она открывается и прямо из клона, поэтому читать её можно до установки.</li>
+<li><strong>Документ в Claude Docs</strong> — <a href="https://claude.ai/artifact/LoJSoenDUJwy7BT4hwXeqi" target="_blank" rel="noopener noreferrer">agent-collab-kit — руководство разработчика</a>. Его удобно отправлять ссылкой тем, у кого нет набора; чтобы они его открыли, владелец делится документом через Share.</li>
+</ul>
+<p>Обе копии обновляются <strong>вместе с релизом</strong>: коммит, который меняет описанное здесь, не считается законченным, пока нужный раздел не поправлен в обеих. Если они разойдутся, верна страница из репозитория.</p>
+<table class="data">
+<thead><tr><th>Что поменялось в наборе</th><th>Какой раздел править</th></tr></thead>
+<tbody>
+<tr><td>Установщик, платформы, требования</td><td>Установка, Установщик по шагам</td></tr>
+<tr><td>Новый агент в каталоге, роли, <code>reviewed_by</code>, шаги мастера</td><td>Настройка, Особенности агентов</td></tr>
+<tr><td>Новая часть набора: хук, скилл, субагент, правило</td><td>Что это, Устройство, Хуки</td></tr>
+<tr><td>Порядок задачи, ревью, гейтов</td><td>Как идёт работа</td></tr>
+<tr><td>Файлы, которые кладёт установщик; настройки проекта; устройство журнала; модули ядра</td><td>Карта файлов, Что получает каждый агент, Встреча с проектом, Слои настроек, Журнал проекта, Ядро collab</td></tr>
+<tr><td>Новый отказ или сообщение об ошибке</td><td>Частые проблемы</td></tr>
+<tr><td>Только внутренний рефакторинг</td><td>Ничего</td></tr>
+</tbody></table>
+<p>Строка «Сверено с релизом» вверху и дата меняются при каждой сверке с набором.</p>
+</section>
+</main>
+</div>
+</body>
+</html>
