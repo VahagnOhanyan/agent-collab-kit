@@ -21,6 +21,7 @@ import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transit
 import { touchAgent } from './agents.mjs'
 import { holdsReviewerRole } from './reviewer-roles.mjs'
 import { SESSION_ID } from '../usage.mjs'
+import { closed } from './sessions.mjs'
 
 const DEFAULT_LEASE_SECONDS = 3600
 
@@ -239,7 +240,7 @@ function sessionsAfterClaim(ctx, task, at) {
   // A plain token or nothing: the id is later used as a file name, and the journal must not carry a path an agent chose.
   const sessionId = typeof named === 'string' && SESSION_ID.test(named) ? named : null
   const last = sessions[sessions.length - 1]
-  if (last && last.agent === ctx.agentId && (last.session_id || null) === sessionId) return sessions
+  if (last && !last.to && last.agent === ctx.agentId && (last.session_id || null) === sessionId) return sessions
   return [...sessions, { agent: ctx.agentId, session_id: sessionId, from: at }]
 }
 
@@ -491,12 +492,12 @@ export function handOverFromAbsent(ctx, { lead = null } = {}) {
           kept.push({ id: task.id, status: task.status, owner: from, why: 'status' })
           continue
         }
-        tx.put('tasks', { ...task, status, owner: target, contributors: [...new Set([...contributors, target])], lease: keepStatus && !task.lease ? null : lease(target) })
+        tx.put('tasks', { ...task, status, owner: target, contributors: [...new Set([...contributors, target])], lease: keepStatus && !task.lease ? null : lease(target), ...closed(task, tx.iso()) })
         load.set(target, (load.get(target) || 0) + 1)
         tx.emit('task.handed_over', { collection: 'tasks', id: task.id }, { from, to: target, reason, status })
         handedOver.push({ id: task.id, from, to: target, status })
       } else if (allowedNext(task).includes(TASK_STATUS.CREATED)) {
-        tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null, contributors })
+        tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null, contributors, ...closed(task, tx.iso()) })
         tx.emit('task.released', { collection: 'tasks', id: task.id }, { by: 'collab', previous_owner: from, reason: `${reason}; nobody holds role ${task.role}` })
         queued.push({ id: task.id, from, role: task.role })
       } else {
@@ -537,7 +538,7 @@ export function releaseTask(ctx, { task_id, reason = 'released' }) {
     // Only the holder (or anyone, once nobody holds it) may give it back.
     assertMayHold(tx, task, ctx.agentId, 'release')
     assertTransition(task, TASK_STATUS.CREATED, {})
-    const next = tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
+    const next = tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null, ...closed(task, tx.iso()) })
     touchAgent(tx, ctx, { status: 'available', current_task_id: null })
     tx.emit('task.released', { collection: 'tasks', id: task_id }, { by: ctx.agentId, previous_owner: task.owner, reason })
     return project(ctx, next)
@@ -642,7 +643,7 @@ export function sweep(ctx) {
       if (!fresh || fresh.version !== task.version) continue
       if (!LEASED_STATES.has(fresh.status) || !fresh.owner) continue
       if (!projectTask(fresh, { now: lockedNow, leaseSeconds }).lease_expired) continue
-      tx.put('tasks', { ...fresh, status: TASK_STATUS.CREATED, owner: null, lease: null })
+      tx.put('tasks', { ...fresh, status: TASK_STATUS.CREATED, owner: null, lease: null, ...closed(fresh, tx.iso()) })
       tx.emit('task.released', { collection: 'tasks', id: task.id }, {
         by: 'sweep',
         previous_owner: fresh.owner,

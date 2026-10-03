@@ -20,6 +20,7 @@ import { AGENT_STATUSES } from '../registry.mjs'
 import { CODES, CollabError } from '../errors.mjs'
 import { assertNoSecret } from '../policy.mjs'
 import { TASK_STATUS, TERMINAL, assertTransition } from '../transitions.mjs'
+import { closed } from './sessions.mjs'
 
 export const DECLARED_STATUSES = AGENT_STATUSES
 
@@ -125,7 +126,7 @@ export async function suspendRole(ctx, { role, reason = '', task_id = null }) {
         kept.push({ id: task.id, status: task.status })
         continue
       }
-      tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null })
+      tx.put('tasks', { ...task, status: TASK_STATUS.CREATED, owner: null, lease: null, ...closed(task, tx.iso()) })
       tx.emit('task.released', { collection: 'tasks', id: task.id }, { by: ctx.agentId, previous_owner: ctx.agentId, reason: `role ${role} suspended: ${clean}` })
       released.push(task.id)
     }

@@ -48,7 +48,9 @@ export function defaultRoots(home = homedir()) {
   } catch {
     claudeConfigDirs = []
   }
-  return { claudeConfigDirs, codexDir: join(home, '.codex', 'sessions') }
+  // Codex moves a finished session out of `sessions/` into `archived_sessions/`: a cost that was readable while the
+  // thread ran must stay readable after it is archived, so both are read.
+  return { claudeConfigDirs, codexDir: join(home, '.codex', 'sessions'), codexArchiveDir: join(home, '.codex', 'archived_sessions') }
 }
 
 // ── Claude ──────────────────────────────────────────────────────────────────
@@ -219,14 +221,14 @@ function rolloutFiles(codexDir, sinceMs) {
     }
     for (const name of names) {
       const path = join(dir, name)
-      if (depth < 3) walk(path, depth + 1)
-      else if (name.startsWith('rollout-') && name.endsWith('.jsonl')) {
+      // `sessions/` keeps logs in YYYY/MM/DD, `archived_sessions/` flat: a log is recognised by its name wherever it sits.
+      if (name.startsWith('rollout-') && name.endsWith('.jsonl')) {
         try {
           if (statSync(path).mtimeMs >= sinceMs) out.push(path)
         } catch {
           // a file that vanished between the listing and the stat is not a log
         }
-      }
+      } else if (depth < 3) walk(path, depth + 1)
     }
   }
   walk(codexDir, 0)
@@ -242,31 +244,42 @@ const lastAtOrBefore = (rows, ts) => {
   return found
 }
 
-// One part per Codex thread that claimed the task. `since` bounds which logs are even opened (a log last written
-// before the task existed cannot hold its claim).
-export function codexUsage({ codexDir, taskId, since, to }) {
+// How far a claim in a log may sit from the moment the journal recorded the same claim: two clocks, one call.
+const CLAIM_SLACK_MS = 60_000
+
+// One part per (Codex thread, stretch of work). `spans` are the stretches the journal knows — [{from, to}] — and each
+// is matched to the claim in the log that opened it, so a thread's work between a release and the next claim is not
+// counted. A task with no recorded stretch (taken before they were kept) is read as one, from its first claim to `to`.
+// `since` bounds which logs are even opened (a log last written before the task existed cannot hold its claim).
+export function codexUsage({ codexDir, archiveDir = null, taskId, since, to, spans = null }) {
   const parts = []
-  for (const file of rolloutFiles(codexDir, since)) {
-    const claim = claimsOf(file).find((c) => c.task_id === taskId)
-    if (!claim) continue
+  const stretches = spans?.length ? spans : [{ from: null, to }]
+  const files = [...rolloutFiles(codexDir, since), ...(archiveDir ? rolloutFiles(archiveDir, since) : [])]
+  for (const file of new Set(files)) {
+    const claims = claimsOf(file).filter((c) => c.task_id === taskId)
+    if (!claims.length) continue
     const log = cached(file, parseCodex)
-    const end = lastAtOrBefore(log.counts, to)
-    if (!end || end.ts < claim.ts) continue
-    const base = lastAtOrBefore(log.counts, claim.ts)
-    const used = ZERO()
-    for (const key of ['input', 'cache_read', 'output']) used[key] = end[key] - (base ? base[key] : 0)
-    const sameWindow = base && base.resets !== null && base.resets === end.resets && base.pct !== null && end.pct !== null
-    parts.push({
-      agent: 'codex',
-      thread: claim.thread,
-      from: claim.ts,
-      to: Math.min(to, end.ts),
-      by_model: { [lastAtOrBefore(log.models, end.ts)?.model || 'unknown']: { ...used, messages: null } },
-      // Whole weekly percent for the whole account: what moved while the task was held, not what the task cost.
-      limit_percent: sameWindow ? Math.max(0, end.pct - base.pct) : null,
-      // Another task claimed in the same thread inside the window: the tokens are the thread's, not this task's alone.
-      shared: log.claims.some((c) => c.task_id && c.task_id !== taskId && c.ts >= claim.ts && c.ts <= to)
-    })
+    for (const span of stretches) {
+      const claim = span.from === null ? claims[0] : claims.find((c) => c.ts >= span.from - CLAIM_SLACK_MS && c.ts <= span.to)
+      if (!claim) continue
+      const end = lastAtOrBefore(log.counts, span.to)
+      if (!end || end.ts < claim.ts) continue
+      const base = lastAtOrBefore(log.counts, claim.ts)
+      const used = ZERO()
+      for (const key of ['input', 'cache_read', 'output']) used[key] = end[key] - (base ? base[key] : 0)
+      const sameWindow = base && base.resets !== null && base.resets === end.resets && base.pct !== null && end.pct !== null
+      parts.push({
+        agent: 'codex',
+        thread: claim.thread,
+        from: claim.ts,
+        to: Math.min(span.to, end.ts),
+        by_model: { [lastAtOrBefore(log.models, end.ts)?.model || 'unknown']: { ...used, messages: null } },
+        // Whole weekly percent for the whole account: what moved while the task was held, not what the task cost.
+        limit_percent: sameWindow ? Math.max(0, end.pct - base.pct) : null,
+        // Another task claimed in the same thread inside the stretch: the tokens are the thread's, not this task's alone.
+        shared: log.claims.some((c) => c.task_id && c.task_id !== taskId && c.ts >= claim.ts && c.ts <= span.to)
+      })
+    }
   }
   return parts
 }
@@ -282,29 +295,40 @@ export function sumUsage(parts) {
 // A task's cost: the Claude sessions it was claimed from and the Codex threads that claimed it, each within the time
 // the task was held. `allTasks` is read only to see whether a Claude session was shared with another task in the same
 // window — then the figure is a ceiling for this task, not its own, and says so.
+// The stretches of a task as [from, to] in milliseconds. A stretch ends where the journal says it did (`to`, written when
+// the task lost its owner); one without — written before that was kept — runs up to the next stretch, or to the end.
+function stretchesOf(task, end) {
+  const sessions = task.sessions || []
+  return sessions.map((entry, index) => ({
+    entry,
+    from: Date.parse(entry.from),
+    to: entry.to ? Date.parse(entry.to) : sessions[index + 1] ? Date.parse(sessions[index + 1].from) : end
+  }))
+}
+
 export function usageOfTask({ task, allTasks = [], now, terminal, roots = defaultRoots() }) {
   const sessions = task.sessions || []
   const end = terminal && task.updated_at ? Date.parse(task.updated_at) : now
   const parts = []
   let approximate = false
-  sessions.forEach((entry, index) => {
-    if (!entry.session_id) return
-    const from = Date.parse(entry.from)
-    const to = sessions[index + 1] ? Date.parse(sessions[index + 1].from) : end
+  const mine = stretchesOf(task, end)
+  for (const { entry, from, to } of mine) {
+    if (!entry.session_id) continue
     const part = claudeUsage({ configDirs: roots.claudeConfigDirs, sessionId: entry.session_id, from, to })
-    if (!part) return
+    if (!part) continue
     parts.push(part)
     const shared = allTasks.some((other) => {
       if (other.id === task.id) return false
       const otherEnd = other.status === 'completed' || other.status === 'cancelled' ? Date.parse(other.updated_at) || now : now
-      return (other.sessions || []).some((s) => s.session_id === entry.session_id && Date.parse(s.from) < to && otherEnd > from)
+      return stretchesOf(other, otherEnd).some((s) => s.entry.session_id === entry.session_id && s.from < to && s.to > from)
     })
     if (shared) approximate = true
-  })
+  }
   const codexInvolved = task.owner === 'codex' || sessions.some((s) => s.agent === 'codex') || (task.contributors || []).includes('codex')
   if (codexInvolved) {
     const since = Date.parse(task.created_at) || 0
-    const codexParts = codexUsage({ codexDir: roots.codexDir, taskId: task.id, since, to: end })
+    const spans = mine.filter(({ entry }) => entry.agent === 'codex').map(({ from, to }) => ({ from, to }))
+    const codexParts = codexUsage({ codexDir: roots.codexDir, archiveDir: roots.codexArchiveDir, taskId: task.id, since, to: end, spans })
     if (codexParts.some((part) => part.shared)) approximate = true
     parts.push(...codexParts)
   }

@@ -223,3 +223,67 @@ test('Codex: a thread that claimed another task inside the window marks the figu
     w.cleanup()
   }
 })
+
+test('the pause between a release and the next claim is not the task\'s: Claude', () => {
+  const w = claudeWorld('sess-p', [assistant('a', 2, 10), assistant('pause', 5, 50), assistant('b', 8, 20)])
+  try {
+    const roots = { claudeConfigDirs: w.configDirs, codexDir: join(w.dir, 'none') }
+    const task = { id: 'tsk_p', status: 'in_progress', sessions: [{ agent: 'claude', session_id: 'sess-p', from: T(1), to: T(4) }, { agent: 'claude', session_id: 'sess-p', from: T(7) }] }
+    const u = usageOfTask({ task, allTasks: [task], now: ms(30), terminal: false, roots })
+    assert.equal(u.total.output, 30, 'a (10) in the first stretch and b (20) in the second; the 50 in between is not this task')
+    assert.equal(u.parts.length, 2)
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('the pause between a release and the next claim is not the task\'s: Codex', () => {
+  const w = codexWorld({
+    a: [codexClaim(1, 'tsk_c'), codexCount(2, 100, 0, 10, 5), codexCount(4, 400, 0, 40, 6), codexCount(6, 4000, 0, 400, 9), codexClaim(7, 'tsk_c'), codexCount(8, 4300, 0, 430, 9), codexCount(9, 4500, 0, 450, 10)]
+  })
+  try {
+    const task = { id: 'tsk_c', status: 'in_progress', owner: 'codex', created_at: T(0), sessions: [{ agent: 'codex', session_id: null, from: T(1), to: T(5) }, { agent: 'codex', session_id: null, from: T(7) }] }
+    const u = usageOfTask({ task, allTasks: [task], now: ms(9), terminal: false, roots: { claudeConfigDirs: [], codexDir: w.codexDir } })
+    assert.equal(u.total.output, 90, '40 in the first stretch, 450 - 400 in the second; not 450 from the first claim to the end')
+    assert.equal(u.parts.length, 2)
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('releasing a task ends the stretch, and taking it again starts a new one; holding on does not', async () => {
+  const sbx = sandbox()
+  const clock = fixedClock()
+  const api = createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir, clock, sessionId: 'sess-r' })
+  try {
+    const task = await api.createTask({ title: 'Taken, given back, taken again', action: 'edit a file' })
+    const first = await api.claimTask({ task_id: task.id })
+    assert.equal(first.task.sessions.length, 1)
+    assert.equal(first.task.sessions[0].to, undefined, 'still being held')
+    const held = await api.claimTask({ task_id: task.id })
+    assert.equal(held.task.sessions.length, 1, 'taking it again while holding it is not a new stretch')
+
+    const released = await api.releaseTask({ task_id: task.id })
+    assert.ok(released.sessions[0].to, 'giving it back ends the stretch')
+    const again = await api.claimTask({ task_id: task.id })
+    assert.equal(again.task.sessions.length, 2, 'taking it after a release is a new stretch')
+    assert.equal(again.task.sessions[1].to, undefined)
+  } finally {
+    sbx.cleanup()
+  }
+})
+
+test('Codex: a log moved to the archive after the thread ended is still read', () => {
+  const w = codexWorld({})
+  const a = scratch()
+  try {
+    writeFileSync(join(a.dir, 'rollout-z.jsonl'), [codexClaim(1, 'tsk_arch'), codexCount(2, 100, 0, 10, 5), codexCount(5, 700, 0, 70, 6)].join('\n') + '\n')
+    const none = codexUsage({ codexDir: w.codexDir, taskId: 'tsk_arch', since: 0, to: ms(9) })
+    assert.equal(none.length, 0, 'without the archive the cost is gone, which is what happened to the first real task once it was archived')
+    const [part] = codexUsage({ codexDir: w.codexDir, archiveDir: a.dir, taskId: 'tsk_arch', since: 0, to: ms(9) })
+    assert.equal(part.by_model.unknown.output, 70)
+  } finally {
+    w.cleanup()
+    a.cleanup()
+  }
+})

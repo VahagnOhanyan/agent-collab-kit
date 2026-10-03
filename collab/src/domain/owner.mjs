@@ -22,6 +22,7 @@ import { CODES, CollabError } from '../errors.mjs'
 import { assertNoSecret } from '../policy.mjs'
 import { TASK_STATUS, TERMINAL } from '../transitions.mjs'
 import { RELEASED } from './reviews.mjs'
+import { closed } from './sessions.mjs'
 
 export const OWNER_OUTCOMES = Object.freeze([TASK_STATUS.COMPLETED, TASK_STATUS.CANCELLED])
 const OUTCOME_RU = { completed: 'завершена', cancelled: 'отменена' }
@@ -129,6 +130,7 @@ export async function ownerReopenTask(ctx, { task_id, reason }) {
       status: TASK_STATUS.CREATED,
       owner: null,
       lease: null,
+      ...closed(task, at),
       waiting_on: null,
       blocked_reason: null,
       owner_history: [...(task.owner_history || []), ...(closedBefore ? [{ action: 'closed', ...closedBefore }] : []), { action: 'reopened', reason: why, at, from_status: task.status, previous_owner: task.owner || null }]

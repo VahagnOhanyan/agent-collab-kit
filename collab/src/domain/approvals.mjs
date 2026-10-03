@@ -28,6 +28,7 @@ import { assertNoSecret, classifyAction, fingerprintAction } from '../policy.mjs
 import { TASK_STATUS, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { admitWork } from './gate.mjs'
+import { closed } from './sessions.mjs'
 
 export function requestApproval(ctx, { task_id = null, action: asked, action_kind = null, reason, details = '', cost_estimate = null }) {
   if (!asked) throw new CollabError(CODES.INVALID_INPUT, 'an approval request needs the action it is asking about')
@@ -171,7 +172,7 @@ export function resolveApproval(ctx, { approval_id, decision, note = '', channel
           ...task,
           status: to,
           ...(admission ? admission.fields : {}),
-          ...(to === TASK_STATUS.CREATED ? { owner: null, lease: null } : {}),
+          ...(to === TASK_STATUS.CREATED ? { owner: null, lease: null, ...closed(task, tx.iso()) } : {}),
           waiting_on: null,
           blocked_reason: decision === 'denied' ? note || 'the owner declined this action' : null
         })
