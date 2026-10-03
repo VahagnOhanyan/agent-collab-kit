@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { overviewView, rosterView, taskView, waitingView } from '../views.mjs'
+import { loadConfigFrom } from '../../collab/src/registry.mjs'
 
 test('view projections preserve the endpoint contract without writing', async () => {
   const task = { id: 'tsk_one', title: 'Inspect my-app', status: 'in_progress', delegations: [{ id: 'd1' }] }
@@ -50,4 +51,37 @@ test('view projections preserve the endpoint contract without writing', async ()
   assert.deepEqual(waiting.reviews.map((review) => review.id), ['rev_one'])
   assert.equal(waiting.commands.approve, 'collab approve <id>')
   assert.equal(rosterView(api).agents[0].status, 'available')
+})
+
+test('a task waiting for the owner says what the owner can do now: approve a live request, or ask again / close', async () => {
+  const tasks = [
+    { id: 'tsk_live', title: 'Rotate the deploy key', status: 'waiting_for_user', action: 'rotate the api key', action_class: 'SECURITY_SENSITIVE', owner: 'agent-a' },
+    { id: 'tsk_stale', title: 'Stage 2: model tests', status: 'waiting_for_user', action: 'Stage 2: model tests', action_class: 'SECURITY_SENSITIVE', owner: 'agent-b' },
+    { id: 'tsk_bare', title: 'Asked without a request', status: 'waiting_for_user', action: 'x', action_class: 'DESTRUCTIVE', owner: 'agent-a' },
+    { id: 'tsk_busy', title: 'Ordinary work', status: 'in_progress' }
+  ]
+  const approvals = [
+    { id: 'apr_live', task_id: 'tsk_live', action_class: 'SECURITY_SENSITIVE', policy_reason: 'Credentials need the owner.', expired: false, expires_at: '2099-01-01T00:00:00Z' },
+    { id: 'apr_stale', task_id: 'tsk_stale', action_class: 'SECURITY_SENSITIVE', policy_reason: 'nothing in the policy table matched, so it is treated as SECURITY_SENSITIVE', reason: 'Please let me start.', expired: true, expires_at: '2000-01-01T00:00:00Z' }
+  ]
+  const api = {
+    listTasks: async ({ open } = {}) => (open ? tasks : tasks),
+    listApprovals: ({ task_id } = {}) => approvals.filter((a) => !task_id || a.task_id === task_id),
+    listDecisions: () => [],
+    listReviews: () => [],
+    config: { policy: loadConfigFrom().policy }
+  }
+  const waiting = await waitingView(api)
+  assert.deepEqual(waiting.tasks.map((t) => [t.id, t.state, t.approval?.id || null]), [
+    ['tsk_live', 'live', 'apr_live'],
+    ['tsk_stale', 'expired', 'apr_stale'],
+    ['tsk_bare', 'none', null]
+  ])
+  const stale = waiting.tasks.find((t) => t.id === 'tsk_stale')
+  assert.match(stale.policy_reason, /nothing in the policy table matched/, 'the screen can tell a guess from a rule')
+  assert.equal(stale.reason, 'Please let me start.')
+  // Read again by the table in force: an unrecognised action says so; a key rotation is recognised as security.
+  assert.equal(stale.now.recognised, false)
+  assert.deepEqual([waiting.tasks[0].now.action_class, waiting.tasks[0].now.recognised], ['SECURITY_SENSITIVE', true])
+  assert.equal(waiting.approvals.find((a) => a.id === 'apr_live').task_title, 'Rotate the deploy key')
 })

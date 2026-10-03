@@ -640,12 +640,71 @@ function labelledCommand(title, parts, what) {
     : labelled(title, line, what)
 }
 
+// Why an action needs the owner, in the owner's words. The policy class is the journal's; the line under it says what
+// it guards. SECURITY_SENSITIVE is also where an action the table did not recognise falls — said apart, because then
+// nothing dangerous was found: the description simply had no verb the table knows.
+const ACTION_CLASS_RU = {
+  FINANCIAL: ['Деньги', 'Может стоить денег — сейчас или в следующем счёте.'],
+  PRODUCTION: ['Прод', 'Меняет то, что получают настоящие пользователи: деплой, релиз, TestFlight.'],
+  SECURITY_SENSITIVE: ['Безопасность', 'Касается доступов, токенов, ключей или прав.'],
+  DESTRUCTIVE: ['Удаление', 'Стирает работу или данные, которые git не вернёт.'],
+  EXTERNAL_SIDE_EFFECT: ['Наружу', 'Уходит за пределы машины и видно другим: push, PR, письмо, публикация.'],
+  SAFE_WRITE: ['Правка', 'Обычная правка в дереве.'],
+  READ_ONLY: ['Чтение', 'Ничего не меняет.']
+}
+const UNMATCHED = /^nothing in the policy table matched/
+function whyOwner(actionClass, policyReason) {
+  const [name, line] = ACTION_CLASS_RU[actionClass] || [actionClass || 'класс не указан', '']
+  const guessed = UNMATCHED.test(policyReason || '')
+  return el('div', {},
+    el('span', { class: 'pill warn', title: actionClass || '', text: guessed ? `${name} — на всякий случай` : name }), ' ',
+    el('span', { class: 'muted small', text: guessed
+      ? 'Журнал не узнал действие: в описании нет глагола из таблицы («исправить», «добавить», «написать тест»…). Опасного в нём не найдено — спрашивает на всякий случай.'
+      : line }),
+    policyReason && !guessed ? el('div', { class: 'muted small', text: `Правило: ${policyReason}` }) : null)
+}
+
+// The same action read by the policy table in force now. When it disagrees with the class the task waits under, the
+// owner learns the wait comes from an older reading — and, when the table now asks nothing, that it is safe to close
+// the task or let the agent ask again.
+function nowReading(storedClass, now) {
+  const [name] = ACTION_CLASS_RU[now.action_class] || [now.action_class]
+  const why = now.recognised ? `Правило: ${now.reason}` : 'Действие не узнано — на всякий случай.'
+  // Same class: unrecognised is already said by the pill above; a recognised rule is named once, here.
+  if (now.action_class === storedClass) return now.recognised ? el('div', { class: 'muted small', text: why }) : null
+  return el('div', { class: now.requires_approval ? 'note warn' : 'note ok' },
+    el('strong', { text: `По нынешней таблице это «${name}»` }),
+    now.requires_approval ? ` — одобрение по-прежнему нужно. ${why}` : ` — одобрение не нужно. Задача ждёт по прежнему прочтению журнала: её можно закрыть или попросить агента завести заново. ${why}`)
+}
+
+// A task waiting for the owner, and what the owner can do about it NOW — the command for its state.
+function waitingTaskCard(t) {
+  const close = labelledCommand('Или закрыть задачу (в терминале, причина обязательна)', ['collab', 'close', shellArg(t.id), '--cancel', '--reason', '"причина"'], `команду закрытия задачи ${t.id}`)
+  return el('div', { class: 'card' },
+    el('div', {}, el('a', { href: `#/tasks/${encodeURIComponent(t.id)}` }, el('strong', { text: t.title || t.id })), el('span', { class: 'mono muted', text: `  ${t.id}` })),
+    t.action ? el('div', { class: 'small' }, el('span', { class: 'muted', text: 'Действие: ' }), t.action) : null,
+    el('h3', { text: 'Почему нужно ваше слово' }),
+    // The stored class is what blocks the task; the reason recorded with its approval may come from another rule of
+    // an older table, so when the table in force can be read, its own reading is shown instead of that reason.
+    whyOwner(t.action_class, t.now ? (t.now.recognised || t.now.action_class !== t.action_class ? null : 'nothing in the policy table matched') : t.policy_reason),
+    t.now ? nowReading(t.action_class, t.now) : null,
+    t.reason ? el('p', { class: 'small' }, el('span', { class: 'muted', text: `Агент (${t.owner || '?'}) пишет: ` }), t.reason) : null,
+    ...(t.state === 'live'
+      ? [el('div', { class: 'note ok', text: `Одобрение можно выдать${t.approval?.expires_at ? ` — до ${when(t.approval.expires_at)}` : ''}.` }),
+         labelledCommand('Одобрить (в терминале)', ['collab', 'approve', shellArg(t.approval.id)], `команду одобрения задачи ${t.id}`),
+         labelledCommand('Отклонить (в терминале, причина обязательна)', ['collab', 'reject', shellArg(t.approval.id), '--note', '"причина"'], `команду отклонения задачи ${t.id}`)]
+      : t.state === 'expired'
+        ? [el('div', { class: 'note bad', text: `Запрос на одобрение просрочен${t.approval?.expires_at ? ` (${when(t.approval.expires_at)})` : ''}: выдать его уже нельзя. Попросите агента ${t.owner || ''} запросить одобрение заново — или закройте задачу, если она не нужна.` }), close]
+        : [el('div', { class: 'note warn', text: `Запроса на одобрение нет. Попросите агента ${t.owner || ''} запросить его — или закройте задачу, если она не нужна.` }), close]))
+}
+
 // What the owner needs to judge a request: the action, what it costs, why it is
 // asked, until when it holds, and both ways to answer it.
 function approvalCard(x) {
   return el('div', { class: 'card' },
-    el('div', {}, el('strong', { text: x.action?.summary || x.id }), ' ', el('span', { class: 'pill warn', text: x.action_class || '' })),
-    x.policy_reason ? el('div', { class: 'muted small', text: x.policy_reason }) : null,
+    el('div', {}, el('strong', { text: x.action?.summary || (typeof x.action === 'string' ? x.action : null) || x.id })),
+    x.task_id ? el('div', { class: 'small' }, el('span', { class: 'muted', text: 'к задаче ' }), el('a', { href: `#/tasks/${encodeURIComponent(x.task_id)}`, text: x.task_title || x.task_id })) : null,
+    whyOwner(x.action_class, x.policy_reason),
     x.reason ? el('p', { text: x.reason }) : null,
     x.details ? el('div', { class: 'detail', text: plain(x.details) }) : null,
     x.cost_estimate ? el('div', { class: 'note warn', text: `Оценка стоимости: ${plain(x.cost_estimate)}` }) : null,
@@ -693,7 +752,12 @@ async function waiting() {
   const stale = (data.approvals || []).filter((x) => x.expired)
   const d = data.decisions || []
   const r = data.reviews || []
-  return page('Ждёт вас', 'Одобрения и выбор по вопросам даются только в терминале: панель их показывает, но не выдаёт.',
+  const t = data.tasks || []
+  return page('Ждёт вас', 'Одобрения и выбор по вопросам даются только в терминале: панель их показывает, но не выдаёт. Команду скопируйте и выполните в своём терминале.',
+    el('h2', { text: `Задачи ждут вас (${t.length})` }),
+    t.length
+      ? [el('p', { class: 'sub', text: 'Задача стоит, пока вы не ответите: взять её в работу или закрыть агент не может. Под каждой — почему она ждёт и что сделать сейчас.' }), ...t.map(waitingTaskCard)]
+      : empty('Ни одна задача не ждёт вас'),
     el('h2', { text: `Одобрения (${live.length})` }),
     live.length ? live.map(approvalCard) : empty('Нет одобрений, которые можно выдать'),
     // Expired requests are not work for the owner: they are kept apart and folded,
@@ -1245,8 +1309,11 @@ async function refreshBadge() {
   try {
     const w = await api('/api/waiting')
     if (mine !== badgeSeq) return
-    // An expired approval cannot be granted any more; it is not "waiting for you".
-    const n = (w.approvals || []).filter((a) => !a.expired).length + (w.decisions?.length || 0)
+    // A task waiting for the owner counts once, whatever its approval's state (an expired one still needs the owner to
+    // ask the agent again or close it); a live approval of no such task counts on its own. Expired approvals do not.
+    const waitingTaskIds = new Set((w.tasks || []).map((t) => t.id))
+    const loose = (w.approvals || []).filter((a) => !a.expired && !waitingTaskIds.has(a.task_id)).length
+    const n = waitingTaskIds.size + loose + (w.decisions?.length || 0)
     const badge = document.getElementById('waiting-count')
     badge.textContent = String(n)
     badge.hidden = n === 0
