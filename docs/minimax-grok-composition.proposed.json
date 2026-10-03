@@ -1,6 +1,6 @@
 {
   "//": "This person's composition: which agents they have, who leads, who holds which role. Written by `collab setup`, editable by hand; a project's own agents.json narrows it.",
-  "//roles": "Every agent here holds every role its own capabilities support — the same 'all, then cut by the facts' proposal `collab setup` makes — so all three can implement, research, decide architecture and review. These are capability promises, not a division of labour: which agent a given task goes to is decided per task (complexity, how much context it needs, who is free, what the model can actually do), and any of the three can review anybody else's work. `review_mode` stays cross_vendor, so nobody is ever the only reviewer of their own change. Adapters are not here: they come from the built-in config only.",
+  "//roles": "Two rules of the kit shape who holds what here. (1) A reviewer role (code_reviewer, security_reviewer, ux_reviewer) is held only by an agent whose catalog entry names a launch proven unable to write (adapter.review_launch); today that is Codex alone among these three — MiniMax's launcher edits and runs a shell, Grok's read-only sandbox has not been seen to hold. (2) Work is reviewed by somebody other than its author. So Codex leads and reviews and holds no implementing role (its own code would have nobody to review it), and MiniMax and Grok implement. When Grok's read-only launch is proven (a write attempt that fails, recorded in the catalog), it can take the reviewer roles too. Which agent a task goes to is still decided per task; these are the roles each may be routed. Adapters are not here: they come from the built-in config only.",
   "lead": "codex",
   "review_mode": "cross_vendor",
   "defaults": {
@@ -13,7 +13,7 @@
       "name": "Codex CLI",
       "provider": "openai",
       "briefing_file": "briefings/codex.md",
-      "briefing": "You are the Codex CLI agent on this project. whoami says which roles you hold and whether you lead: the person's composition decides, not this catalog. Leading means planning, routing and accepting the owner's work; holding software_engineer means a bounded implementation may come to you too, and holding code_reviewer means somebody else's change may be sent to you. Neither hat is permanent. Ask for an independent review by ROLE (code_reviewer), not by name, before you call your own work done. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. If you cannot do one of your roles here, suspend_role. Full instructions: collab brief codex.",
+      "briefing": "You are the Codex CLI agent on this project. whoami says which roles you hold and whether you lead: the person's composition decides, not this catalog. Leading means planning, routing and accepting the work; holding code_reviewer means somebody else's change may be sent to you, and a review is run read-only (codex-review). Ask for an independent review by ROLE (code_reviewer), not by name, before anything is called done. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. If you cannot do one of your roles here, suspend_role. Full instructions: collab brief codex.",
       "capabilities": [
         "read_code",
         "modify_code",
@@ -27,13 +27,7 @@
         "record_decision"
       ],
       "roles": [
-        "architect",
-        "software_engineer",
-        "ios_engineer",
-        "backend_engineer",
-        "product_engineer",
         "code_reviewer",
-        "test_engineer",
         "security_reviewer",
         "ux_reviewer",
         "researcher"
@@ -41,10 +35,10 @@
     },
     {
       "id": "minimax",
-      "name": "MiniMax (the owner's minimax-dev launcher)",
+      "name": "MiniMax (minimax-dev launcher)",
       "provider": "minimax",
       "briefing_file": "briefings/minimax.md",
-      "briefing": "You are the MiniMax agent (the minimax-dev launcher) on this project, a different vendor from the rest of the roster — which is what makes an independent opinion worth having. whoami says which roles you hold and whether you lead: the person's composition decides, not this catalog. Routine implementation is the default that usually comes your way, not a boundary — research, architecture, other people's reviews and the lead's hat are all yours to hold when a task asks for them. Your work arrives as a bounded task in a task file, not as a conversation: do the task it names, keep to it, and say what you did not check. Dirty files that no task claims are somebody else's work in progress — never fold them into yours. Ask for an independent review by ROLE (code_reviewer) before you call the work done. Full instructions: collab brief minimax.",
+      "briefing": "You are the MiniMax agent (the minimax-dev launcher) on this project, a different vendor from the rest of the roster. whoami says which roles you hold: the person's composition decides, not this catalog. Routine implementation is what comes your way; reviews do not, because your launcher can edit and run a shell and a reviewer must not be able to. Your work arrives as a bounded task in a task file, not as a conversation: do the task it names, keep to it, and say what you did not check. Dirty files that no task claims are somebody else's work in progress — never fold them into yours. Ask for an independent review by ROLE (code_reviewer) before you call the work done. Full instructions: collab brief minimax.",
       "capabilities": [
         "read_code",
         "modify_code",
@@ -58,15 +52,11 @@
         "record_decision"
       ],
       "roles": [
-        "architect",
         "software_engineer",
         "ios_engineer",
         "backend_engineer",
         "product_engineer",
-        "code_reviewer",
         "test_engineer",
-        "security_reviewer",
-        "ux_reviewer",
         "researcher"
       ]
     },
@@ -75,7 +65,7 @@
       "name": "Grok (the official xAI CLI)",
       "provider": "xai",
       "briefing_file": "briefings/grok.md",
-      "briefing": "You are the Grok agent (the official xAI CLI) on this project, a different vendor from the rest of the roster — which is the point of you, since an error that does not correlate with the author's is worth more than a second careful look by the same model. whoami says which roles you hold: the person's composition decides, not this catalog, and being registered as a general client says nothing about what a given run is for. A task may make you an implementer, a researcher, an architect or a reviewer; when it is a review, review means no edits, no delegation and no paid run started without the owner's authority. Either way, say what you did, or what you checked and how you could have been wrong. Full instructions: collab brief grok.",
+      "briefing": "You are the Grok agent (the official xAI CLI) on this project, a different vendor from the rest of the roster. whoami says which roles you hold: the person's composition decides, not this catalog. A task may make you an implementer, a researcher or an architect. Reviewer roles come only once your read-only launch is proven to be unable to write; until then a review is not yours to answer. Either way, say what you did, or what you checked and how you could have been wrong. Full instructions: collab brief grok.",
       "capabilities": [
         "read_code",
         "modify_code",
@@ -94,10 +84,7 @@
         "ios_engineer",
         "backend_engineer",
         "product_engineer",
-        "code_reviewer",
         "test_engineer",
-        "security_reviewer",
-        "ux_reviewer",
         "researcher"
       ]
     }

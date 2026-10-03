@@ -16,7 +16,7 @@
 // keeping it there means one read answers "what happened to this task".
 
 import { CODES, CollabError } from '../errors.mjs'
-import { resolveModel } from '../models.mjs'
+import { modelByRef, resolveModel } from '../models.mjs'
 import { assertNoSecret } from '../policy.mjs'
 import { TERMINAL } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
@@ -82,6 +82,17 @@ export function addDelegation(ctx, { task_id, to, model, purpose = '', level = n
   const resolved = resolveModel(ctx.config, chosen)
   const rung = declaredLevel(ctx.config, level)
   const fallbackFrom = fallback_from ? label(fallback_from, 'the model this fell back from') : null
+  // A model whose registry entry says `fallback_policy: "stop"` has no substitute by the owner's decision: when it
+  // fails, the work stops and the owner hears of it. Recording a fall-back FROM it is refused, so the rule is kept by
+  // the journal, not only by the note beside the model.
+  const fellFrom = fallbackFrom ? modelByRef(ctx.config, resolveModel(ctx.config, fallbackFrom).ref) : null
+  if (fellFrom?.fallback_policy === 'stop') {
+    throw new CollabError(
+      CODES.INVALID_INPUT,
+      `model ${fellFrom.ref} has fallback_policy "stop": it is not replaced by another model when it fails — stop and report to the owner`,
+      { fallback_from: fellFrom.ref }
+    )
+  }
   assertNoSecret(purpose, 'delegation purpose')
   const why = brief(purpose, 'the delegation purpose')
   assertNoSecret(reasons, 'delegation reasons')

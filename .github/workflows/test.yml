@@ -35,7 +35,9 @@ jobs:
       # all: bin/agent-collab-kit-install enumerates the same files in Node.)
       - name: collab test suite
         shell: bash
-        run: node --test collab/test/*.test.mjs ui/test/*.test.mjs
+        # The same set the installer runs (it walks collab/test recursively), subfolders included. find, not
+        # globstar: the bash on macOS runners (3.2) has no globstar, and an unexpanded ** would run nothing.
+        run: node --test $(find collab/test ui/test -name '*.test.mjs' | sort)
 
       # The installer's own suite — the only place that actually exercises a
       # real install end to end (git archive, tar extraction, the release

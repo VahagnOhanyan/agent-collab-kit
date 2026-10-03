@@ -1032,7 +1032,9 @@ const COMMANDS = {
         const model = answer.models.find((m) => m.ref === ref)
         const caveat = model.verified === 'unverified' ? ` ${C.yellow}unverified${C.off}` : ''
         const effort = model.effort ? ` ${dim(`effort ${model.effort}`)}` : ''
-        out(`  ${ref.padEnd(18)} ${model.id.padEnd(28)} ${dim(`${model.vendor} · ${model.agent}${model.cost_class ? ` · ${model.cost_class}` : ''}`)}${effort}${caveat}`)
+        // What to do when it fails, where the reader looks for a model: its substitute, or "stop" (no substitute).
+        const onFail = model.fallback_policy === 'stop' ? ` ${C.yellow}no fallback: stop${C.off}` : model.fallback ? ` ${dim(`fallback ${model.fallback}`)}` : ''
+        out(`  ${ref.padEnd(18)} ${model.id.padEnd(28)} ${dim(`${model.vendor} · ${model.agent}${model.cost_class ? ` · ${model.cost_class}` : ''}`)}${effort}${caveat}${onFail}`)
       }
       out('')
     }

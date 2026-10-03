@@ -314,11 +314,11 @@
       "vendor": "minimax",
       "agent": "minimax",
       "level": "L1",
-      "max_level": "L2",
+      "max_level": "L1",
       "maturity": "preview",
       "verified": "unverified",
       "fallback": null,
-      "note": "Pinned preview route for bounded implementation. No alternate MiniMax route or GPT fallback is authorized. If the route fails, stop and report to the owner; never switch models automatically. Launcher validation is confirmed; independent upstream catalog verification is pending.",
+      "note": "Ceiling L1 until a model call has been watched: a preview route nobody ran through the journal is not trusted with harder work. Pinned preview route for bounded implementation. No alternate MiniMax route or GPT fallback is authorized. If the route fails, stop and report to the owner; never switch models automatically. Launcher validation is confirmed; independent upstream catalog verification is pending.",
       "fallback_policy": "stop"
     },
     {
@@ -339,11 +339,11 @@
       "vendor": "xai",
       "agent": "grok",
       "level": "L2",
-      "max_level": "L3",
+      "max_level": "L2",
       "maturity": "unverified",
       "verified": "unverified",
       "fallback": null,
-      "note": "The deeper rung \u2014 independent review, cross-module reasoning, the work whose cost of being wrong is real. The level says how hard the work has to be to belong here; it says nothing about what this account can reach. Same evidence, same absence of it: an id from a saved catalog dated 2026-09-18, an expired login, no live call, no vendor catalog to drift against. A review on this rung still runs read-only with subagents off and no permission bypass \u2014 that is a property of the invocation the owner starts, not a limit of the model or of the CLI."
+      "note": "Ceiling L2, not L3: L3 is the work whose miss costs most, and this model has not been seen to run (login 401). The deeper rung \u2014 independent review, cross-module reasoning, the work whose cost of being wrong is real. The level says how hard the work has to be to belong here; it says nothing about what this account can reach. Same evidence, same absence of it: an id from a saved catalog dated 2026-09-18, an expired login, no live call, no vendor catalog to drift against. A review on this rung still runs read-only with subagents off and no permission bypass \u2014 that is a property of the invocation the owner starts, not a limit of the model or of the CLI."
     }
   ]
 }

@@ -9,15 +9,14 @@
 // guessed for either. The catalog alone still validates — the rest of the registry is covered
 // elsewhere, not mirrored here.
 //
-// The second half is the owner's PROPOSED composition (docs/minimax-grok-composition.proposed.json):
-// all three agents on this machine, every one of them able to implement, research, decide
-// architecture and review. It is applied here the way `collab setup` applies one — written into a
-// temporary machine directory, briefings and all, then read back through loadConfig — so what is
-// checked is the shipped file and not a fixture resembling it. What must hold: it validates; the
-// lead and review mode are the ones the owner chose; nobody holds a role its capabilities do not
-// support and the flexible kinds (implementation, research, architecture, review) are all covered
-// for everybody; and no agent is ever the only reviewer of its own change. What is deliberately
-// NOT checked: that it has been activated anywhere, that any of these clients has run.
+// The second half is the PROPOSED composition (docs/minimax-grok-composition.proposed.json): Codex
+// leads and reviews, MiniMax and Grok implement. It is applied here the way `collab setup` applies
+// one — written into a temporary machine directory, briefings and all, then read back through
+// loadConfig — so what is checked is the shipped file and not a fixture resembling it. What must
+// hold, judged on the FACTS of a machine where all three programs are installed: it validates;
+// nobody holds a role its capabilities or the facts rule out; only an agent with a proven
+// read-only launch reviews; and no agent is ever the only reviewer of its own change. What is
+// deliberately NOT checked: that it has been activated anywhere, that any of these clients has run.
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -29,6 +28,7 @@ import { adapterFor } from '../src/adapters/index.mjs'
 import { agentLaunchable, rolesItCanHold, writeComposition } from '../src/composition.mjs'
 import { independenceReport } from '../src/independence.mjs'
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
+import { factsFor, fitToFacts } from '../src/probe.mjs'
 import { briefingPath, checkBriefings, createRegistry, loadConfig, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
 import { tempDir } from './helpers.mjs'
 
@@ -71,7 +71,8 @@ test('the pinned MiniMax route is one rung, with no invented second tier and no 
   const worker = modelOf('minimax-worker')
   assert.equal(worker.id, 'MiniMax-M3.1-Flash-Preview', 'the id is the route the launcher pins')
   assert.equal(worker.vendor, 'minimax')
-  assert.deepEqual([worker.level, worker.max_level], ['L1', 'L2'])
+  // Ceiling L1: a preview route nobody has watched run is not trusted with harder work.
+  assert.deepEqual([worker.level, worker.max_level], ['L1', 'L1'])
   assert.equal(worker.maturity, 'preview')
   assert.equal(worker.fallback_policy, 'stop')
   assert.equal(worker.fallback, null, 'there is no other MiniMax route to fall back to, and no GPT one to borrow')
@@ -89,7 +90,8 @@ test('the Grok rungs are the local-cache evidence they are: unverified, and no c
     allOn('xai').map((m) => [m.ref, m.id, m.level, m.max_level]),
     [
       ['grok-basic', 'grok-4.5', 'L1', 'L2'],
-      ['grok-review', 'grok-4.6', 'L2', 'L3']
+      // Ceiling L2, not L3: the work whose miss costs most is not given to a model never seen to run.
+      ['grok-review', 'grok-4.6', 'L2', 'L2']
     ]
   )
   const vendor = config.models.vendors.xai
@@ -115,7 +117,7 @@ test('the catalog with both of them is still a registry that validates', () => {
   assert.deepEqual(problems, [], 'adding a client must not make the built-in defaults invalid')
 })
 
- test('preview requires a real fallback or an explicit stop policy', () => {
+test('preview requires a real fallback or an explicit stop policy', () => {
   const copy = structuredClone(config)
   const model = copy.models.models.find((m) => m.ref === 'minimax-worker')
   delete model.fallback_policy
@@ -129,21 +131,15 @@ test('the catalog with both of them is still a registry that validates', () => {
   assert.deepEqual(validateRegistry(copy).problems, [])
 })
 
-// ── the owner's proposed composition: three agents, no fixed division of labour ──
+// ── the proposed composition: Codex leads and reviews, MiniMax and Grok implement ──
 
 const KIT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const PROPOSED = join(KIT_ROOT, 'docs', 'minimax-grok-composition.proposed.json')
 const ROSTER = ['codex', 'minimax', 'grok']
-
-// The four kinds of work a flexible composition has to leave everybody able to do, by the shape of the
-// role catalog rather than by a list of ids: the lead, the routine implementer and the reviewer are
-// the same three agents here, so each kind must reach each of them.
-const KINDS = {
-  architecture: ['architect'],
-  implementation: ['software_engineer', 'ios_engineer', 'backend_engineer', 'product_engineer', 'test_engineer'],
-  research: ['researcher'],
-  review: ['code_reviewer', 'security_reviewer', 'ux_reviewer']
-}
+const REVIEWER_ROLES = ['code_reviewer', 'security_reviewer', 'ux_reviewer']
+const WRITING_ROLES = ['software_engineer', 'ios_engineer', 'backend_engineer', 'product_engineer', 'test_engineer', 'architect']
+// A machine where all three programs are on PATH: the facts, not the file, decide what each may hold.
+const MACHINE = { home: '/nowhere', platform: 'darwin', which: (b) => `/usr/local/bin/${b}`, exists: () => false, read: () => null }
 
 // The file the owner would apply, as a composition this machine would really hold.
 function applied() {
@@ -174,18 +170,15 @@ test('the proposed composition is a registry that validates once it is a machine
   }
 })
 
-test('all three can implement, research, decide architecture and review, and nothing more than their capabilities support', () => {
+test('nobody holds a role its capabilities do not support, and the facts of the machine take nothing away', () => {
   const world = applied()
   try {
+    const facts = factsFor(world.config.agents.agents, { roleDefs: world.config.roles.roles, capabilityIds: Object.keys(world.config.capabilities.capabilities), env: MACHINE })
     for (const agent of world.registry.agents()) {
-      for (const [kind, roles] of Object.entries(KINDS)) {
-        for (const role of roles) {
-          assert.ok(agent.roles.includes(role), `${agent.id} cannot do ${kind} (${role}) — the point of the proposal`)
-        }
-      }
       const permitted = new Set(rolesItCanHold(agent, world.config.roles.roles))
       for (const role of agent.roles) {
         assert.ok(permitted.has(role), `${agent.id} holds ${role}, which its capabilities do not support`)
+        assert.ok(facts[agent.id].allowed.includes(role), `${agent.id} holds ${role}, which the facts take away: ${JSON.stringify(facts[agent.id].blocked.find((b) => b.role === role)?.reasons)}`)
       }
     }
   } finally {
@@ -193,21 +186,55 @@ test('all three can implement, research, decide architecture and review, and not
   }
 })
 
-test('no agent is ever its own reviewer: every author has another vendor to send the review to', () => {
+test('only an agent with a proven read-only launch reviews: Codex reviews, MiniMax and Grok implement', () => {
   const world = applied()
   try {
-    const report = independenceReport({ agents: world.config.agents.agents, roleDefs: world.config.roles.roles })
+    const facts = factsFor(world.config.agents.agents, { roleDefs: world.config.roles.roles, capabilityIds: Object.keys(world.config.capabilities.capabilities), env: MACHINE })
+    for (const id of ['minimax', 'grok']) {
+      for (const role of REVIEWER_ROLES) assert.ok(facts[id].blocked.some((b) => b.role === role), `${id} cannot hold ${role} without a review launch`)
+    }
+    const byId = Object.fromEntries(world.config.agents.agents.map((a) => [a.id, a]))
+    assert.deepEqual(byId.codex.roles.filter((r) => REVIEWER_ROLES.includes(r)).sort(), [...REVIEWER_ROLES].sort())
+    assert.deepEqual(byId.codex.roles.filter((r) => WRITING_ROLES.includes(r)), [], 'the only reviewer writes nothing: its own work would have no reviewer')
+  } finally {
+    world.cleanup()
+  }
+})
+
+test('no agent is ever its own reviewer, judged on the composition the machine would actually hold', () => {
+  const world = applied()
+  try {
+    const roleDefs = world.config.roles.roles
+    const facts = factsFor(world.config.agents.agents, { roleDefs, capabilityIds: Object.keys(world.config.capabilities.capabilities), env: MACHINE })
+    // What the facts leave, not what the file promises.
+    const held = fitToFacts(world.config.agents.agents, facts)
+    const report = independenceReport({ agents: held, roleDefs })
     assert.deepEqual(report.problems, [], 'every author role has another holder of its reviewing roles')
     assert.equal(report.single_vendor, false, 'three providers, so a same-vendor review is not the fallback being relied on')
-    for (const author of world.registry.agents()) {
-      const candidates = world.registry.find({ role: 'code_reviewer', exclude: [author.id] })
-      assert.deepEqual(
-        candidates.map((a) => a.id).sort(),
-        ROSTER.filter((id) => id !== author.id).sort(),
-        `${author.id}'s work can be reviewed by either of the other two, by nobody else and by not itself`
-      )
+    for (const author of ['minimax', 'grok']) {
+      const reviewers = held.filter((a) => a.id !== author && a.roles.includes('code_reviewer')).map((a) => a.id)
+      assert.deepEqual(reviewers, ['codex'], `${author}'s work goes to codex for review, and to nobody without a read-only launch`)
     }
   } finally {
     world.cleanup()
+  }
+})
+
+test('fallback_policy "stop" is kept by the journal: a fall-back from such a model is refused', async () => {
+  const { apis, sandbox } = await import('./helpers.mjs')
+  const sbx = sandbox()
+  const { claude } = apis(sbx)
+  try {
+    const task = await claude.createTask({ title: 'Bounded work', action: 'edit a file' })
+    await claude.claimTask({ task_id: task.id })
+    await assert.rejects(
+      async () => claude.addDelegation({ task_id: task.id, to: 'implementer', model: 'grok-basic', purpose: 'Bounded implementation after the pinned route failed.', fallback_from: 'minimax-worker' }),
+      (e) => e.code === 'INVALID_INPUT' && /fallback_policy "stop"/.test(e.message)
+    )
+    // A model with no such policy may still record a fall-back.
+    const ok = await claude.addDelegation({ task_id: task.id, to: 'implementer', model: 'sol', purpose: 'Bounded implementation on the next model.', fallback_from: 'terra' })
+    assert.ok(ok)
+  } finally {
+    sbx.cleanup()
   }
 })

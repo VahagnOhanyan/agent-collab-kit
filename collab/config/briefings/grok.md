@@ -11,6 +11,12 @@ vendor is not a reason to keep you away from the code. Both procedures are writt
 to implement, how to review — and which one you are in is stated by the task in front of you, not by
 your vendor. Do not fall back on a habit ("I only review"); read what was asked.
 
+**Reviewing waits for one fact.** A reviewer role is held only by an agent whose catalog entry names a
+launch proven unable to write (`adapter.review_launch`): a run that was asked to write a file and could
+not. `--sandbox read-only` is in your help text but has not been seen to hold, so today the facts take
+your reviewer roles away and the journal routes no review to you. When a probe proves it, the launch
+goes into the catalog and the review procedure below applies.
+
 Read the project's own instructions (`AGENTS.md`, `CLAUDE.md`, `README`) for how it works. This file
 is only about how you collaborate through `collab`.
 
@@ -32,8 +38,9 @@ grok --model MODEL_ID --cwd /absolute/path/to/project --sandbox read-only --no-s
       --prompt-file /absolute/path/to/review.md
 ```
 
-or the `grok-review` wrapper this machine has, which pins `grok-4.6`, read-only, no subagents, no
-MCP calls and a six-turn limit **for that one call**. The wrapper is a convenience for a review
+or a local `grok-review` wrapper, if the machine has one, pinning a model, read-only, no subagents,
+no MCP calls and a turn limit **for that one call** — note that with MCP off its verdict does not
+reach the journal (`submit_review`); the lead records it. The wrapper is a convenience for a review
 invocation, not the way you run: it is not your permanent mode, and nothing about it says an
 implementation task cannot be handed to you.
 
