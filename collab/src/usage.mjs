@@ -14,7 +14,7 @@
 //    `token_count` carries a running total and `rate_limits.primary.used_percent`: a WEEKLY share, whole numbers, for
 //    the whole account — it includes everything else Codex did in the window.
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -70,6 +70,7 @@ function parseClaude(text) {
     const ts = Date.parse(entry.timestamp)
     if (!Number.isFinite(ts)) continue
     const row = {
+      id: entry.message.id || entry.requestId || entry.uuid,
       ts,
       model,
       input: usage.input_tokens || 0,
@@ -86,9 +87,14 @@ function parseClaude(text) {
   return [...byId.values()]
 }
 
+// A session id is a file name here, so it is only ever a plain token: whatever a process wrote into the journal as its
+// session is not allowed to walk out of the projects directory.
+export const SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/
+
 function claudeFiles(configDirs, sessionId) {
   const main = []
   const subagents = []
+  if (!SESSION_ID.test(String(sessionId))) return { main, subagents }
   for (const dir of configDirs) {
     const projects = join(dir, 'projects')
     let names = []
@@ -114,15 +120,22 @@ export function claudeUsage({ configDirs, sessionId, from, to }) {
   if (!sessionId) return null
   const { main, subagents } = claudeFiles(configDirs, sessionId)
   if (!main.length) return null
+  // One message is one message however many files hold it: the same file reached through two config dirs (a symlink),
+  // or an id repeated between the main log and a subagent's. Deduplicated across all of them, fullest copy kept.
+  const byId = new Map()
+  for (const file of new Set([...main, ...subagents].map((f) => realpathSync(f)))) {
+    for (const row of cached(file, parseClaude)) {
+      const prev = byId.get(row.id)
+      if (!prev || row.output >= prev.output) byId.set(row.id, row)
+    }
+  }
   const byModel = {}
   let messages = 0
-  for (const file of [...main, ...subagents]) {
-    for (const row of cached(file, parseClaude)) {
-      if (row.ts < from || row.ts > to) continue
-      messages += 1
-      add((byModel[row.model] ||= { ...ZERO(), messages: 0 }), row)
-      byModel[row.model].messages += 1
-    }
+  for (const row of byId.values()) {
+    if (row.ts < from || row.ts > to) continue
+    messages += 1
+    add((byModel[row.model] ||= { ...ZERO(), messages: 0 }), row)
+    byModel[row.model].messages += 1
   }
   return { agent: 'claude', session_id: sessionId, from, to, by_model: byModel, messages, subagent_logs: subagents.length }
 }
@@ -167,6 +180,34 @@ function parseCodex(text) {
   return { claims, counts, models }
 }
 
+// Which tasks a rollout claimed, kept for EVERY log: a few numbers per file, so the question "which logs belong to this
+// task" is answered from memory after the first pass. The full parse (every token_count) is only paid for the logs
+// that answer yes. Without it each task re-read the whole directory — 610 logs, 2.3 GB on the owner's machine —
+// because the full-parse cache holds 48 files and a pass over more than that evicts itself.
+const claimIndex = new Map()
+const CLAIM_INDEX_MAX = 4000
+function claimsOf(file) {
+  const st = statSync(file)
+  const key = `${file}|${st.mtimeMs}|${st.size}`
+  if (claimIndex.has(key)) return claimIndex.get(key)
+  const claims = []
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.includes('"claim_task"') || !line.includes('McpToolCall')) continue
+    try {
+      const entry = JSON.parse(line)
+      const item = entry.payload?.item
+      if (item?.type === 'McpToolCall' && item.server === 'collab' && item.tool === 'claim_task') {
+        claims.push({ ts: Date.parse(entry.timestamp), task_id: item.arguments?.task_id || null, thread: entry.payload.thread_id || null })
+      }
+    } catch {
+      // a half-written last line of a live log is not a claim
+    }
+  }
+  claimIndex.set(key, claims)
+  while (claimIndex.size > CLAIM_INDEX_MAX) claimIndex.delete(claimIndex.keys().next().value)
+  return claims
+}
+
 function rolloutFiles(codexDir, sinceMs) {
   const out = []
   const walk = (dir, depth) => {
@@ -206,9 +247,9 @@ const lastAtOrBefore = (rows, ts) => {
 export function codexUsage({ codexDir, taskId, since, to }) {
   const parts = []
   for (const file of rolloutFiles(codexDir, since)) {
-    const log = cached(file, parseCodex)
-    const claim = log.claims.find((c) => c.task_id === taskId)
+    const claim = claimsOf(file).find((c) => c.task_id === taskId)
     if (!claim) continue
+    const log = cached(file, parseCodex)
     const end = lastAtOrBefore(log.counts, to)
     if (!end || end.ts < claim.ts) continue
     const base = lastAtOrBefore(log.counts, claim.ts)
@@ -222,7 +263,9 @@ export function codexUsage({ codexDir, taskId, since, to }) {
       to: Math.min(to, end.ts),
       by_model: { [lastAtOrBefore(log.models, end.ts)?.model || 'unknown']: { ...used, messages: null } },
       // Whole weekly percent for the whole account: what moved while the task was held, not what the task cost.
-      limit_percent: sameWindow ? Math.max(0, end.pct - base.pct) : null
+      limit_percent: sameWindow ? Math.max(0, end.pct - base.pct) : null,
+      // Another task claimed in the same thread inside the window: the tokens are the thread's, not this task's alone.
+      shared: log.claims.some((c) => c.task_id && c.task_id !== taskId && c.ts >= claim.ts && c.ts <= to)
     })
   }
   return parts
@@ -261,7 +304,9 @@ export function usageOfTask({ task, allTasks = [], now, terminal, roots = defaul
   const codexInvolved = task.owner === 'codex' || sessions.some((s) => s.agent === 'codex') || (task.contributors || []).includes('codex')
   if (codexInvolved) {
     const since = Date.parse(task.created_at) || 0
-    parts.push(...codexUsage({ codexDir: roots.codexDir, taskId: task.id, since, to: end }))
+    const codexParts = codexUsage({ codexDir: roots.codexDir, taskId: task.id, since, to: end })
+    if (codexParts.some((part) => part.shared)) approximate = true
+    parts.push(...codexParts)
   }
   return { parts, total: sumUsage(parts), approximate, none: parts.length === 0 }
 }

@@ -503,7 +503,8 @@ async function taskDetail(id) {
   const modelText = (m) => (m ? `${m.model_ref || m.model}${m.effort ? ` · ${m.effort}` : ''}${m.model_known ? '' : ' (не из реестра)'}` : '')
   const planned = t.spec?.route || []
   const actual = [
-    t.working_model ? `${t.owner || t.working_model.by || '?'} — работает на ${modelText(t.working_model)}` : null,
+    // Named by who recorded it: the owner may have changed since, and a model must not be put on the wrong agent.
+    t.working_model ? `${t.working_model.by || '?'} — работает на ${modelText(t.working_model)}` : null,
     ...(data.delegations || t.delegations || []).map((d) => `${d.to || '?'} — ${d.model || '?'}${d.level ? ` · ${d.level}` : ''}${d.purpose ? `: ${d.purpose}` : ''}${d.finished_at || d.outcome ? '' : ' (без итога)'}`),
     ...(data.reviews || []).map((r) => `ревью ${r.reviewer || r.reviewer_agent || '?'}${r.reviewer_model ? ` на ${r.reviewer_model}` : ''} — ${r.verdict || 'ждёт'}`)
   ].filter(Boolean)

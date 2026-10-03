@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -170,5 +170,56 @@ test('a claim records the session the claiming agent names — and never one inh
     if (saved === undefined) delete process.env.CLAUDE_CODE_SESSION_ID
     else process.env.CLAUDE_CODE_SESSION_ID = saved
     sbx.cleanup()
+  }
+})
+
+test('one message counts once however many files hold it: the main log and a subagent log, or one log reached through two config dirs', () => {
+  const w = claudeWorld('sess-d', [assistant('same', 2, 30), assistant('own', 3, 5)], [assistant('same', 2, 30), assistant('sub', 4, 8)])
+  try {
+    const linked = join(w.dir, '.claude-link')
+    symlinkSync(w.configDirs[0], linked)
+    const u = claudeUsage({ configDirs: [w.configDirs[0], linked], sessionId: 'sess-d', from: ms(0), to: ms(10) })
+    assert.equal(u.by_model['claude-sonnet-5-5'].output, 43, 'same (30) once, own (5), sub (8) — not 30+30+5+8, and not doubled by the symlinked dir')
+    assert.equal(u.messages, 3)
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('a session id that is not a plain token reads nothing, and the journal never carries one', async () => {
+  const w = claudeWorld('sess-t', [assistant('a', 1, 9)])
+  try {
+    for (const bad of ['../sess-t', 'sess-t/../sess-t', '/etc/passwd', 'a b', '']) {
+      assert.equal(claudeUsage({ configDirs: w.configDirs, sessionId: bad, from: 0, to: Date.now() }), null, bad)
+    }
+  } finally {
+    w.cleanup()
+  }
+  const sbx = sandbox()
+  const api = createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir, clock: fixedClock(), sessionId: '../../outside' })
+  try {
+    const task = await api.createTask({ title: 'Claimed under a hostile session id', action: 'edit a file' })
+    const claimed = await api.claimTask({ task_id: task.id })
+    assert.equal(claimed.task.sessions[0].session_id, null)
+  } finally {
+    sbx.cleanup()
+  }
+})
+
+test('Codex: a thread that claimed another task inside the window marks the figure approximate', () => {
+  const w = codexWorld({
+    a: [codexClaim(1, 'tsk_p'), codexCount(2, 100, 0, 10, 5), codexClaim(3, 'tsk_q'), codexCount(6, 900, 0, 90, 6)],
+    b: [codexClaim(1, 'tsk_solo'), codexCount(2, 100, 0, 10, 5), codexCount(6, 300, 0, 30, 6)]
+  })
+  try {
+    const [shared] = codexUsage({ codexDir: w.codexDir, taskId: 'tsk_p', since: 0, to: ms(9) })
+    assert.equal(shared.shared, true)
+    const [solo] = codexUsage({ codexDir: w.codexDir, taskId: 'tsk_solo', since: 0, to: ms(9) })
+    assert.equal(solo.shared, false)
+    const roots = { claudeConfigDirs: [], codexDir: w.codexDir }
+    const task = { id: 'tsk_p', status: 'in_progress', owner: 'codex', created_at: T(0), sessions: [{ agent: 'codex', session_id: null, from: T(1) }] }
+    assert.equal(usageOfTask({ task, allTasks: [task], now: ms(9), terminal: false, roots }).approximate, true)
+  } finally {
+    w.cleanup()
   }
 })

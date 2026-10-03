@@ -20,6 +20,7 @@ import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } fro
 import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { holdsReviewerRole } from './reviewer-roles.mjs'
+import { SESSION_ID } from '../usage.mjs'
 
 const DEFAULT_LEASE_SECONDS = 3600
 
@@ -234,7 +235,9 @@ function sessionsAfterClaim(ctx, task, at) {
   // Read from the variable the AGENT'S OWN entry names (adapter.session_env), never a fixed one: `codex exec` started
   // from a Claude session inherits Claude's variables, and its claim would be filed under a session that is not its own.
   const variable = ctx.registry.agent(ctx.agentId)?.adapter?.session_env
-  const sessionId = ctx.sessionId ?? (variable ? process.env[variable] : null) ?? null
+  const named = ctx.sessionId ?? (variable ? process.env[variable] : null) ?? null
+  // A plain token or nothing: the id is later used as a file name, and the journal must not carry a path an agent chose.
+  const sessionId = typeof named === 'string' && SESSION_ID.test(named) ? named : null
   const last = sessions[sessions.length - 1]
   if (last && last.agent === ctx.agentId && (last.session_id || null) === sessionId) return sessions
   return [...sessions, { agent: ctx.agentId, session_id: sessionId, from: at }]
