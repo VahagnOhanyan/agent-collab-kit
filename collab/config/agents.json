@@ -16,6 +16,7 @@
       "adapter": {
         "kind": "manual",
         "session": "interactive",
+        "session_env": "CLAUDE_CODE_SESSION_ID",
         "cannot": [],
         "headless": ["claude"],
         "review_launch": {

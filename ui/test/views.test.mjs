@@ -39,6 +39,8 @@ test('view projections preserve the endpoint contract without writing', async ()
   delete shown.standstill
   assert.deepEqual(shown, {
     task,
+    usage: null,
+    branch: { tasks: 0, total: { input: 0, output: 0, cache_creation: 0, cache_read: 0 }, approximate: false, descendants: 0, none: true },
     parent: null,
     children: [],
     reviews: [{ id: 'rev_one' }],

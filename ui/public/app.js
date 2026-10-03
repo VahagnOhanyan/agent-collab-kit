@@ -539,6 +539,7 @@ async function taskDetail(id) {
     planned.length || actual.length ? [el('h2', { text: 'Маршрут: план и факт' }), dataTable(['План', 'Факт'], [el('tr', {},
       td(planned.length ? planned.map((r) => el('div', { text: `${r.step}${r.agent ? ` — ${r.agent}` : ''}${r.model ? ` · ${r.model}` : ''}${r.level ? ` · ${r.level}` : ''}` })) : el('span', { class: 'muted', text: 'план не записан' })),
       td(actual.length ? actual.map((line) => el('div', { text: line })) : el('span', { class: 'muted', text: 'пока ничего' })))])] : null,
+    costBlock(data),
     // The verdict alone is not the review: what the reviewer found is the point.
     [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
     // The outcome is the lead's free-text report, often a paragraph: it goes under the purpose and wraps. As a
@@ -553,6 +554,33 @@ async function taskDetail(id) {
       td(el('span', { class: 'mono', text: m.from_agent || '?' }), 'nw'), td(el('span', { class: 'muted small', text: when(m.created_at) }), 'nw'),
       td([m.subject ? el('strong', { text: m.subject }) : null, m.body ? prose(m.body) : null]))),
     t.files?.length ? [el('h2', { text: 'Файлы задачи' }), el('div', { class: 'card mono', text: t.files.join('\n') })] : null)
+}
+
+// What the task cost, from the agents' own session logs (collab/src/usage.mjs): tokens per agent and model, for Codex
+// also how far the weekly limit moved. Read on demand and never stored, so every figure says what it is a reading of.
+const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} млн` : n >= 1e3 ? `${Math.round(n / 1e3)} тыс.` : String(n))
+const freshOf = (row) => (row.input || 0) + (row.output || 0) + (row.cache_creation || 0)
+function costBlock(data) {
+  const usage = data.usage
+  const branch = data.branch
+  const rows = (usage?.parts || []).flatMap((part) => Object.entries(part.by_model || {}).map(([model, row]) => ({ part, model, row })))
+  const hasOwn = rows.length > 0
+  const hasBranch = branch && branch.descendants > 0 && !branch.none
+  if (!hasOwn && !hasBranch) {
+    return [el('h2', { text: 'Расход' }), el('div', { class: 'empty', text: 'Данных нет: у задачи нет записанной сессии, а журнал Codex с её взятием на этой машине не найден.' })]
+  }
+  const table = hasOwn ? dataTable(['Агент', 'Модель', 'Токены', 'Из кэша', 'Недельный лимит'], rows.map(({ part, model, row }) => el('tr', {},
+    td(el('span', { class: 'mono', text: part.agent }), 'nw'), td(el('span', { class: 'pill', text: model }), 'nw'),
+    td(`${tokens(freshOf(row))}`, 'nw'), td(row.cache_read ? tokens(row.cache_read) : '—', 'nw'),
+    td(part.limit_percent === null || part.limit_percent === undefined ? el('span', { class: 'muted', text: part.agent === 'codex' ? 'не определён' : '—' }) : `≈ ${part.limit_percent}%`, 'nw')))) : null
+  const notes = [
+    usage?.approximate ? 'Цифры приблизительные (≈): сессия вела и другие задачи в то же время, поэтому здесь верхняя граница, а не точная стоимость задачи.' : null,
+    rows.some(({ part }) => part.limit_percent !== null && part.limit_percent !== undefined) ? 'Процент у Codex — недельный лимит всего аккаунта, целыми процентами: он показывает, насколько лимит сдвинулся за время задачи, включая всё остальное, что Codex делал параллельно.' : null,
+    rows.some(({ part }) => part.agent === 'claude') ? 'У Claude процента лимита в логах нет — только токены.' : null
+  ].filter(Boolean)
+  return [el('h2', { text: 'Расход' }), table,
+    hasBranch ? el('div', { class: 'note' }, `По ветке, с ${branch.descendants} созданными в рамках этой задачи: ${tokens(freshOf(branch.total))} токенов${branch.total.cache_read ? `, из кэша ещё ${tokens(branch.total.cache_read)}` : ''}${branch.approximate ? ' (≈)' : ''}.`) : null,
+    notes.map((text) => el('div', { class: 'muted small', text }))]
 }
 
 const labelled = (label, text, purpose) => el('div', {}, el('div', { class: 'cmd-label', text: label }), command(text, purpose))

@@ -225,6 +225,21 @@ function reviewsOf(tx, task) {
   return tx.list('reviews', { filter: (r) => r.task_id === task.id })
 }
 
+// Who held the task, from which session and since when: what the panel later uses to find the task's cost in the
+// agents' own logs (usage.mjs). A new entry only when the holder or the session changes — taking a task again from the
+// same session is not a new stretch of work. The session id is whatever the process was told (Claude: the environment
+// variable; Codex is not told one, and its entry carries none — its log is found from the task instead).
+function sessionsAfterClaim(ctx, task, at) {
+  const sessions = task.sessions || []
+  // Read from the variable the AGENT'S OWN entry names (adapter.session_env), never a fixed one: `codex exec` started
+  // from a Claude session inherits Claude's variables, and its claim would be filed under a session that is not its own.
+  const variable = ctx.registry.agent(ctx.agentId)?.adapter?.session_env
+  const sessionId = ctx.sessionId ?? (variable ? process.env[variable] : null) ?? null
+  const last = sessions[sessions.length - 1]
+  if (last && last.agent === ctx.agentId && (last.session_id || null) === sessionId) return sessions
+  return [...sessions, { agent: ctx.agentId, session_id: sessionId, from: at }]
+}
+
 // The model the agent that took the task says it works on. A RECORD, like a delegation: nothing here can check which
 // model really ran. Resolved against the registry so it can be counted; an unknown name is kept and marked unknown.
 function workingModelOf(ctx, named, at) {
@@ -297,7 +312,8 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
       ...task,
       ...admission.fields,
       git_base: git_base || task.git_base,
-      working_model: workingModelOf(ctx, model, tx.iso()) || task.working_model || null
+      working_model: workingModelOf(ctx, model, tx.iso()) || task.working_model || null,
+      sessions: sessionsAfterClaim(ctx, task, tx.iso())
     })
     touchAgent(tx, ctx, { status: 'busy', current_task_id: task.id })
     tx.emit('task.claimed', { collection: 'tasks', id: task.id }, { owner: ctx.agentId })

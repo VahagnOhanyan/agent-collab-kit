@@ -44,6 +44,7 @@ import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
 import { independenceReport } from './independence.mjs'
 import { factConflicts, factsFor, fitConfigToFacts, machineEnv } from './probe.mjs'
+import { defaultRoots as defaultUsageRoots, usageOfTask } from './usage.mjs'
 
 const SWEEP_INTERVAL_MS = 60_000
 
@@ -172,7 +173,11 @@ export function createApi({
   // How doctor reads the machine's facts about agents (probe.mjs machineEnv); tests describe a machine.
   probeEnv = undefined,
   projectRoot = null,
-  readOnly = false
+  readOnly = false,
+  // The session this process belongs to, when the caller knows it; otherwise the variable the agent's own entry names.
+  sessionId = undefined,
+  // Where the agents' session logs are read from for a task's cost (usage.mjs); tests point it at fixtures.
+  usageRoots = undefined
 } = {}) {
   if (!agentId) {
     throw new CollabError(
@@ -233,7 +238,7 @@ export function createApi({
   if (!state?.initialized) throw notInitialised(roots, state)
 
   const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy', readOnly })
-  const ctx = { store, registry, config, clock, agentId, roots }
+  const ctx = { store, registry, config, clock, agentId, roots, sessionId }
   // Roles an agent suspended itself are out of routing from the next call on, read fresh from the journal.
   registry.setSuspended((id, role) => (store.get('agents', id)?.suspended_roles || []).some((s) => s.role === role))
 
@@ -334,6 +339,18 @@ export function createApi({
     // already knows which checks ran against it, so evidence that can be
     // DERIVED is never asked for again as a declaration. What a reader gets is
     // the counters, because a suite that skipped everything exits zero.
+    // What the task cost, read from the agents' own session logs — on demand, never stored. `terminal` is the
+    // task's own status, so a finished task is counted up to when it finished and an open one up to now.
+    taskUsage({ task_id }) {
+      const task = tasks.getTask(ctx, task_id)
+      return usageOfTask({
+        task,
+        allTasks: tasks.listTasks(ctx, {}),
+        now: clock.now(),
+        terminal: task.status === 'completed' || task.status === 'cancelled',
+        roots: usageRoots || defaultUsageRoots()
+      })
+    },
     getTask({ task_id }) {
       const task = tasks.getTask(ctx, task_id)
       return {

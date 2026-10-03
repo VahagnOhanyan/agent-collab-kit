@@ -39,8 +39,36 @@ export async function taskView(api, taskId) {
   const everyTask = await api.listTasks({})
   const brief = ({ id, title, status, owner }) => ({ id, title, status, owner: owner || null })
   const parent = task.parent_task ? everyTask.find((t) => t.id === task.parent_task) : null
+  // The cost is read from the agents' own logs on demand (collab/src/usage.mjs); a log that cannot be read is "no
+  // data" for that task, never a reason the page does not open.
+  const costOf = (id) => {
+    try {
+      return api.taskUsage({ task_id: id })
+    } catch {
+      return null
+    }
+  }
+  const usage = costOf(taskId)
+  // The branch: this task and everything created within it, however deep (capped, and a task is counted once).
+  const branch = { tasks: 0, total: { input: 0, output: 0, cache_creation: 0, cache_read: 0 }, approximate: false }
+  const seen = new Set()
+  const queue = [taskId]
+  while (queue.length && seen.size < 60) {
+    const id = queue.shift()
+    if (seen.has(id)) continue
+    seen.add(id)
+    const cost = id === taskId ? usage : costOf(id)
+    if (cost && !cost.none) {
+      branch.tasks += 1
+      branch.approximate ||= cost.approximate
+      for (const key of Object.keys(branch.total)) branch.total[key] += cost.total[key] || 0
+    }
+    for (const child of everyTask) if (child.parent_task === id) queue.push(child.id)
+  }
   return {
     task,
+    usage,
+    branch: { ...branch, descendants: seen.size - 1, none: branch.tasks === 0 },
     parent: parent ? brief(parent) : null,
     children: everyTask.filter((t) => t.parent_task === taskId).map(brief),
     standstill: standstillOf(task, { reviews, approvals: api.listApprovals({ pending_only: true, task_id: taskId }) }),
