@@ -13,7 +13,7 @@
 // so the caller can go and talk to them instead of guessing.
 
 import { CODES, CollabError } from '../errors.mjs'
-import { effectiveReviewRisk } from '../models.mjs'
+import { effectiveReviewRisk, resolveModel } from '../models.mjs'
 import { ACTION_KINDS, classifyAction } from '../policy.mjs'
 import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
@@ -113,8 +113,24 @@ export function listTasks(ctx, { status = null, owner = null, role = null, open 
     .map((t) => project(ctx, t))
 }
 
+// The task this one was created within. Named by the caller, or — when nobody names one — the single task the
+// creating agent is working on right now. Two live tasks held by one agent (the lead often holds several) make the
+// parent ambiguous, and a guess here would hang a task under the wrong branch of the tree, so it stays empty then.
+// The parent already exists, so a cycle cannot be built; and `parent_task` is never moved afterwards.
+function parentTaskOf(tx, ctx, named) {
+  if (named) {
+    if (typeof named !== 'string' || !tx.get('tasks', named)) {
+      throw new CollabError(CODES.INVALID_INPUT, `parent_task ${named} is not a task in this journal`, { parent_task: named })
+    }
+    return named
+  }
+  if (!ctx.agentId) return null
+  const held = tx.list('tasks', { filter: (t) => t.owner === ctx.agentId && LEASED_STATES.has(t.status) })
+  return held.length === 1 ? held[0].id : null
+}
+
 export function createTask(ctx, input) {
-  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, action_kind = null, files = [], depends_on = [], spec = null } = input
+  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, action_kind = null, files = [], depends_on = [], spec = null, parent_task = null } = input
   if (!title || title.length < 3) {
     throw new CollabError(CODES.INVALID_INPUT, 'a task needs a title that says what is to be done')
   }
@@ -155,6 +171,7 @@ export function createTask(ctx, input) {
     const task = tx.create('tasks', {
       title,
       description,
+      parent_task: parentTaskOf(tx, ctx, parent_task),
       status: TASK_STATUS.CREATED,
       priority,
       role,
@@ -208,7 +225,24 @@ function reviewsOf(tx, task) {
   return tx.list('reviews', { filter: (r) => r.task_id === task.id })
 }
 
-export function claimTask(ctx, { task_id = null, role = null, lease_seconds = null, git_base = null } = {}) {
+// The model the agent that took the task says it works on. A RECORD, like a delegation: nothing here can check which
+// model really ran. Resolved against the registry so it can be counted; an unknown name is kept and marked unknown.
+function workingModelOf(ctx, named, at) {
+  const chosen = typeof named === 'string' ? named.trim() : ''
+  if (!chosen) return null
+  const resolved = resolveModel(ctx.config, chosen)
+  return {
+    model: chosen,
+    model_ref: resolved.ref,
+    model_id: resolved.id,
+    model_known: resolved.known,
+    effort: resolved.effort,
+    by: ctx.agentId,
+    at
+  }
+}
+
+export function claimTask(ctx, { task_id = null, role = null, lease_seconds = null, git_base = null, model = null } = {}) {
   const leaseSeconds = lease_seconds || ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
 
   return ctx.store.transact(async (tx) => {
@@ -258,7 +292,13 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
     }
 
     assertTransition(task, TASK_STATUS.IN_PROGRESS, { admission })
-    const next = tx.put('tasks', { ...task, ...admission.fields, git_base: git_base || task.git_base })
+    // A later claim without a model keeps the one on record: the record is of who works on it, not of the last call.
+    const next = tx.put('tasks', {
+      ...task,
+      ...admission.fields,
+      git_base: git_base || task.git_base,
+      working_model: workingModelOf(ctx, model, tx.iso()) || task.working_model || null
+    })
     touchAgent(tx, ctx, { status: 'busy', current_task_id: task.id })
     tx.emit('task.claimed', { collection: 'tasks', id: task.id }, { owner: ctx.agentId })
     return { claimed: true, task: project(ctx, next) }

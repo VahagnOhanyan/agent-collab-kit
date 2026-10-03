@@ -82,6 +82,49 @@ function level(value, field, levels) {
   return value
 }
 
+// The PLANNED route: who the lead meant to do each part, on which model, at which level — the "Маршрут:" line of the
+// plan as data, so the panel can set it beside what actually happened (delegations and the model the owner works on).
+// A record of intent, not a control: nothing here starts an agent. An empty list clears it.
+const ROUTE_FIELDS = Object.freeze(['step', 'agent', 'model', 'level'])
+function routeOf(value, levels) {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) {
+    throw new CollabError(CODES.INVALID_INPUT, 'spec.route must be a list of {step, agent, model, level}', { field: 'route' })
+  }
+  if (value.length > ITEMS_MAX) {
+    throw new CollabError(CODES.INVALID_INPUT, `spec.route has ${value.length} items; keep it under ${ITEMS_MAX}`, {
+      field: 'route',
+      length: value.length
+    })
+  }
+  return value.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new CollabError(CODES.INVALID_INPUT, `spec.route[${index}] must be an object`, { field: 'route', index })
+    }
+    for (const key of Object.keys(raw)) {
+      if (!ROUTE_FIELDS.includes(key)) {
+        throw new CollabError(CODES.INVALID_INPUT, `spec.route[${index}] has no field "${key}"`, { field: 'route', index, known: ROUTE_FIELDS })
+      }
+    }
+    const step = typeof raw.step === 'string' ? raw.step.trim() : ''
+    if (!step) throw new CollabError(CODES.INVALID_INPUT, `spec.route[${index}] needs a step: what this part of the work is`, { field: 'route', index })
+    const out = { step }
+    for (const key of ['agent', 'model']) {
+      const clean = typeof raw[key] === 'string' ? raw[key].trim() : ''
+      if (clean) out[key] = clean
+    }
+    const rung = level(raw.level, `route[${index}].level`, levels)
+    if (rung !== undefined) out.level = rung
+    for (const key of Object.keys(out)) {
+      if (out[key].length > ITEM_MAX || /[\n\r]/.test(out[key])) {
+        throw new CollabError(CODES.INVALID_INPUT, `spec.route[${index}].${key} must be one short line`, { field: 'route', index })
+      }
+      assertNoSecret(out[key], `spec.route[${index}].${key}`)
+    }
+    return out
+  })
+}
+
 // Merges onto what is already there: a spec is filled in as the work is
 // understood, and re-sending the whole thing to add one criterion is how fields
 // like this end up unused. An explicit empty list clears one.
@@ -91,7 +134,7 @@ export function normaliseSpec(config, input, existing = null) {
     throw new CollabError(CODES.INVALID_INPUT, 'spec must be an object', {})
   }
   const levels = config.models?.levels || {}
-  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason', 'ux_impact', 'ux_domains', ...UX_FLAGS])
+  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason', 'ux_impact', 'ux_domains', 'route', ...UX_FLAGS])
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
       throw new CollabError(CODES.INVALID_INPUT, `spec has no field "${key}"`, { field: key, known: [...known] })
@@ -118,6 +161,8 @@ export function normaliseSpec(config, input, existing = null) {
     }
     next.classification_reason = assertNoSecret(clean, 'spec.classification_reason')
   }
+  const route = routeOf(input.route, levels)
+  if (route !== undefined) next.route = route
   if (input.ux_impact !== undefined && input.ux_impact !== null && input.ux_impact !== '') {
     if (!UX_IMPACT.includes(input.ux_impact)) {
       throw new CollabError(CODES.INVALID_INPUT, `spec.ux_impact must be one of ${UX_IMPACT.join(', ')}`, {

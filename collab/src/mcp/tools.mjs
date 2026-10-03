@@ -97,6 +97,16 @@ const SPEC = object({
     type: 'string',
     enum: UX_DOMAINS
   }),
+  route: arr('The planned route — who does each part, on which model, at which level (the plan\'s "Маршрут:" line as data). The panel sets it beside what actually happened. A record of intent: nothing here starts an agent.', {
+    type: 'object',
+    properties: {
+      step: str('What this part of the work is.'),
+      agent: str('Who does it: an agent id, or a subagent such as Explore.'),
+      model: str('The model it runs on, by registry ref (list_models).'),
+      level: str('L0 to L3.', { enum: LEVELS })
+    },
+    required: ['step']
+  }),
   needs_ux_critic: { type: 'boolean', description: 'MEDIUM only: true when the interaction is ambiguous enough to need an independent ux_reviewer. Always true for HIGH.' },
   needs_visual_verification: { type: 'boolean', description: 'True when the change must be seen rendered (screenshot) before it counts as done.' }
 })
@@ -226,6 +236,7 @@ export const TOOLS = [
         action_kind: str('The kind of action, when the words have no verb the table knows. It can raise the class the words give, never lower it.', { enum: ['read', 'edit', 'test', 'publish', 'delete', 'secrets', 'deploy', 'pay'] }),
         files: arr('Files or directories this work will touch.', { type: 'string' }),
         depends_on: arr('Task ids this one waits for.', { type: 'string' }),
+        parent_task: str('The task this one is created within. Omit it and, if you hold exactly one task right now, that one becomes the parent; with several held there is no guess.'),
         spec: SPEC
       },
       ['title']
@@ -266,7 +277,8 @@ export const TOOLS = [
       task_id: str('A specific task. Omit to take the next claimable one.'),
       role: str('When taking the next one, restrict to tasks needing this role.'),
       lease_seconds: int('How long you expect to hold it.'),
-      git_base: str('The commit you are starting from, for the record.')
+      git_base: str('The commit you are starting from, for the record.'),
+      model: str('The model you work on this task with, by registry ref or id (list_models). A record, not a check; the panel shows it on the task.')
     }),
     annotations: WRITE,
     handler: (input, api) => api.claimTask(input)

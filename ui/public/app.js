@@ -335,7 +335,24 @@ async function tasks(param) {
   // here, so each chip can say how many it holds.
   const everything = await api('/api/tasks')
   const isOpen = (t) => !TERMINAL.has(t.status)
-  const list = status ? everything.filter((t) => t.status === status) : all ? everything : everything.filter(isOpen)
+  const shown = status ? everything.filter((t) => t.status === status) : all ? everything : everything.filter(isOpen)
+  // A task created within another sits under it, indented, when both are on the screen; one whose parent is filtered
+  // out stands alone and says where it came from. Order within a level is the list's own.
+  const depthOf = new Map()
+  const list = []
+  {
+    const ids = new Set(shown.map((t) => t.id))
+    const kids = new Map()
+    for (const t of shown) if (t.parent_task && ids.has(t.parent_task)) kids.set(t.parent_task, [...(kids.get(t.parent_task) || []), t])
+    const walk = (t, depth) => {
+      if (depthOf.has(t.id)) return
+      depthOf.set(t.id, depth)
+      list.push(t)
+      for (const child of kids.get(t.id) || []) walk(child, depth + 1)
+    }
+    for (const t of shown) if (!(t.parent_task && ids.has(t.parent_task))) walk(t, 0)
+    for (const t of shown) walk(t, 0)
+  }
   const counts = {}
   for (const t of everything) counts[t.status] = (counts[t.status] || 0) + 1
   const chip = (href, text, on, tone = '') => el('a', { class: `pill ${tone}${on ? ' on' : ''}`, href, 'aria-current': on ? 'true' : undefined, text })
@@ -364,16 +381,18 @@ async function tasks(param) {
     return {
       id: t.id,
       box,
-      text: `${t.id} ${t.title} ${t.owner || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
+      text: `${t.id} ${t.title} ${t.owner || ''} ${t.working_model?.model || ''} ${t.status} ${statusText(t.status)} ${t.standstill ? `${STANDSTILL_RU[t.standstill.code] || ''} ${t.standstill.detail}` : ''}`.toLowerCase(),
       node: linkRow(`#/tasks/${encodeURIComponent(t.id)}`, [
         // The whole cell is the box's label: a click a little beside the box ticks it rather than opening the task.
         canWrite ? td(box ? el('label', { class: 'checkcell' }, box) : null, 'nw check') : null,
         td([pill(t.status), t.closed_by_owner ? [' ', el('span', { class: 'pill warn', title: ownerClosedNote(t.closed_by_owner), text: 'владельцем' })] : null], 'nw'),
-        td([el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
+        td([depthOf.get(t.id) ? el('span', { class: 'muted', style: `margin-left:${(depthOf.get(t.id) - 1) * 18}px`, text: '↳ ' }) : null,
+          el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
+          t.parent_task && !depthOf.get(t.id) ? el('div', { class: 'muted small' }, 'в рамках ', el('a', { href: `#/tasks/${encodeURIComponent(t.parent_task)}`, class: 'mono', text: t.parent_task })) : null,
           t.standstill && !QUIET.has(t.standstill.code)
             ? el('div', { class: 'muted small' }, STANDSTILL_RU[t.standstill.code] === statusText(t.status) ? null : [standstillPill(t.standstill), ' '], t.standstill.detail)
             : null]),
-        td(t.owner ? el('span', { class: 'mono', text: t.owner }) : el('span', { class: 'muted', text: '—' }), 'nw')])
+        td(t.owner ? [el('span', { class: 'mono', text: t.owner }), t.working_model ? el('div', { class: 'muted small', title: t.working_model.model_known ? '' : 'Модель не из реестра', text: t.working_model.model_ref || t.working_model.model }) : null] : el('span', { class: 'muted', text: '—' }), 'nw')])
     }
   })
   function closeSelected(outcome) {
@@ -478,11 +497,23 @@ async function taskDetail(id) {
     : [el('button', { type: 'button', text: 'Завершить', onclick: () => closeForm('completed') }),
        el('button', { type: 'button', text: 'Отменить', onclick: () => closeForm('cancelled') })]
   const lastReopen = [...(t.owner_history || [])].reverse().find((h) => h.action === 'reopened')
-  return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'} · ${t.role || 'роль не указана'}`,
+  // The planned route (spec.route, the plan's "Маршрут:" line as data) beside what is on record as having happened:
+  // the model the owner works on, the subagents handed work, the reviews with their models. A plan without facts, or
+  // facts without a plan, is shown as it is — an empty side says so instead of hiding the block.
+  const modelText = (m) => (m ? `${m.model_ref || m.model}${m.effort ? ` · ${m.effort}` : ''}${m.model_known ? '' : ' (не из реестра)'}` : '')
+  const planned = t.spec?.route || []
+  const actual = [
+    t.working_model ? `${t.owner || t.working_model.by || '?'} — работает на ${modelText(t.working_model)}` : null,
+    ...(data.delegations || t.delegations || []).map((d) => `${d.to || '?'} — ${d.model || '?'}${d.level ? ` · ${d.level}` : ''}${d.purpose ? `: ${d.purpose}` : ''}${d.finished_at || d.outcome ? '' : ' (без итога)'}`),
+    ...(data.reviews || []).map((r) => `ревью ${r.reviewer || r.reviewer_agent || '?'}${r.reviewer_model ? ` на ${r.reviewer_model}` : ''} — ${r.verdict || 'ждёт'}`)
+  ].filter(Boolean)
+  return page(t.title, `${t.id} · ${t.owner || 'без исполнителя'}${t.working_model ? ` · ${t.working_model.model_ref || t.working_model.model}` : ''} · ${t.role || 'роль не указана'}`,
     // Back goes to the list the task can be found in: a closed task is not in the open-only list.
     el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: closed ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' }),
       ownerButtons.length ? el('span', { class: 'grow' }) : null, ...ownerButtons),
     formBox,
+    data.parent ? el('div', { class: 'note' }, 'Создана в рамках задачи ', el('a', { href: `#/tasks/${encodeURIComponent(data.parent.id)}`, text: data.parent.title }), ' ', pill(data.parent.status))
+      : t.parent_task ? el('div', { class: 'note', text: `Создана в рамках задачи ${t.parent_task}` }) : null,
     t.closed_by_owner ? el('div', { class: 'note warn', text: `Закрыта мимо проверок: ${ownerClosedNote(t.closed_by_owner)}` }) : null,
     lastReopen && !closed ? el('div', { class: 'note', text: `Возвращена владельцем ${when(lastReopen.at)} (была «${statusText(lastReopen.from_status)}»): ${lastReopen.reason}` }) : null,
     data.standstill
@@ -502,6 +533,12 @@ async function taskDetail(id) {
     t.completion_summary ? [el('h2', { text: 'Итог' }), el('div', { class: 'card' }, prose(t.completion_summary))] : null,
     t.description ? el('div', { class: 'card' }, prose(t.description)) : null,
     t.spec?.acceptance_criteria?.length ? [el('h2', { text: 'Критерии приёмки' }), el('div', { class: 'card' }, t.spec.acceptance_criteria.map((c) => el('div', { text: `• ${c}` })))] : null,
+    data.children?.length ? [el('h2', { text: 'Созданные в рамках этой задачи' }), dataTable(['Статус', 'Задача', 'Исполнитель'], data.children.map((c) => linkRow(`#/tasks/${encodeURIComponent(c.id)}`, [
+      td(pill(c.status), 'nw'), td(el('a', { href: `#/tasks/${encodeURIComponent(c.id)}`, text: c.title })),
+      td(c.owner ? el('span', { class: 'mono', text: c.owner }) : el('span', { class: 'muted', text: '—' }), 'nw')])))] : null,
+    planned.length || actual.length ? [el('h2', { text: 'Маршрут: план и факт' }), dataTable(['План', 'Факт'], [el('tr', {},
+      td(planned.length ? planned.map((r) => el('div', { text: `${r.step}${r.agent ? ` — ${r.agent}` : ''}${r.model ? ` · ${r.model}` : ''}${r.level ? ` · ${r.level}` : ''}` })) : el('span', { class: 'muted', text: 'план не записан' })),
+      td(actual.length ? actual.map((line) => el('div', { text: line })) : el('span', { class: 'muted', text: 'пока ничего' })))])] : null,
     // The verdict alone is not the review: what the reviewer found is the point.
     [el('h2', { text: 'Ревью' }), data.reviews?.length ? data.reviews.map(reviewCard) : empty('—')],
     // The outcome is the lead's free-text report, often a paragraph: it goes under the purpose and wraps. As a

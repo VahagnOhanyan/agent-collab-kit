@@ -39,6 +39,8 @@ test('view projections preserve the endpoint contract without writing', async ()
   delete shown.standstill
   assert.deepEqual(shown, {
     task,
+    parent: null,
+    children: [],
     reviews: [{ id: 'rev_one' }],
     messages: [
       { id: 'msg_one', task_id: 'tsk_one', to: { agent: 'someone-else' } },
@@ -51,6 +53,31 @@ test('view projections preserve the endpoint contract without writing', async ()
   assert.deepEqual(waiting.reviews.map((review) => review.id), ['rev_one'])
   assert.equal(waiting.commands.approve, 'collab approve <id>')
   assert.equal(rosterView(api).agents[0].status, 'available')
+})
+
+test('a task page names the task it was created within and the tasks created within it, read from parent_task alone', async () => {
+  const tasks = [
+    { id: 'tsk_top', title: 'The top task', status: 'in_progress', owner: 'agent-a' },
+    { id: 'tsk_mid', title: 'Created within the top', status: 'created', owner: null, parent_task: 'tsk_top' },
+    { id: 'tsk_low', title: 'Created within the middle', status: 'completed', owner: 'agent-b', parent_task: 'tsk_mid' },
+    { id: 'tsk_other', title: 'Unrelated', status: 'created', owner: null }
+  ]
+  const api = {
+    getTask: ({ task_id }) => tasks.find((t) => t.id === task_id),
+    listTasks: async () => tasks,
+    listReviews: () => [],
+    listApprovals: () => [],
+    store: { list: () => [] }
+  }
+  const top = await taskView(api, 'tsk_top')
+  assert.equal(top.parent, null)
+  assert.deepEqual(top.children, [{ id: 'tsk_mid', title: 'Created within the top', status: 'created', owner: null }])
+  const mid = await taskView(api, 'tsk_mid')
+  assert.equal(mid.parent.id, 'tsk_top')
+  assert.deepEqual(mid.children.map((c) => c.id), ['tsk_low'])
+  const low = await taskView(api, 'tsk_low')
+  assert.equal(low.parent.id, 'tsk_mid')
+  assert.deepEqual(low.children, [])
 })
 
 test('a task waiting for the owner says what the owner can do now: approve a live request, or ask again / close', async () => {

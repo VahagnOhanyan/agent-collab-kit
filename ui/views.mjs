@@ -34,8 +34,15 @@ export async function tasksView(api, filters) {
 export async function taskView(api, taskId) {
   const task = api.getTask({ task_id: taskId })
   const reviews = api.listReviews({ task_id: taskId })
+  // The tree is read from one field, `parent_task`: the parent is looked up, the children are the tasks that name this
+  // one. Nothing about children is stored on the parent, so the two sides cannot disagree.
+  const everyTask = await api.listTasks({})
+  const brief = ({ id, title, status, owner }) => ({ id, title, status, owner: owner || null })
+  const parent = task.parent_task ? everyTask.find((t) => t.id === task.parent_task) : null
   return {
     task,
+    parent: parent ? brief(parent) : null,
+    children: everyTask.filter((t) => t.parent_task === taskId).map(brief),
     standstill: standstillOf(task, { reviews, approvals: api.listApprovals({ pending_only: true, task_id: taskId }) }),
     reviews,
     // getMessages() also filters by who a message is addressed to, and the panel
