@@ -70,6 +70,11 @@ Money, deployment, production, destructive changes, credentials: `request_user_a
 and stop. No tool grants an approval, including for you. The task sits in
 `waiting_for_user` until the owner answers at their terminal with `collab approve <id>`.
 
+A task's `action` is what you will DO — a verb and an object ("fix the frame crop on iPhone Duo", "написать тесты
+модели"), not the task's title or a symptom. The policy table classifies it; one it does not recognise is refused
+(`ACTION_UNRECOGNISED`) and nothing is created — rephrase it, or pass `action_kind`. Describe the action honestly:
+a kind can only raise its class, and an action worded to look safe is still the action you will take.
+
 Never put a secret in a task, message or review. The layer refuses content that looks like
 one; name the file the secret lives in instead.
 

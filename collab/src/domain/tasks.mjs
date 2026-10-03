@@ -14,7 +14,7 @@
 
 import { CODES, CollabError } from '../errors.mjs'
 import { effectiveReviewRisk } from '../models.mjs'
-import { classifyAction } from '../policy.mjs'
+import { ACTION_KINDS, classifyAction } from '../policy.mjs'
 import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
 import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
@@ -114,7 +114,7 @@ export function listTasks(ctx, { status = null, owner = null, role = null, open 
 }
 
 export function createTask(ctx, input) {
-  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, files = [], depends_on = [], spec = null } = input
+  const { title, description = '', role = null, priority = 'p2', needs_review = true, action = null, action_kind = null, files = [], depends_on = [], spec = null } = input
   if (!title || title.length < 3) {
     throw new CollabError(CODES.INVALID_INPUT, 'a task needs a title that says what is to be done')
   }
@@ -134,8 +134,22 @@ export function createTask(ctx, input) {
   const taskSpec = normaliseSpec(ctx.config, spec)
 
   // Classification is computed here, from the table — never taken from the
-  // caller. An agent that supplies its own action_class has it ignored.
-  const verdict = classifyAction(ctx.config.policy, action || title)
+  // caller. An agent that supplies its own action_class has it ignored. A kind
+  // (action_kind) is one more match: it can raise the class, never lower it.
+  const words = action || title
+  const subject = action_kind ? { ...(typeof words === 'string' ? { summary: words } : words), kind: action_kind } : words
+  const verdict = classifyAction(ctx.config.policy, subject)
+  // ⛔ An action the table does not recognise goes back to its author, not to the owner (owner, 03.10.2026). Before,
+  // it became an approval "just in case", and the owner was asked about "Stage 2: model tests" because the words had
+  // no verb. Nothing is created, so nothing reaches the owner; the agent says what it will do — a verb and an object,
+  // or a kind. Fail-closed still: the unknown is never treated as safe. requestApproval and the gate are unchanged.
+  if (!verdict.matched.length) {
+    throw new CollabError(
+      CODES.ACTION_UNRECOGNISED,
+      `the action "${typeof words === 'string' ? words : words?.summary || ''}" is not recognised by the policy table, so the task is not created: say what you will DO — a verb and an object ("fix the frame crop on iPhone Duo", "write tests for the story model", "исправить обрезку кадра", "написать тесты модели"), not the task's title or a symptom — or pass action_kind (${Object.keys(ACTION_KINDS).join(', ')})`,
+      { action: words, kinds: Object.keys(ACTION_KINDS) }
+    )
+  }
 
   return ctx.store.transact(async (tx) => {
     const task = tx.create('tasks', {
@@ -149,7 +163,8 @@ export function createTask(ctx, input) {
       created_by: ctx.agentId,
       contributors: [],
       reviewers: [],
-      action: action || title,
+      // Stored as classified: the gate reads it again at claim time and must reach the same class.
+      action: subject,
       action_class: verdict.action_class,
       requires_approval: verdict.requires_approval,
       approval_id: null,

@@ -29,11 +29,21 @@ import { TASK_STATUS, assertTransition } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { admitWork } from './gate.mjs'
 
-export function requestApproval(ctx, { task_id = null, action, reason, details = '', cost_estimate = null }) {
-  if (!action) throw new CollabError(CODES.INVALID_INPUT, 'an approval request needs the action it is asking about')
+export function requestApproval(ctx, { task_id = null, action: asked, action_kind = null, reason, details = '', cost_estimate = null }) {
+  if (!asked) throw new CollabError(CODES.INVALID_INPUT, 'an approval request needs the action it is asking about')
   if (!reason) throw new CollabError(CODES.INVALID_INPUT, 'an approval request needs a reason the owner can judge')
   assertNoSecret(details, 'approval details')
   assertNoSecret(reason, 'approval reason')
+
+  // The approval must name the action exactly as the task stores it, or the gate's fingerprint will not match: a task
+  // created with action_kind stores {summary, kind}. The kind is taken from the request, or — when the request names
+  // the task's own words without one — from the task, so an agent asking over MCP with a plain string still gets an
+  // approval the gate accepts. A different kind than the task's is a different action and will not match.
+  const stored = task_id ? ctx.store.get('tasks', task_id)?.action : null
+  const words = typeof asked === 'string' ? { summary: asked } : asked
+  const inherited = !action_kind && stored && typeof stored === 'object' && stored.kind && stored.summary === words.summary ? stored.kind : null
+  const kind = action_kind || inherited
+  const action = kind ? { ...words, kind } : asked
 
   const verdict = classifyAction(ctx.config.policy, action)
   const ttl = (ctx.config.policy.defaults.approval_ttl_seconds || 86400) * 1000

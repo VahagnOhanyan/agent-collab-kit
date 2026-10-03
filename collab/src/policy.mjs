@@ -14,9 +14,28 @@
 import { createHash } from 'node:crypto'
 import { CODES, CollabError } from './errors.mjs'
 
+// The kind of an action, named by the agent instead of a verb the table knows (owner, 03.10.2026). It is one more
+// match, never a replacement: the most dangerous class among the text's rules AND the kind wins, so a kind cannot
+// lower what the words say ("rotate the api key", kind edit → still SECURITY_SENSITIVE). A closed list in code, not
+// in policy.json: a project table cannot widen what a kind means.
+export const ACTION_KINDS = Object.freeze({
+  read: 'READ_ONLY',
+  edit: 'SAFE_WRITE',
+  test: 'SAFE_WRITE',
+  publish: 'EXTERNAL_SIDE_EFFECT',
+  delete: 'DESTRUCTIVE',
+  secrets: 'SECURITY_SENSITIVE',
+  deploy: 'PRODUCTION',
+  pay: 'FINANCIAL'
+})
+
 export function classifyAction(policy, action) {
   const text = actionText(action)
   const matched = []
+  const kind = typeof action === 'object' && action ? action.kind : null
+  if (kind && !Object.hasOwn(ACTION_KINDS, kind)) {
+    throw new CollabError(CODES.INVALID_INPUT, `action kind must be one of ${Object.keys(ACTION_KINDS).join(', ')}`, { kind })
+  }
   for (const rule of policy.rules || []) {
     let re
     try {
@@ -26,6 +45,9 @@ export function classifyAction(policy, action) {
     }
     if (re.test(text)) matched.push(rule)
   }
+  // The kind is the LAST match: a tie in severity is won by the first, so a rule the words matched keeps its class
+  // (and its never_standing mark, and the review-risk floor that class carries) against a kind of equal severity.
+  if (kind) matched.push({ id: `kind:${kind}`, class: ACTION_KINDS[kind], reason: `the agent named the kind of action: ${kind}` })
 
   const severityOf = (cls) => policy.classes?.[cls]?.severity ?? 0
   let chosen = policy.defaults.unmatched_class
@@ -59,11 +81,14 @@ function actionText(action) {
 
 export function fingerprintAction(action) {
   const normalised = typeof action === 'string' ? { summary: action } : action || {}
+  // The kind joins the fingerprint only when it is set: an action written before kinds existed keeps its fingerprint,
+  // so its approvals stay valid; one with a kind is a different action from the same words without it.
   const canonical = JSON.stringify({
     tool: normalised.tool || null,
     summary: (normalised.summary || '').trim(),
     command: (normalised.command || '').trim(),
-    target: (normalised.target || '').trim()
+    target: (normalised.target || '').trim(),
+    ...(normalised.kind ? { kind: normalised.kind } : {})
   })
   return `sha256:${createHash('sha256').update(canonical).digest('hex').slice(0, 32)}`
 }

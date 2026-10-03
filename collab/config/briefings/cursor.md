@@ -56,6 +56,8 @@ could have been wrong. One demonstrated defect beats five suspicions.
 Disagreement: `create_decision` with your option and the reasoning; two positions mark it disputed and neither may
 close it — `escalate_decision`. Money, deployment, production, destructive changes, credentials:
 `request_user_approval` and stop; no tool grants an approval. Never put a secret in a task, message or review.
+A task's `action` is what you will DO — a verb and an object, not its title or a symptom; one the policy table does
+not recognise is refused (`ACTION_UNRECOGNISED`) — rephrase it, or pass `action_kind`, which can only raise the class.
 
 ## Before you say something is done
 

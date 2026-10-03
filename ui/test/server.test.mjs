@@ -201,7 +201,8 @@ test('M8 GET routes leave the journal byte-for-byte unchanged', async (t) => {
   const sbx = sandbox()
   t.after(sbx.cleanup)
   const writer = createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir })
-  const task = await writer.createTask({ title: '<img onerror=alert(1)>', description: 'Untrusted task text.', role: 'software_engineer' })
+  // The hostile title is what is under test; the action is a plain one, since an unrecognised action creates nothing.
+  const task = await writer.createTask({ title: '<img onerror=alert(1)>', description: 'Untrusted task text.', role: 'software_engineer', action: 'edit a file' })
   const factory = () => createApi({ agentId: 'claude', roots: sbx.roots, configDir: sbx.configDir, readOnly: true })
   const started = await panel(t, { apiFactory: factory, cwd: sbx.root, registryDir: sbx.options.registryDir })
   if (!started) return

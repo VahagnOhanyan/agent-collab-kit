@@ -79,6 +79,11 @@ or handles credentials: `request_user_approval`, then stop. The task moves to
 There is no tool that grants an approval. Do not look for one, do not build one, and do
 not work around the wait by doing the safe-looking half of the action.
 
+A task's `action` is what you will DO — a verb and an object ("fix the frame crop on iPhone Duo", "написать тесты
+модели"), not the task's title or a symptom. The policy table classifies it; one it does not recognise is refused
+(`ACTION_UNRECOGNISED`) and nothing is created — rephrase it, or pass `action_kind`. Describe the action honestly:
+a kind can only raise its class, and an action worded to look safe is still the action you will take.
+
 Never put a token, key, password or connection string in a message, a task or a review.
 
 ## What you must not do

@@ -212,7 +212,9 @@ export const TOOLS = [
     description:
       'Register a unit of work so other agents can see it, claim it, review it and find out why it stopped. ' +
       'The action text is classified against the policy table: anything that costs money, touches production or ' +
-      'destroys data is marked as needing the owner and cannot be started until they answer.',
+      'destroys data is marked as needing the owner and cannot be started until they answer. An action the table ' +
+      'does not recognise is refused (ACTION_UNRECOGNISED) and nothing is created: say what you will do with a verb ' +
+      'and an object, or pass action_kind.',
     inputSchema: object(
       {
         title: str('What is to be done, in one line.'),
@@ -220,7 +222,8 @@ export const TOOLS = [
         role: str('The role required to do it, e.g. software_engineer. Only agents holding it can claim it.'),
         priority: str('p0 highest to p3 lowest.', { enum: ['p0', 'p1', 'p2', 'p3'] }),
         needs_review: bool('Whether it must pass an independent review before it can be completed. Defaults to true.'),
-        action: str('The concrete action, if it differs from the title. This is what gets classified.'),
+        action: str('What you will DO: a verb and an object ("fix the frame crop on iPhone Duo", "write tests for the story model", "исправить обрезку кадра"). Not the task title, not a symptom. This is what gets classified; without it the title is.'),
+        action_kind: str('The kind of action, when the words have no verb the table knows. It can raise the class the words give, never lower it.', { enum: ['read', 'edit', 'test', 'publish', 'delete', 'secrets', 'deploy', 'pay'] }),
         files: arr('Files or directories this work will touch.', { type: 'string' }),
         depends_on: arr('Task ids this one waits for.', { type: 'string' }),
         spec: SPEC
@@ -659,6 +662,7 @@ export const TOOLS = [
     inputSchema: object(
       {
         action: str('Exactly what you want to do.'),
+        action_kind: str('The kind of action, as given to create_task. Asking about a task by its own words, the task\'s kind is used when this is left out.', { enum: ['read', 'edit', 'test', 'publish', 'delete', 'secrets', 'deploy', 'pay'] }),
         reason: str('Why it is needed, in terms the owner can judge.'),
         task_id: str('The task this blocks.'),
         details: str('What it affects, what happens if it is refused, and whether there is a way around it.'),
