@@ -325,7 +325,7 @@ test('three layers: the Codex adapter only with Codex, the personal rule only wh
   }
   const rels = (ctx) => lib.linkSpecs(ctx).map((s) => s.rel)
   const ADAPTER = ['skills/codex-review', 'skills/ui-review', 'rules/vendor-codex.md']
-  const TEAM = ['rules/orchestration.md', 'skills/ux-guidance', 'skills/ux-critic-review', 'skills/claude-review', 'skills/adversarial-audit', 'skills/handoff', 'skills/vendor-probe', 'agents/verifier.md']
+  const TEAM = ['rules/orchestration.md', 'skills/ux-guidance', 'skills/ux-critic-review', 'skills/claude-review', 'skills/adversarial-audit', 'skills/handoff', 'skills/vendor-probe', 'skills/verify', 'skills/ui-shot', 'skills/device-run', 'skills/db-migration', 'skills/api-change', 'agents/verifier.md']
 
   const withoutCodex = rels({ ...base, codexPresent: false })
   for (const rel of ADAPTER) assert.ok(!withoutCodex.includes(rel), `${rel} must not go to a machine without Codex`)

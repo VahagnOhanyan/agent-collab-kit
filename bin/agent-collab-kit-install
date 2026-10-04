@@ -84,6 +84,11 @@ const REQUIRED_PATHS = Object.freeze([
   'skills/adversarial-audit/SKILL.md',
   'skills/handoff/SKILL.md',
   'skills/vendor-probe/SKILL.md',
+  'skills/verify/SKILL.md',
+  'skills/ui-shot/SKILL.md',
+  'skills/device-run/SKILL.md',
+  'skills/db-migration/SKILL.md',
+  'skills/api-change/SKILL.md',
   'rules/vendor-codex.md',
   'rules/vendor-claude.md',
   'hooks/codex-guard.mjs',
@@ -1259,6 +1264,14 @@ function linkSpecs(ctx) {
     // Reconnaissance of a vendor CLI the kit has no adapter for (30.09.2026). It was in the release but reached no
     // agent: without it here, "разведай agy" had nothing to run.
     { dest: path.join(dir, 'skills', 'vendor-probe'), rel: 'skills/vendor-probe', kind: 'dir', posixCopy: true },
+    // Project-neutral procedures that used to live in one project (03.10.2026): checking work before "done", seeing
+    // and running an iOS app, changing a schema, changing a shared contract. Everything project-specific they need
+    // is read from the project's registry entry (verify.md, ui-shot.md, device-run.md, db-migration.md, api-change.md).
+    { dest: path.join(dir, 'skills', 'verify'), rel: 'skills/verify', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'ui-shot'), rel: 'skills/ui-shot', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'device-run'), rel: 'skills/device-run', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'db-migration'), rel: 'skills/db-migration', kind: 'dir', posixCopy: true },
+    { dest: path.join(dir, 'skills', 'api-change'), rel: 'skills/api-change', kind: 'dir', posixCopy: true },
     { dest: path.join(dir, 'agents', 'implementer.md'), rel: 'agents/implementer.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'agents', 'verifier.md'), rel: 'agents/verifier.md', kind: 'file', posixCopy: true },
     { dest: path.join(dir, 'rules', 'orchestration.md'), rel: 'rules/orchestration.md', kind: 'file', posixCopy: true },
@@ -2024,7 +2037,7 @@ function applyCodex(ctx, plan, journal, changes) {
 const CODEX_RULES_BEGIN = '<!-- agent-collab-kit: begin — managed by agent-collab-kit-install; edit ~/agent-collab-kit, not this block -->'
 const CODEX_RULES_END = '<!-- agent-collab-kit: end -->'
 const CODEX_RULES_SOURCES = ['rules/orchestration.md', 'rules/modules.md', 'rules/terminology.md', 'rules/apple-toolchain.md']
-const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review', 'claude-review', 'vendor-probe']
+const CODEX_TEAM_SKILLS = ['ux-guidance', 'ux-critic-review', 'claude-review', 'vendor-probe', 'verify']
 
 function skillDescription(file) {
   const text = fs.readFileSync(file, 'utf8')

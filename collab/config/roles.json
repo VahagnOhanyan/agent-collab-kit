@@ -6,41 +6,43 @@
     "architect": {
       "summary": "Owns cross-cutting shape and the decisions that bind later work.",
       "requires": ["read_code", "inspect_git", "record_decision"],
-      "skills": ["adversarial-audit", "handoff"],
+      "skills": ["adversarial-audit", "handoff", "verify"],
       "reviewed_by": ["code_reviewer"]
     },
     "software_engineer": {
       "summary": "General implementation work in any language in the tree.",
       "requires": ["read_code", "modify_code", "run_tests"],
-      "skills": ["handoff"],
+      "skills": ["handoff", "verify"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "ios_engineer": {
       "summary": "Implements in the SwiftUI client.",
       "requires": ["read_code", "modify_code", "run_tests"],
-      "skills": ["ux-guidance"],
+      "skills": ["ux-guidance", "ui-shot", "device-run", "verify"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "backend_engineer": {
       "summary": "Implements in the server-side services.",
       "requires": ["read_code", "modify_code", "run_tests"],
+      "skills": ["api-change", "db-migration", "verify"],
       "reviewed_by": ["code_reviewer"]
     },
     "product_engineer": {
       "summary": "Turns product intent into behaviour across the stack.",
       "requires": ["read_code", "modify_code"],
-      "skills": ["ux-guidance"],
+      "skills": ["ux-guidance", "api-change", "verify"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "code_reviewer": {
       "summary": "Independent review of somebody else's change.",
       "requires": ["read_code", "review_code", "inspect_git"],
-      "skills": ["adversarial-audit"],
+      "skills": ["adversarial-audit", "verify"],
       "read_only": true
     },
     "test_engineer": {
       "summary": "Test analysis, coverage gaps, flake and fixture work.",
       "requires": ["read_code", "run_tests", "review_code"],
+      "skills": ["verify"],
       "reviewed_by": ["code_reviewer"]
     },
     "security_reviewer": {

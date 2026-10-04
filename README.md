@@ -40,6 +40,7 @@ collab connect             # подключить проект; журнал (.c
 | Гейт после правки контракта | Правка файла под `post_edit[].paths` (или файла, названного в реестре) сразу запускает гейт правила; красный — код 2 с хвостом вывода | `hooks/post-edit.mjs`; настройка — `post_edit: [{gate, paths, registries}]` в `project.json` |
 | Git-хуки проекта | При старте сессии включает `core.hooksPath` на каталог проекта (только если изменилось) | `hooks/session-start.mjs`; настройка — `githooks_dir` в `project.json` |
 | `/adversarial-audit`, `/handoff` | Аудит с опровержением каждой находки отдельным агентом; документ передачи сессии | `skills/adversarial-audit/`, `skills/handoff/` |
+| `/verify`, `/ui-shot`, `/device-run`, `/db-migration`, `/api-change` | Проверка перед «готово»; скриншот на симуляторе; запуск на телефоне с логом; смена схемы БД; смена формы данных на проводе. Без имён проектов: всё проектное читают из реестра — `<реестр>/<проект>/verify.md`, `ui-shot.md`, `device-run.md`, `db-migration.md`, `api-change.md` (параметры сборки — общий `ui-review.json`) | `skills/verify/`, `skills/ui-shot/`, `skills/device-run/`, `skills/db-migration/`, `skills/api-change/` |
 | Хуки | Все хуки — Node (`hooks/*.mjs`), один код для macOS и Windows; хост запускает их через лаунчер `bin/agent-collab-kit-hook <имя>` | `hooks/`, модель угроз — `hooks/SECURITY-hooks.md` |
 
 **Платформы.** macOS и Windows; нужен Node 20.19+. На macOS проверено прогонами; на Windows код есть, но живой проверки ещё не было (см. `hooks/SECURITY-hooks.md`).

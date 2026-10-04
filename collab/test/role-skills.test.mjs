@@ -7,8 +7,12 @@ import { test } from 'node:test'
 import { createApi } from '../src/api.mjs'
 import { fixedClock } from '../src/ids.mjs'
 import { loadConfigFrom, validateRegistry } from '../src/registry.mjs'
-import { join } from 'node:path'
+import { readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { FIXTURE_ROLES, sandbox, writeJson } from './helpers.mjs'
+
+const KIT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 // The fixture roles carry no skills; a role with them is what these tests are about.
 function world() {
@@ -25,7 +29,14 @@ test('the built-in roles name only skills the kit itself ships, and none names a
   const named = new Set(Object.values(roles).flatMap((role) => role.skills || []))
   assert.ok(named.size > 0, 'the built-in roles carry skills')
   for (const name of named) assert.match(name, /^[a-z0-9][a-z0-9:_-]*$/i)
-  assert.deepEqual([...named].sort(), ['adversarial-audit', 'handoff', 'ux-critic-review', 'ux-guidance'], 'kit skills only')
+  // Every skill a built-in role names is one the kit ships: a role that points at a skill nobody installs is a lie.
+  const shipped = readdirSync(join(KIT, 'skills'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+  for (const name of named) assert.ok(shipped.includes(name), `${name} is named by a built-in role but is not in skills/`)
+  assert.deepEqual(
+    [...named].sort(),
+    ['adversarial-audit', 'api-change', 'db-migration', 'device-run', 'handoff', 'ui-shot', 'ux-critic-review', 'ux-guidance', 'verify'],
+    'kit skills only'
+  )
 })
 
 test('a malformed skills list is a configuration problem, a role without one is not', () => {
