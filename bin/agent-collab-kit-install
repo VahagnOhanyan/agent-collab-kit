@@ -2348,9 +2348,11 @@ function parseClaudeGet({ status, stdout, stderr }, name = 'collab') {
   const header = lines.findIndex((l) => l.trim() === `${name}:`)
   if (header === -1) {
     if (/no mcp server/i.test(`${clean(stdout)}\n${clean(stderr)}`)) return { found: false }
-    throw new InstallError(`could not interpret \`claude mcp get collab\` (exit ${status}):\n${tail(`${clean(stdout)}\n${clean(stderr)}`, 15)}`)
+    throw new InstallError(`could not interpret \`claude mcp get ${name}\` (exit ${status}):\n${tail(`${clean(stdout)}\n${clean(stderr)}`, 15)}`)
   }
-  const reg = { found: true, scope: null, scopeLabel: null, type: null, command: null, args: null, env: {} }
+  // `scope` stays the two-way answer the collab registration needs; `scopeKind` tells local from project scope too,
+  // for the per-project servers (Claude Code 2.1.270: "Local config (private to you in this project)").
+  const reg = { found: true, scope: null, scopeKind: null, scopeLabel: null, type: null, command: null, args: null, url: null, env: {} }
   let inEnv = false
   for (const line of lines.slice(header + 1)) {
     const field = /^ {2}(\w[\w ]*?): ?(.*)$/.exec(line)
@@ -2365,7 +2367,9 @@ function parseClaudeGet({ status, stdout, stderr }, name = 'collab') {
       if (key === 'Scope') {
         reg.scopeLabel = value.trim()
         reg.scope = /^user/i.test(reg.scopeLabel) ? 'user' : 'other'
+        reg.scopeKind = /^user/i.test(reg.scopeLabel) ? 'user' : /^local/i.test(reg.scopeLabel) ? 'local' : /^project/i.test(reg.scopeLabel) ? 'project' : 'other'
       } else if (key === 'Type') reg.type = value.trim()
+      else if (key === 'URL') reg.url = value.trim()
       else if (key === 'Command') reg.command = value.trim()
       else if (key === 'Args') reg.args = value.trim()
       else if (key === 'Environment') inEnv = true
@@ -2516,6 +2520,265 @@ function summarizeClaude(ctx, plan) {
         ? `${claudeLabel(ctx, item.dir)}: cannot register — ${item.unreachable}`
         : `${claudeLabel(ctx, item.dir)}: ${item.action} user-scope collab -> ${ctx.node.path} ${ctx.serverPath}`
     )
+}
+
+// ── Claude Code: MCP servers a project asks for (registry mcp.json) ─────────
+// A server one project needs (an error tracker for that project's organization) is not machine-wide: registered at
+// user scope it would follow the agent into every other project, with that organization's data. So it is declared
+// in the project's registry entry — ~/.agent-collab-kit/projects/<id>/mcp.json, on the owner's machine, never in the
+// repository — and registered with Claude Code at LOCAL scope from each root of the project: Claude keeps it in the
+// config directory's .claude.json under that path, and it exists only there. Nothing is written into the repository
+// (a repository's .mcp.json is a different, untrusted thing — collab/SECURITY.md).
+//
+// v1 takes remote servers that sign in through the browser (`type: "http"`, an https URL): such an entry carries no
+// secret, and the file is refused outright if it tries to (headers, env, a login or a query in the URL). Only Claude
+// Code can register per project outside the repository; the other vendors keep project settings inside it, so they
+// are told so in the output and left alone.
+//
+// What the kit registered is recorded in ~/.agent-collab-kit/state/project-mcp.json, and that record is the only
+// thing it will ever remove: a server of the same name somebody added by hand is reported and left alone.
+
+const PROJECT_MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
+const PROJECT_MCP_KEYS = new Set(['//', 'type', 'url'])
+
+function projectMcpStatePath(ctx) {
+  return path.join(ctx.kitDir, 'state', 'project-mcp.json')
+}
+
+function readProjectMcpState(ctx) {
+  const file = projectMcpStatePath(ctx)
+  if (!lstatOrNull(file)) return { raw: null, registrations: [] }
+  const raw = fs.readFileSync(file, 'utf8')
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new InstallError(`${file} is not valid JSON (${error.message}); fix or remove it`)
+  }
+  const registrations = Array.isArray(parsed?.registrations) ? parsed.registrations.filter((r) => r && typeof r === 'object') : []
+  return { raw, registrations }
+}
+
+// The URL is the only value an entry holds, and the only place a secret could hide in v1: https, no login, no query,
+// no fragment. Returns the normalized form, or a reason it is refused.
+function checkProjectMcpUrl(value) {
+  if (typeof value !== 'string') return { error: 'url must be a string' }
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return { error: `url ${JSON.stringify(value)} is not a URL` }
+  }
+  if (url.protocol !== 'https:') return { error: `url must be https (got ${url.protocol.replace(':', '')})` }
+  if (url.username || url.password) return { error: 'url must not carry a login' }
+  if (url.search || url.hash) return { error: 'url must not carry a query or fragment (that is where tokens hide)' }
+  return { url: url.href }
+}
+
+// Every project entry with an mcp.json → the servers it wants, one per root. Any problem in any file stops the install
+// before anything changes: a half-applied registry is worse than none.
+function readProjectMcpWanted(ctx) {
+  const registry = path.join(ctx.kitDir, 'projects')
+  const wanted = []
+  const problems = []
+  const notes = []
+  if (!lstatOrNull(registry)) return { wanted, notes }
+  for (const id of fs.readdirSync(registry).sort()) {
+    if (id.startsWith('.')) continue
+    const mcpFile = path.join(registry, id, 'mcp.json')
+    if (!lstatOrNull(mcpFile)) continue
+    const where = `projects/${id}/mcp.json`
+    let mcp
+    let project
+    try {
+      mcp = JSON.parse(fs.readFileSync(mcpFile, 'utf8'))
+    } catch (error) {
+      problems.push(`${where}: ${error.message}`)
+      continue
+    }
+    try {
+      project = JSON.parse(fs.readFileSync(path.join(registry, id, 'project.json'), 'utf8'))
+    } catch (error) {
+      problems.push(`projects/${id}/project.json: ${error.code === 'ENOENT' ? 'missing (mcp.json needs the project roots)' : error.message}`)
+      continue
+    }
+    const servers = mcp && typeof mcp === 'object' && !Array.isArray(mcp) ? mcp.servers : undefined
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
+      problems.push(`${where}: expected { "servers": { "<name>": { "type": "http", "url": "https://…" } } }`)
+      continue
+    }
+    const roots = Array.isArray(project.roots) ? project.roots.filter((r) => typeof r === 'string' && path.isAbsolute(r)) : []
+    if (!roots.length) {
+      problems.push(`projects/${id}/project.json: no absolute roots to register ${where} for`)
+      continue
+    }
+    for (const [name, spec] of Object.entries(servers)) {
+      if (!PROJECT_MCP_NAME.test(name)) {
+        problems.push(`${where}: server name ${JSON.stringify(name)} must match ${PROJECT_MCP_NAME}`)
+        continue
+      }
+      if (name === 'collab') {
+        problems.push(`${where}: "collab" is registered by the installer itself, machine-wide; it cannot be a project server`)
+        continue
+      }
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+        problems.push(`${where}: servers.${name} must be an object`)
+        continue
+      }
+      const extra = Object.keys(spec).filter((k) => !PROJECT_MCP_KEYS.has(k))
+      if (extra.length) {
+        problems.push(`${where}: servers.${name} has ${extra.join(', ')} — only "type" and "url" are allowed (no headers or env: no secrets in the registry)`)
+        continue
+      }
+      if (spec.type !== 'http') {
+        problems.push(`${where}: servers.${name}.type must be "http" (a remote server that signs in through the browser)`)
+        continue
+      }
+      const checked = checkProjectMcpUrl(spec.url)
+      if (checked.error) {
+        problems.push(`${where}: servers.${name}: ${checked.error}`)
+        continue
+      }
+      for (const root of roots) {
+        if (!lstatOrNull(root)) {
+          notes.push(`project MCP ${name} (${id}): root ${root} does not exist on this machine — skipped`)
+          continue
+        }
+        // Claude Code keys a local-scope server by the real path of the directory it was added from.
+        wanted.push({ project: id, root: realpathOr(root), name, url: checked.url })
+      }
+    }
+  }
+  if (problems.length) throw new InstallError(`project MCP servers in the registry are invalid — nothing was changed:\n  ${problems.join('\n  ')}`)
+  return { wanted, notes }
+}
+
+// runClaude with the project root as the working directory: that is what local scope is keyed by.
+function runClaudeAt(ctx, args, configDir, cwd) {
+  const env = childEnv(configDir ? { CLAUDE_CONFIG_DIR: configDir } : {})
+  const r = spawnSync(ctx.claudeBin, args, { cwd, env, encoding: 'utf8', timeout: 120_000, shell: IS_WINDOWS })
+  if (r.error) throw new InstallError(`could not run ${ctx.claudeBin} ${args.join(' ')} in ${cwd}: ${r.error.message}`)
+  return r
+}
+
+const sameRegistration = (a, b) => a.dir === b.dir && a.root === b.root && a.name === b.name
+
+function planClaudeProjectMcp(ctx) {
+  if (ctx.opts.skipClaude) return { skipped: true, reason: 'requested with --skip-claude' }
+  const state = readProjectMcpState(ctx)
+  const { wanted, notes } = readProjectMcpWanted(ctx)
+  if (!wanted.length && !state.registrations.length) return { items: [], notes, state, unreachable: [] }
+  if (!commandExists(ctx.claudeBin)) return { skipped: true, reason: `${ctx.claudeBin} not found on PATH` }
+  const items = []
+  const unreachable = []
+  for (const dir of ctx.claudeDirs) {
+    const ours = state.registrations.filter((r) => r.dir === dir)
+    const targets = [
+      ...wanted.map((w) => ({ ...w, dir })),
+      ...ours.filter((r) => !wanted.some((w) => sameRegistration({ ...w, dir }, r))).map((r) => ({ ...r, gone: true }))
+    ]
+    try {
+      for (const t of targets) {
+        if (!lstatOrNull(t.root)) {
+          items.push({ ...t, action: 'forget' })
+          continue
+        }
+        const reg = parseClaudeGet(runClaudeAt(ctx, ['mcp', 'get', t.name], dir, t.root), t.name)
+        const isOurs = ours.some((r) => sameRegistration(r, t) && r.url === reg.url)
+        const isLocalHttp = reg.found && reg.scopeKind === 'local' && reg.type === 'http'
+        if (t.gone) items.push({ ...t, action: isLocalHttp && isOurs ? 'remove' : 'forget', existing: reg })
+        else if (!reg.found) items.push({ ...t, action: 'add' })
+        // Identical but not in the record: somebody added it by hand. Not adopted — adopting it is how a later
+        // removal from mcp.json would take away a server the kit never put there.
+        else if (isLocalHttp && reg.url === t.url && isOurs) items.push({ ...t, action: 'ok', recorded: true })
+        else if (isLocalHttp && isOurs) items.push({ ...t, action: 'replace', existing: reg })
+        else items.push({ ...t, action: 'foreign', existing: reg })
+      }
+    } catch (error) {
+      if (!(error instanceof InstallError)) throw error
+      // An account whose CLI does not answer: nothing planned for it, what was recorded stays recorded.
+      unreachable.push({ dir, reason: firstLine(error.message) })
+      for (let i = items.length - 1; i >= 0; i -= 1) if (items[i].dir === dir) items.splice(i, 1)
+    }
+  }
+  return { items, notes, state, unreachable, wantedCount: wanted.length }
+}
+
+const projectMcpLabel = (ctx, t) => `${claudeLabel(ctx, t.dir)} project MCP ${t.name} (${t.project || path.basename(t.root)})`
+
+function addProjectMcp(ctx, t, journal) {
+  const args = ['mcp', 'add', '-s', 'local', '--transport', 'http', t.name, t.url]
+  const added = runClaudeAt(ctx, args, t.dir, t.root)
+  if (added.status !== 0) throw new InstallError(`claude ${args.join(' ')} in ${t.root} (CLAUDE_CONFIG_DIR=${t.dir}) failed:\n${tail(added.stdout + added.stderr, 10)}`)
+  journal.add(`registered project MCP ${t.name} for ${t.root} in ${t.dir}`, () => {
+    const r = runClaudeAt(ctx, ['mcp', 'remove', '-s', 'local', t.name], t.dir, t.root)
+    if (r.status !== 0) throw new Error(tail(r.stdout + r.stderr, 5))
+  })
+  const check = parseClaudeGet(runClaudeAt(ctx, ['mcp', 'get', t.name], t.dir, t.root), t.name)
+  if (!(check.found && check.scopeKind === 'local' && check.type === 'http' && check.url === t.url)) {
+    throw new InstallError(`after claude mcp add in ${t.root} (CLAUDE_CONFIG_DIR=${t.dir}), \`claude mcp get ${t.name}\` does not show the local http server at ${t.url}`)
+  }
+}
+
+function removeProjectMcp(ctx, t, journal) {
+  const removed = runClaudeAt(ctx, ['mcp', 'remove', '-s', 'local', t.name], t.dir, t.root)
+  if (removed.status !== 0) throw new InstallError(`claude mcp remove -s local ${t.name} in ${t.root} (CLAUDE_CONFIG_DIR=${t.dir}) failed:\n${tail(removed.stdout + removed.stderr, 10)}`)
+  const url = t.existing.url
+  journal.add(`removed project MCP ${t.name} for ${t.root} in ${t.dir}`, () => {
+    const r = runClaudeAt(ctx, ['mcp', 'add', '-s', 'local', '--transport', 'http', t.name, url], t.dir, t.root)
+    if (r.status !== 0) throw new Error(tail(r.stdout + r.stderr, 5))
+  })
+}
+
+function applyClaudeProjectMcp(ctx, plan, journal, changes) {
+  for (const note of plan.notes) changes.push(note)
+  for (const u of plan.unreachable) changes.push(`${claudeLabel(ctx, u.dir)}: project MCP servers NOT checked — ${u.reason}`)
+  const kept = plan.state.registrations.filter((r) => plan.unreachable.some((u) => u.dir === r.dir))
+  const next = [...kept]
+  for (const t of plan.items) {
+    const record = { dir: t.dir, root: t.root, name: t.name, url: t.url, project: t.project }
+    if (t.action === 'add') {
+      addProjectMcp(ctx, t, journal)
+      next.push(record)
+      changes.push(`${projectMcpLabel(ctx, t)}: registered (local scope, ${t.root}) -> ${t.url}`)
+    } else if (t.action === 'replace') {
+      removeProjectMcp(ctx, t, journal)
+      addProjectMcp(ctx, t, journal)
+      next.push(record)
+      changes.push(`${projectMcpLabel(ctx, t)}: ${t.existing.url} -> ${t.url}`)
+    } else if (t.action === 'ok') {
+      next.push(record)
+    } else if (t.action === 'remove') {
+      removeProjectMcp(ctx, t, journal)
+      changes.push(`${projectMcpLabel(ctx, t)}: removed (no longer in the registry)`)
+    } else if (t.action === 'foreign') {
+      changes.push(
+        `${projectMcpLabel(ctx, t)}: NOT registered — a "${t.name}" server not added by this kit is already there (${t.existing.scopeLabel || '?'}, ${
+          t.existing.url || t.existing.command || '?'
+        }); left alone`
+      )
+    }
+    // 'forget': recorded by us, gone from both the registry and Claude (or its root is gone) — dropped from the record.
+  }
+  if (plan.wantedCount) changes.push('project MCP servers: Claude Code only — Codex, Gemini and Cursor have no per-project registration outside the repository')
+  const body = `${JSON.stringify({ version: 1, registrations: next }, null, 2)}\n`
+  if (body === plan.state.raw || (!next.length && plan.state.raw === null)) return
+  const file = projectMcpStatePath(ctx)
+  ensureDir(path.dirname(file), journal)
+  writeFileAtomic(file, body, 0o600)
+  const previous = plan.state.raw
+  journal.add(`wrote ${file}`, () => {
+    if (previous === null) fs.rmSync(file, { force: true })
+    else writeFileAtomic(file, previous, 0o600)
+  })
+}
+
+function summarizeClaudeProjectMcp(ctx, plan) {
+  const lines = plan.items
+    .filter((t) => t.action !== 'ok')
+    .map((t) => `${projectMcpLabel(ctx, t)}: ${t.action}${t.url ? ` -> ${t.url}` : ''}`)
+  for (const u of plan.unreachable) lines.push(`${claudeLabel(ctx, u.dir)}: project MCP servers cannot be checked — ${u.reason}`)
+  return lines
 }
 
 // ── MCP registration described by data: a JSON or TOML settings file ─────────
@@ -3093,6 +3356,7 @@ const MCP_CLIENTS = [
   { id: 'codex-rules', plan: planCodexRules, apply: applyCodexRules, summary: summarizeCodexRules },
   { id: 'codex-hooks', plan: planCodexHooks, apply: applyCodexHooks, summary: summarizeCodexHooks },
   { id: 'claude', plan: planClaude, apply: applyClaude, summary: summarizeClaude },
+  { id: 'claude-project-mcp', plan: planClaudeProjectMcp, apply: applyClaudeProjectMcp, summary: summarizeClaudeProjectMcp },
   { id: 'claude-hooks', plan: planClaudeHooks, apply: applyClaudeHooks, summary: summarizeClaudeHooks },
   { id: 'gemini', plan: planGemini, apply: applyGemini, summary: summarizeGemini },
   { id: 'cursor', plan: planCursor, apply: applyCursor, summary: summarizeCursor },

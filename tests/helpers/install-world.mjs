@@ -127,21 +127,44 @@ const file = !configDir || configDir === process.env.FAKE_CLAUDE_PRIMARY_DIR
   : base.replace(/\\.json$/, '-' + require('path').basename(configDir) + '.json')
 const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {}
 const save = () => fs.writeFileSync(file, JSON.stringify(state, null, 2))
+// Local scope is keyed by the directory the command runs in, as Claude Code keys it in .claude.json; kept in a file
+// of its own so the user-scope state above keeps the exact shape older tests compare.
+const localFile = file.replace(/\\.json$/, '-local.json')
+const local = fs.existsSync(localFile) ? JSON.parse(fs.readFileSync(localFile, 'utf8')) : {}
+const saveLocal = () => fs.writeFileSync(localFile, JSON.stringify(local, null, 2))
+const cwd = fs.realpathSync(process.cwd())
+const here = (local[cwd] = local[cwd] || {})
 const labels = { user: 'User config (available in all your projects)', project: 'Project config (shared via .mcp.json)', local: 'Local config (private to you in this project)' }
 const [group, sub, ...rest] = argv
 if (group !== 'mcp') { console.error('fake claude: only mcp'); process.exit(2) }
 const positional = []
 const env = {}
 let scope = 'local'
+let transport = 'stdio'
 let i = 0
 for (; i < rest.length; i++) {
   if (rest[i] === '--') { i++; break }
   if (rest[i] === '-s') scope = rest[++i]
+  else if (rest[i] === '--transport') transport = rest[++i]
   else if (rest[i] === '-e') { const [k, ...v] = rest[++i].split('='); env[k] = v.join('=') }
   else positional.push(rest[i])
 }
 const name = positional[0]
-if (sub === 'get') {
+if (sub === 'get' && here[name]) {
+  // Claude Code resolves local scope first.
+  console.log([name + ':', '  Scope: ' + labels.local, '  Status: ! Needs authentication', '  Type: http', '  URL: ' + here[name].url, '', 'To remove this server, run: claude mcp remove ' + name + ' -s local'].join('\\n'))
+} else if (sub === 'add' && scope === 'local' && transport === 'http') {
+  if (process.env.FAKE_CLAUDE_FAIL_LOCAL_ADD_DIR && configDir === process.env.FAKE_CLAUDE_FAIL_LOCAL_ADD_DIR) { console.error('fake claude: local add refused'); process.exit(1) }
+  if (here[name]) { console.error('MCP server ' + name + ' already exists in local config'); process.exit(1) }
+  here[name] = { url: positional[1] }
+  saveLocal()
+  console.log('Added HTTP MCP server ' + name + ' with URL: ' + positional[1] + ' to local config')
+} else if (sub === 'remove' && scope === 'local') {
+  if (!here[name]) { console.error('No local-scoped MCP server found with name: ' + name); process.exit(1) }
+  delete here[name]
+  saveLocal()
+  console.log('Removed MCP server ' + name)
+} else if (sub === 'get') {
   const s = state[name]
   // Claude Code 2.1.270: not found prints this and exits 0.
   if (!s) { console.log('No MCP server named "' + name + '". Configured servers: claude.ai Google Drive'); process.exit(0) }
@@ -255,6 +278,13 @@ function makeWorld(name, { codex = CODEX_FIXTURE, claudeState = null } = {}) {
     claudeStateIn: (dirName) => {
       const f = claudeStateFile.replace(/\.json$/, `-${dirName}.json`)
       return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {}
+    },
+    // Local-scope servers by working directory (see FAKE_CLAUDE), for the primary or a named config directory.
+    claudeLocal: (dirName = null) => {
+      const base = dirName ? claudeStateFile.replace(/\.json$/, `-${dirName}.json`) : claudeStateFile
+      const f = base.replace(/\.json$/, '-local.json')
+      const all = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {}
+      return Object.fromEntries(Object.entries(all).filter(([, servers]) => Object.keys(servers).length))
     },
     codexCalls: () => (existsSync(codexLog) ? readFileSync(codexLog, 'utf8') : ''),
     snapshot: () => ({ home: snapshot(home), bindir: snapshot(bindir), claude: existsSync(claudeStateFile) ? readFileSync(claudeStateFile, 'utf8') : null }),
