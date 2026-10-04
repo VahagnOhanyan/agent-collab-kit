@@ -83,6 +83,14 @@ h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px;
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 32px 0 10px; font-weight: 650; }
 h3 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); font-weight: 600; }
 .sub { color: var(--muted); margin: 0 0 20px; max-width: 78ch; }
+/* A task created within another sits under it: the arrow is pushed in by its depth. Classes, not an inline style —
+   the panel's CSP (style-src 'self') drops inline style attributes without a word. Depth 1 is the first level. */
+.tree-1 { margin-left: 0; }
+.tree-2 { margin-left: 18px; }
+.tree-3 { margin-left: 36px; }
+.tree-4 { margin-left: 54px; }
+.tree-5 { margin-left: 72px; }
+.tree-6 { margin-left: 90px; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }

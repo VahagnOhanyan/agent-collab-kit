@@ -386,7 +386,7 @@ async function tasks(param) {
         // The whole cell is the box's label: a click a little beside the box ticks it rather than opening the task.
         canWrite ? td(box ? el('label', { class: 'checkcell' }, box) : null, 'nw check') : null,
         td([pill(t.status), t.closed_by_owner ? [' ', el('span', { class: 'pill warn', title: ownerClosedNote(t.closed_by_owner), text: 'владельцем' })] : null], 'nw'),
-        td([depthOf.get(t.id) ? el('span', { class: 'muted', style: `margin-left:${(depthOf.get(t.id) - 1) * 18}px`, text: '↳ ' }) : null,
+        td([depthOf.get(t.id) ? el('span', { class: `muted tree-${Math.min(depthOf.get(t.id), 6)}`, text: '↳ ' }) : null,
           el('a', { href: `#/tasks/${encodeURIComponent(t.id)}`, text: t.title }),
           t.parent_task && !depthOf.get(t.id) ? el('div', { class: 'muted small' }, 'в рамках ', el('a', { href: `#/tasks/${encodeURIComponent(t.parent_task)}`, class: 'mono', text: t.parent_task })) : null,
           t.standstill && !QUIET.has(t.standstill.code)
