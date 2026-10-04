@@ -120,3 +120,11 @@ test('the panel answer: commands only for vendors that lack the server, nested T
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('a server built into another vendor\'s application, or one that needs a working directory, is not offered', () => {
+  assert.equal(sharedSpec('node_repl', { command: '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl', args: [] }), null)
+  assert.equal(sharedSpec('tool', { command: 'npx', args: ['pkg'], cwd: '/somewhere' }), null)
+  assert.equal(sharedSpecFromToml('computer-use', ['command = "/Applications/Codex.app/Contents/MacOS/Client"', 'args = ["mcp"]']), null)
+  assert.equal(sharedSpecFromToml('tool', ['command = "npx"', 'args = ["pkg"]', 'cwd = "/somewhere"']), null)
+  assert.notEqual(sharedSpec('chrome', { command: 'npx', args: ['chrome-devtools-mcp@latest'] }), null, 'an ordinary server stays')
+})

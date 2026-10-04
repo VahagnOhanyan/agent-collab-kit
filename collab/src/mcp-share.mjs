@@ -90,6 +90,10 @@ export function sharedSpec(name, spec) {
     share = { name, transport: 'http', url, headers: names(spec.headers, HEADER_NAME) }
   } else {
     if (typeof spec.command !== 'string' || !spec.command) return null
+    // A server built into another vendor's application (a program inside `*.app/Contents/`, e.g. Codex's node_repl
+    // and computer-use) runs on that application's paths, environment and permissions: a copy elsewhere would not
+    // start. Nor would one that needs a working directory, which none of the commands carries.
+    if (/\.app\/Contents\//.test(spec.command) || spec.cwd !== undefined) return null
     const args = Array.isArray(spec.args) ? spec.args : []
     if (!args.every((a) => typeof a === 'string')) return null
     share = { name, transport: 'stdio', command: spec.command, args: cleanArgs(args), env: names(spec.env, ENV_NAME) }
@@ -133,6 +137,7 @@ export function sharedSpecFromToml(name, lines) {
   const command = string(field('command'))
   const args = list(field('args'))
   if (!command || args === null) return null
+  if (field('cwd') !== undefined) return null // a working directory none of the commands carries
   const env = [...inlineKeys(field('env')), ...sectionKeys('env')]
   return sharedSpec(name, { command, args, env: Object.fromEntries(env.map((k) => [k, ''])) })
 }
