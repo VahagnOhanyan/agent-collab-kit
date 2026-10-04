@@ -1307,9 +1307,9 @@ async function setup() {
   const agentsBox = el('div', {},
     offered.length ? el('div', { class: 'list' }, offered.map(choice)) : el('div', { class: 'note warn', text: 'На этой машине не найден ни один агент из каталога. Установите хотя бы одного (подсказки ниже), откройте его один раз и обновите страницу.' }),
     absent.length
-      ? el('details', { class: 'stale' }, el('summary', { text: `Не найдены на этой машине (${absent.length}): ${absent.map((a) => a.name || a.id).join(', ')}` }),
+      ? el('details', { class: 'stale' }, el('summary', { text: `Не найдены на этой машине (${absent.length}): ${absent.map((a) => a.name_ru || a.name || a.id).join(', ')}` }),
           el('div', { class: 'list' }, absent.map((a) => el('div', { class: 'row' },
-            el('span', { class: 'grow' }, el('strong', { text: a.name || a.id }), el('div', { class: 'muted small', text: a.install_hint || 'Установите программу этого агента и откройте её один раз, потом обновите страницу.' }))))))
+            el('span', { class: 'grow' }, el('strong', { text: a.name_ru || a.name || a.id }), el('div', { class: 'muted small', text: a.install_hint_ru || a.install_hint ||'Установите программу этого агента и откройте её один раз, потом обновите страницу.' }))))))
       : null)
   const leadBox = el('div', { class: 'list' })
   function drawLead() {

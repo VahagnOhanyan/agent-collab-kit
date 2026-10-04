@@ -90,7 +90,7 @@ export function detectSetup({ registryDir, machineDir, cwd }) {
   }
   const project = describeProject({ cwd, registryDir })
   return {
-    catalog: (catalog.agents || []).map((agent) => ({ id: agent.id, name: agent.name, provider: agent.provider, roles: agent.roles || [], install_hint: agent.adapter?.install_hint || null })),
+    catalog: (catalog.agents || []).map((agent) => ({ id: agent.id, name: agent.name, provider: agent.provider, roles: agent.roles || [], install_hint: agent.adapter?.install_hint || null, name_ru: agent.adapter?.name_ru || null, install_hint_ru: agent.adapter?.install_hint_ru || null })),
     installed: (catalog.agents || []).filter((agent) => agentInstalled(agent, { which: executableOnPath, exists: existsSync, home: homedir() })).map((agent) => agent.id),
     // Who another agent can start on a task. An installed agent missing here can lead but not be led (the wizard says so).
     launchable: (catalog.agents || []).filter((agent) => agentLaunchable(agent, { which: executableOnPath })).map((agent) => agent.id),
