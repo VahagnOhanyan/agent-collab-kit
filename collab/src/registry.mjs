@@ -188,6 +188,30 @@ export function validateRegistry(config) {
         problems.push(`${where} adapter.review_launch.platforms must list darwin, linux or win32`)
       }
     }
+    // Where the vendor keeps its MCP servers, so the installer writes collab there and the panel lists its servers by
+    // the same data. The installer re-checks it (adapterProblems); this refuses a bad entry before an install.
+    if (adapter.mcp_registration !== undefined) {
+      const reg = adapter.mcp_registration
+      if (!reg || typeof reg !== 'object' || Array.isArray(reg)) problems.push(`${where} adapter.mcp_registration must be an object`)
+      else {
+        if (!['json-file', 'toml-file'].includes(reg.kind)) problems.push(`${where} adapter.mcp_registration.kind must be json-file or toml-file`)
+        if (typeof reg.servers_key !== 'string' || !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(reg.servers_key)) problems.push(`${where} adapter.mcp_registration.servers_key must be a key like mcpServers`)
+        if (typeof reg.config_path !== 'string' || !reg.config_path.startsWith('~/') || reg.config_path.split('/').includes('..')) problems.push(`${where} adapter.mcp_registration.config_path must be ~/… inside the home`)
+        if (reg.entry_extra !== undefined && (!reg.entry_extra || typeof reg.entry_extra !== 'object' || Array.isArray(reg.entry_extra))) problems.push(`${where} adapter.mcp_registration.entry_extra must be an object of plain fields`)
+        // The check is the vendor's own `<vendor> mcp …` command: any other command of its binary could run anything.
+        if (reg.verify !== undefined) {
+          const argv = reg.verify?.argv
+          const binary = agent.detect || adapter.binary
+          if (!Array.isArray(argv) || argv[0] !== binary || argv[1] !== 'mcp' || !argv.every((a) => typeof a === 'string' && a)) problems.push(`${where} adapter.mcp_registration.verify.argv must be the vendor's own binary with its mcp subcommand`)
+          if (typeof reg.verify?.expect !== 'string' || reg.verify.expect.trim().length < 3 || /[\r\n]/.test(reg.verify.expect)) problems.push(`${where} adapter.mcp_registration.verify.expect must be at least 3 characters on one line`)
+        }
+        for (const [key, value] of Object.entries(reg.entry_extra && typeof reg.entry_extra === 'object' && !Array.isArray(reg.entry_extra) ? reg.entry_extra : {})) {
+          if (!/^[A-Za-z0-9_-]+$/.test(key) || ['command', 'args', 'env', 'type', 'url'].includes(key)) problems.push(`${where} adapter.mcp_registration.entry_extra.${key} is not allowed`)
+          else if (!['string', 'number', 'boolean'].includes(typeof value)) problems.push(`${where} adapter.mcp_registration.entry_extra.${key} must be a string, a number or true/false`)
+        }
+        if (['claude', 'codex', 'gemini', 'cursor'].includes(agent.id)) problems.push(`${where} adapter.mcp_registration: the installer registers ${agent.id} with its own code`)
+      }
+    }
     if (adapter.headless !== undefined && (!Array.isArray(adapter.headless) || !adapter.headless.every((c) => typeof c === 'string' && c !== ''))) {
       problems.push(`${where} adapter.headless must be a list of command names`)
     }

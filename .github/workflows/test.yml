@@ -46,7 +46,7 @@ jobs:
       # the explicit shell and the glob as above.
       - name: installer test suite
         shell: bash
-        run: node --test tests/test_install_*.mjs
+        run: node --test tests/test_install_*.mjs tests/test_adapters.mjs
         env:
           AGENT_COLLAB_KIT_TEST_SOURCE: ${{ github.workspace }}
 

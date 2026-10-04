@@ -5,8 +5,16 @@
 // Only name, transport and a short target come out. env, args and headers are
 // never read into the result: they are where tokens live.
 
-import { readFileSync, readdirSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { basename, join, sep } from 'node:path'
+import { loadBuiltinAgents } from './registry.mjs'
+
+// The program name only. A command written as an array (`["node", "--token", "…"]`) or anything but a string carries
+// arguments, and arguments are where tokens live: it gives no name at all.
+function commandName(spec) {
+  return typeof spec?.command === 'string' ? basename(spec.command) : ''
+}
 
 function safeUrl(value) {
   try {
@@ -35,27 +43,33 @@ function claudeServers(home) {
     }
     for (const [name, spec] of Object.entries(config?.mcpServers || {})) {
       const remote = typeof spec?.url === 'string'
-      found.push({ name, agent: 'claude', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : basename(String(spec?.command || '')) })
+      found.push({ name, agent: 'claude', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec) })
     }
   }
   return found
 }
 
 function codexServers(home) {
+  return tomlServers(join(home, '.codex', 'config.toml'), 'mcp_servers', 'codex')
+}
+
+// One TOML settings file whose servers are tables named `<tableKey>.<server>`.
+function tomlServers(file, tableKey, agent) {
   let text
   try {
-    text = readFileSync(join(home, '.codex', 'config.toml'), 'utf8')
+    text = readFileSync(file, 'utf8')
   } catch {
     return []
   }
+  const tableHeader = new RegExp(`^${tableKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.("[^"]+"|[^.]+)$`)
   const found = []
   let current = null
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim()
     const header = /^\[([^\]]+)\]$/.exec(trimmed)
     if (header) {
-      const table = /^mcp_servers\.("[^"]+"|[^.]+)$/.exec(header[1])
-      current = table ? { name: table[1].replace(/^"|"$/g, ''), agent: 'codex', transport: 'stdio', target: '' } : null
+      const table = tableHeader.exec(header[1])
+      current = table ? { name: table[1].replace(/^"|"$/g, ''), agent, transport: 'stdio', target: '' } : null
       if (current) found.push(current)
       continue
     }
@@ -83,7 +97,7 @@ function cursorServers(home) {
   const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
   return Object.entries(servers).map(([name, spec]) => {
     const remote = typeof spec?.url === 'string'
-    return { name, agent: 'cursor', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : basename(String(spec?.command || '')) }
+    return { name, agent: 'cursor', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec) }
   })
 }
 
@@ -99,13 +113,100 @@ function geminiServers(home) {
   const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
   return Object.entries(servers).map(([name, spec]) => {
     const address = typeof spec?.url === 'string' ? spec.url : typeof spec?.serverUrl === 'string' ? spec.serverUrl : null
-    return { name, agent: 'gemini', transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : basename(String(spec?.command || '')) }
+    return { name, agent: 'gemini', transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec) }
   })
 }
 
-export function readMcpServers(home) {
+// A JSON settings file whose servers sit under `serversKey` (dotted for a nested one).
+function jsonServers(file, serversKey, agent) {
+  let data
+  try {
+    data = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return []
+  }
+  let servers = data
+  for (const key of serversKey.split('.')) servers = servers && typeof servers === 'object' ? servers[key] : undefined
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return []
+  return Object.entries(servers).map(([name, spec]) => {
+    const address = typeof spec?.url === 'string' ? spec.url : typeof spec?.serverUrl === 'string' ? spec.serverUrl : null
+    return { name, agent, transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec) }
+  })
+}
+
+// Vendors that describe their own MCP settings file: the kit's catalog (`adapter.mcp_registration`) and the machine
+// adapters adopted on this machine. The same description the installer writes collab by, so a vendor added by data is
+// listed here without code of its own. Display only: nothing here is run, and the path stays inside the home.
+function describedServers(home, { catalogAgents, machineAdapters }) {
+  const sources = []
+  for (const agent of catalogAgents ?? defaultCatalogAgents()) {
+    if (agent?.adapter?.mcp_registration) sources.push({ id: agent.id, registration: agent.adapter.mcp_registration })
+  }
+  for (const adapter of machineAdapters ?? defaultMachineAdapters(home)) {
+    if (adapter?.registration) sources.push({ id: adapter.id, registration: adapter.registration })
+  }
+  const found = []
+  for (const { id, registration } of sources) {
+    const { kind, config_path: configPath, servers_key: serversKey } = registration
+    if (typeof configPath !== 'string' || !configPath.startsWith('~/') || configPath.split('/').includes('..') || typeof serversKey !== 'string') continue
+    const file = join(home, configPath.slice(2))
+    // Through links too: a settings file that is a link out of the home is not read.
+    if (!insideHome(home, file)) continue
+    if (kind === 'json-file') found.push(...jsonServers(file, serversKey, id))
+    else if (kind === 'toml-file') found.push(...tomlServers(file, serversKey, id))
+  }
+  return found
+}
+
+function insideHome(home, file) {
+  try {
+    const root = realpathSync(home)
+    const real = realpathSync(file)
+    return real === root || real.startsWith(root + sep)
+  } catch {
+    return false
+  }
+}
+
+function defaultCatalogAgents() {
+  try {
+    return loadBuiltinAgents().agents || []
+  } catch {
+    return []
+  }
+}
+
+function defaultMachineAdapters(home) {
+  const dir = join(home, '.agent-collab-kit', 'collab', 'adapters')
+  let names = []
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.json')).sort()
+  } catch {
+    return []
+  }
+  const adapters = []
+  for (const name of names) {
+    // Only an adapter the owner approved, the way the installer reads it: a plain file whose bytes are the ones the
+    // `.approved` mark beside it names, and whose file name is its id. Anything else is not listed.
+    try {
+      const file = join(dir, name)
+      if (!lstatSync(file).isFile()) continue
+      const bytes = readFileSync(file)
+      const mark = `${file}.approved`
+      if (!lstatSync(mark).isFile() || readFileSync(mark, 'utf8').trim() !== createHash('sha256').update(bytes).digest('hex')) continue
+      const adapter = JSON.parse(bytes.toString('utf8'))
+      if (name !== `${adapter?.id}.json`) continue
+      adapters.push(adapter)
+    } catch {
+      // A broken adapter file is the installer's to report; the list just leaves it out.
+    }
+  }
+  return adapters
+}
+
+export function readMcpServers(home, options = {}) {
   const byName = new Map()
-  for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home), ...geminiServers(home)]) {
+  for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home), ...geminiServers(home), ...describedServers(home, options)]) {
     const row = byName.get(s.name) || { name: s.name, transport: s.transport, target: s.target, agents: [] }
     if (!row.agents.includes(s.agent)) row.agents.push(s.agent)
     if (!row.target) row.target = s.target

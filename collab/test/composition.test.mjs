@@ -263,3 +263,39 @@ test('a catalog adapter.headless that is not a list of command names is refused'
   agents.agents[0].adapter.headless = 'claude'
   assert.ok(validateRegistry({ ...config, agents }).problems.some((p) => p.includes('adapter.headless')))
 })
+
+test('a catalog adapter.mcp_registration that is not a settings file inside the home is refused, and so is one for a client the installer writes itself', () => {
+  const config = loadConfig()
+  const bad = (mutate) => {
+    const agents = structuredClone(config.agents)
+    const target = agents.agents[0]
+    target.id = 'vendor-x'
+    target.adapter.mcp_registration = { kind: 'toml-file', config_path: '~/.vendor/config.toml', servers_key: 'mcp_servers' }
+    mutate(target)
+    return validateRegistry({ ...config, agents }).problems.filter((p) => p.includes('mcp_registration'))
+  }
+  assert.deepEqual(bad(() => {}), [], 'a well-formed description is accepted')
+  assert.ok(bad((a) => { a.adapter.mcp_registration.kind = 'cli' }).length, 'kind must be json-file or toml-file')
+  assert.ok(bad((a) => { a.adapter.mcp_registration.config_path = '/etc/passwd' }).length, 'the path starts with ~/')
+  assert.ok(bad((a) => { a.adapter.mcp_registration.config_path = '~/../etc/passwd' }).length, 'the path never climbs out of the home')
+  assert.ok(bad((a) => { a.adapter.mcp_registration.servers_key = 'bad key' }).length, 'servers_key is a plain key')
+  assert.ok(bad((a) => { a.adapter.mcp_registration.entry_extra = { command: 'sh' } }).length, 'entry_extra cannot replace the command')
+  assert.ok(bad((a) => { a.id = 'codex' }).length, 'codex is registered by the installer\'s own code: one writer per file')
+})
+
+test('a catalog mcp_registration check must be the vendor\'s own `mcp` command, and entry_extra an object', () => {
+  const config = loadConfig()
+  const problems = (mutate) => {
+    const agents = structuredClone(config.agents)
+    const target = agents.agents[0]
+    target.id = 'vendor-x'
+    target.detect = 'vendor-x-cli'
+    target.adapter.mcp_registration = { kind: 'json-file', config_path: '~/.vendor/mcp.json', servers_key: 'mcpServers' }
+    mutate(target.adapter.mcp_registration)
+    return validateRegistry({ ...config, agents }).problems.filter((p) => p.includes('mcp_registration'))
+  }
+  assert.deepEqual(problems((r) => { r.verify = { argv: ['vendor-x-cli', 'mcp', 'list'], expect: 'collab' } }), [])
+  assert.ok(problems((r) => { r.verify = { argv: ['vendor-x-cli', 'rm', '-rf', '/'], expect: 'collab' } }).length, 'not an mcp subcommand')
+  assert.ok(problems((r) => { r.verify = { argv: ['rm', 'mcp', 'list'], expect: 'collab' } }).length, 'not the vendor\'s own binary')
+  for (const extra of ['xy', 7, ['xy']]) assert.ok(problems((r) => { r.entry_extra = extra }).length, `entry_extra ${JSON.stringify(extra)}`)
+})

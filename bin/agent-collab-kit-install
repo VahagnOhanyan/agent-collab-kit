@@ -2682,20 +2682,27 @@ function adapterSettingsPath(ctx, configPath) {
 
 // The built-in vendors' ids and programs: a machine adapter never stands in for one of them.
 function builtinVendors(ctx) {
-  const catalog = JSON.parse(fs.readFileSync(path.join(ctx.currentPath, 'collab', 'config', 'agents.json'), 'utf8'))
+  const catalog = JSON.parse(fs.readFileSync(catalogFileOf(ctx), 'utf8'))
   // Gemini (agy) is not in the catalog but its MCP settings are the installer's own client (planGemini): two writers
   // of one file are never allowed.
   const ids = new Set(['gemini'])
   const binaries = new Set(['claude', 'codex', 'agy'])
+  // Vendors the catalog now registers itself (`adapter.mcp_registration`): an adapter adopted for one of them earlier is
+  // not an error but is retired in the catalog's favour.
+  const owned = new Set()
   for (const agent of catalog.agents || []) {
+    if (agent.adapter?.mcp_registration !== undefined) owned.add(agent.id)
     ids.add(agent.id)
     for (const bin of [agent.detect, agent.adapter?.binary]) if (bin) binaries.add(bin)
   }
-  return { ids, binaries }
+  return { ids, binaries, owned }
 }
 
+// The catalog of the release being installed: `current` does not hold it yet (and on a first install does not exist).
+const catalogFileOf = (ctx) => path.join(ctx.sourceDir || ctx.currentPath, 'collab', 'config', 'agents.json')
+
 // What makes an adapter usable, checked on every read — the file sits in the owner's home and could be edited by hand.
-function adapterProblems(adapter, fileName = null) {
+function adapterProblems(adapter, fileName = null, { verifyOptional = false } = {}) {
   const problems = []
   const reg = adapter?.registration
   if (!adapter || !ADAPTER_ID.test(adapter.id || '')) problems.push('id must be lowercase letters, digits, _ or -')
@@ -2704,12 +2711,18 @@ function adapterProblems(adapter, fileName = null) {
   else if (NOT_A_VENDOR.has(adapter.binary.toLowerCase().replace(/\.(exe|cmd|bat)$/, '').replace(/[0-9.]+$/, ''))) problems.push(`binary ${adapter.binary} is a shell or an interpreter, not a vendor's CLI`)
   if (!reg || !['json-file', 'toml-file'].includes(reg.kind)) problems.push('registration.kind must be json-file or toml-file (cli is not supported for machine adapters yet)')
   if (reg && !ADAPTER_KEY.test(reg.servers_key || '')) problems.push('registration.servers_key must be a key like mcpServers')
-  if (reg && (typeof reg.config_path !== 'string' || !reg.config_path.startsWith('~/'))) problems.push('registration.config_path must start with ~/')
-  const argv = reg?.verify?.argv
-  if (!Array.isArray(argv) || argv[0] !== adapter?.binary || !argv.every((a) => typeof a === 'string' && a.length)) problems.push('registration.verify.argv must run the vendor\'s own binary')
-  // A check that says nothing (a blank, a newline, one letter) would pass whatever the program printed.
-  if (typeof reg?.verify?.expect !== 'string' || reg.verify.expect.trim().length < 3 || /[\r\n]/.test(reg.verify.expect)) problems.push('registration.verify.expect must be at least 3 characters on one line, printed by the check when collab is there')
-  for (const [key, value] of Object.entries(reg?.entry_extra || {})) {
+  if (reg && (typeof reg.config_path !== 'string' || !reg.config_path.startsWith('~/') || reg.config_path.split('/').includes('..'))) problems.push('registration.config_path must start with ~/ and stay inside the home')
+  // A catalog entry may leave the check out (the vendor has no command that lists its servers); an adopted adapter may not.
+  if (!(verifyOptional && reg?.verify === undefined)) {
+    const argv = reg?.verify?.argv
+    // The vendor's own `mcp` subcommand (`<vendor> mcp list`), nothing else: a check that may be any command of the
+    // vendor's binary is a way to run anything the binary can do (a program named `rm` would pass `argv[0] === binary`).
+    if (!Array.isArray(argv) || argv[0] !== adapter?.binary || argv[1] !== 'mcp' || !argv.every((a) => typeof a === 'string' && a.length)) problems.push('registration.verify.argv must run the vendor\'s own binary with its `mcp` subcommand')
+    // A check that says nothing (a blank, a newline, one letter) would pass whatever the program printed.
+    if (typeof reg?.verify?.expect !== 'string' || reg.verify.expect.trim().length < 3 || /[\r\n]/.test(reg.verify.expect)) problems.push('registration.verify.expect must be at least 3 characters on one line, printed by the check when collab is there')
+  }
+  if (reg?.entry_extra !== undefined && (!reg.entry_extra || typeof reg.entry_extra !== 'object' || Array.isArray(reg.entry_extra))) problems.push('registration.entry_extra must be an object of plain fields')
+  for (const [key, value] of Object.entries(reg?.entry_extra && typeof reg.entry_extra === 'object' && !Array.isArray(reg.entry_extra) ? reg.entry_extra : {})) {
     if (!ADAPTER_EXTRA_KEY.test(key) || ADAPTER_RESERVED.has(key)) problems.push(`registration.entry_extra.${key} is not allowed`)
     else if (!['string', 'number', 'boolean'].includes(typeof value)) problems.push(`registration.entry_extra.${key} must be a string, a number or true/false`)
   }
@@ -2737,11 +2750,12 @@ function readMachineAdapters(ctx) {
     const mark = approvalMark(file)
     const approved = lstatOrNull(mark)?.isFile() ? fs.readFileSync(mark, 'utf8').trim() : null
     if (approved !== sha256(bytes)) throw new InstallError(`machine adapter ${file} is not the one the owner approved (changed, or never adopted); nothing of it is used. ${remedy}`)
+    if (builtin.owned.has(adapter?.id)) return null
     const problems = adapterProblems(adapter, name)
     if (builtin.ids.has(adapter?.id) || builtin.binaries.has(adapter?.binary)) problems.push(`${adapter.id}/${adapter.binary} is a built-in vendor: its settings are the installer's own`)
     if (problems.length) throw new InstallError(`machine adapter ${file} is not usable: ${problems.join('; ')}. ${remedy}`)
     return adapter
-  })
+  }).filter(Boolean)
 }
 
 function adapterEntry(ctx, adapter) {
@@ -2752,7 +2766,9 @@ function adapterTomlBlock(ctx, adapter) {
   const reg = adapter.registration
   return [
     `[${reg.servers_key}.collab]`,
-    `# Managed by agent-collab-kit-install: machine adapter ${adapter.id}, adopted from its vendor-probe profile.`,
+    adapter.source === 'catalog'
+      ? `# Managed by agent-collab-kit-install: ${adapter.id}, from the kit's agent catalog (adapter.mcp_registration).`
+      : `# Managed by agent-collab-kit-install: machine adapter ${adapter.id}, adopted from its vendor-probe profile.`,
     `command = ${JSON.stringify(ctx.node.path)}`,
     `args = [${JSON.stringify(ctx.serverPath)}]`,
     `env = { COLLAB_AGENT_ID = ${JSON.stringify(adapter.id)} }`,
@@ -2774,6 +2790,7 @@ function planAdapterRegistration(ctx, adapter) {
 // HOME is the home being installed into, so the vendor reads the settings this run wrote (not the real ones under a
 // test --home). Success is exit 0 AND the expected text on stdout: an error message that happens to name collab is not.
 function verifyAdapter(ctx, adapter) {
+  if (!adapter.registration.verify) return // a catalog entry whose vendor has no command that lists its servers
   const [bin, ...args] = adapter.registration.verify.argv
   const run = spawnSync(bin, args, { encoding: 'utf8', timeout: 30000, env: childEnv({ HOME: ctx.home }), stdio: ['ignore', 'pipe', 'pipe'] })
   const text = `${run.stdout || ''}\n${run.stderr || ''}`
@@ -2791,19 +2808,61 @@ function adapterDescribe(item) {
   }
 }
 
-function planAdapters(ctx) {
-  const adapters = readMachineAdapters(ctx)
-  if (!adapters.length) return { skipped: true, reason: 'no machine adapters' }
-  return {
-    items: adapters.map((adapter) => {
-      const display = adapterSettingsPath(ctx, adapter.registration.config_path)
-      // Same rule as the built-in vendors: no settings file created for a program nobody has here.
-      if (!lstatOrNull(display) && !commandExists(adapter.binary) && !lstatOrNull(path.dirname(display))) {
-        return { adapter, skipped: true, reason: `${adapter.binary} is not installed and ${path.dirname(display)} does not exist` }
-      }
-      return planAdapterRegistration(ctx, adapter)
-    })
+// The vendors whose registration the installer writes with its own code: a catalog entry naming one of them in
+// `mcp_registration` would give its settings file two writers, so it is refused, never merged.
+const INSTALLER_OWN_CLIENTS = new Set(['claude', 'codex', 'gemini', 'cursor'])
+
+// Catalog agents that describe their own MCP settings file (`adapter.mcp_registration`): the same data an adopted
+// machine adapter carries, shipped with the kit. A vendor is connected by adding one entry to collab/config/agents.json.
+function catalogRegistrations(ctx) {
+  const catalogFile = catalogFileOf(ctx)
+  // No catalog to read (a context that is not installing a release): there is nothing for the catalog to register.
+  if (!lstatOrNull(catalogFile)) return []
+  const catalog = JSON.parse(fs.readFileSync(catalogFile, 'utf8'))
+  const found = []
+  for (const agent of catalog.agents || []) {
+    const registration = agent.adapter?.mcp_registration
+    if (registration === undefined) continue
+    const adapter = { id: agent.id, binary: agent.detect || agent.adapter?.binary, registration, source: 'catalog' }
+    const problems = adapterProblems(adapter, null, { verifyOptional: true })
+    if (INSTALLER_OWN_CLIENTS.has(agent.id)) problems.push(`${agent.id} is a client the installer registers with its own code`)
+    if (problems.length) throw new InstallError(`catalog agent ${agent.id}: adapter.mcp_registration is not usable: ${problems.join('; ')}`)
+    found.push(adapter)
   }
+  return found
+}
+
+// Directories that belong to nobody in particular: one of them existing says nothing about whether a vendor is used here.
+const SHARED_PARENTS = new Set(['', '.config', '.local', '.local/share', '.cache', 'Library', 'Library/Application Support', 'AppData', 'AppData/Roaming', 'AppData/Local'])
+
+// A vendor's own directory exists — not the home, not `~/.config`: `~/.config/x.json` must not appear for a vendor
+// nobody has just because `~/.config` does.
+function hasOwnDirectory(ctx, display) {
+  const parent = path.dirname(display)
+  if (!lstatOrNull(parent)) return false
+  return !SHARED_PARENTS.has(path.relative(ctx.home, parent).split(path.sep).join('/'))
+}
+
+function planAdapters(ctx) {
+  const catalogAdapters = catalogRegistrations(ctx)
+  const adapters = [...readMachineAdapters(ctx), ...catalogAdapters]
+  if (!adapters.length) return { skipped: true, reason: 'no machine adapters and no catalog registrations' }
+  // One writer per file. The same file named twice (two entries, or an entry and a client the installer writes with its
+  // own code) would be planned from the same bytes and the second write would break the install: refused up front.
+  const canonical = (display) => path.join(realpathOr(path.dirname(display)), path.basename(display))
+  const owners = new Map([[ctx.codexConfig, 'codex'], [ctx.geminiConfig, 'gemini'], [ctx.cursorConfig, 'cursor']].filter(([file]) => file).map(([file, id]) => [canonical(file), id]))
+  const items = adapters.map((adapter) => {
+    const display = adapterSettingsPath(ctx, adapter.registration.config_path)
+    const key = canonical(display)
+    if (owners.has(key)) throw new InstallError(`${adapter.id}: ${display} is also written for ${owners.get(key)}; one file has one writer`)
+    owners.set(key, adapter.id)
+    // Same rule as the built-in vendors: no settings file created for a program nobody has here.
+    if (!lstatOrNull(display) && !commandExists(adapter.binary) && !hasOwnDirectory(ctx, display)) {
+      return { adapter, skipped: true, reason: `${adapter.binary} is not installed and ${path.dirname(display)} is not its own directory` }
+    }
+    return planAdapterRegistration(ctx, adapter)
+  })
+  return { items }
 }
 
 function applyAdapters(ctx, plan, journal, changes) {
@@ -2815,7 +2874,7 @@ function applyAdapters(ctx, plan, journal, changes) {
 }
 
 function summarizeAdapters(ctx, plan) {
-  const lines = plan.items.filter((item) => !item.skipped && item.changed).map((item) => `${item.adapter.id}: ${item.exists ? 'update' : 'create'} collab in ${item.file}, then check with \`${item.adapter.registration.verify.argv.join(' ')}\``)
+  const lines = plan.items.filter((item) => !item.skipped && item.changed).map((item) => `${item.adapter.id}: ${item.exists ? 'update' : 'create'} collab in ${item.file}${item.adapter.registration.verify ? `, then check with \`${item.adapter.registration.verify.argv.join(' ')}\`` : ''}`)
   return lines.length ? lines : null
 }
 
@@ -3092,6 +3151,8 @@ function kitPaths(home, kitDir) {
 
 async function install(ctx) {
   const source = inspectSource(ctx)
+  // The catalog of the release being installed: `current` does not hold it yet (and on a first install does not exist).
+  ctx.sourceDir = source.dir
   out(`source: ${source.dir} at ${source.sha} (${source.commit})`)
   out(`node for registrations: ${ctx.node.path}`)
   if (ctx.node.warning) out(`warning: ${ctx.node.warning}`)
