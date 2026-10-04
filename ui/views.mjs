@@ -65,8 +65,11 @@ export async function taskView(api, taskId) {
     }
     for (const child of everyTask) if (child.parent_task === id) queue.push(child.id)
   }
+  // The skills the task's role names (roles.json): a hint for whoever takes it, shown so the owner sees what was meant.
+  const skills = task.role && Array.isArray(api.config?.roles?.roles?.[task.role]?.skills) ? api.config.roles.roles[task.role].skills : []
   return {
     task,
+    skills,
     usage,
     branch: { ...branch, descendants: seen.size - 1, none: branch.tasks === 0 },
     parent: parent ? brief(parent) : null,

@@ -6,16 +6,19 @@
     "architect": {
       "summary": "Owns cross-cutting shape and the decisions that bind later work.",
       "requires": ["read_code", "inspect_git", "record_decision"],
+      "skills": ["adversarial-audit", "handoff"],
       "reviewed_by": ["code_reviewer"]
     },
     "software_engineer": {
       "summary": "General implementation work in any language in the tree.",
       "requires": ["read_code", "modify_code", "run_tests"],
+      "skills": ["handoff"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "ios_engineer": {
       "summary": "Implements in the SwiftUI client.",
       "requires": ["read_code", "modify_code", "run_tests"],
+      "skills": ["ux-guidance"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "backend_engineer": {
@@ -26,11 +29,13 @@
     "product_engineer": {
       "summary": "Turns product intent into behaviour across the stack.",
       "requires": ["read_code", "modify_code"],
+      "skills": ["ux-guidance"],
       "reviewed_by": ["code_reviewer", "ux_reviewer"]
     },
     "code_reviewer": {
       "summary": "Independent review of somebody else's change.",
       "requires": ["read_code", "review_code", "inspect_git"],
+      "skills": ["adversarial-audit"],
       "read_only": true
     },
     "test_engineer": {
@@ -41,11 +46,13 @@
     "security_reviewer": {
       "summary": "Reviews a change for credential, permission and data-exposure risk.",
       "requires": ["read_code", "review_code"],
+      "skills": ["adversarial-audit"],
       "read_only": true
     },
     "ux_reviewer": {
       "summary": "Reviews a user-facing change for usability — from the diff and the screenshots it is given, never by running the app itself. Review only, no edits.",
       "requires": ["read_code", "review_code"],
+      "skills": ["ux-critic-review", "ux-guidance"],
       "read_only": true
     },
     "researcher": {

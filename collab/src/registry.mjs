@@ -78,6 +78,19 @@ export function validateRegistry(config) {
     if (role.read_only !== undefined && typeof role.read_only !== 'boolean') {
       problems.push(`roles.json: role "${roleId}" read_only must be true or false`)
     }
+    // Skills are named, not loaded: a hint of what suits the role, shown to an agent that takes work in it. The layer
+    // cannot see which skills an agent has installed, so the only thing checked is that a name is a plausible one.
+    if (role.skills !== undefined) {
+      if (!Array.isArray(role.skills) || role.skills.length > 12) {
+        problems.push(`roles.json: role "${roleId}" skills must be a list of at most 12 skill names`)
+      } else {
+        for (const skill of role.skills) {
+          if (typeof skill !== 'string' || !/^[a-z0-9][a-z0-9:_-]{0,63}$/i.test(skill)) {
+            problems.push(`roles.json: role "${roleId}" has skill ${JSON.stringify(skill)} — a skill name is letters, digits and - _ :`)
+          }
+        }
+      }
+    }
     if (role.reviewed_by !== undefined && !Array.isArray(role.reviewed_by)) {
       problems.push(`roles.json: role "${roleId}" reviewed_by must be a list of roles`)
     }

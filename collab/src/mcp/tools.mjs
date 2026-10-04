@@ -272,7 +272,8 @@ export const TOOLS = [
     description:
       'Claim a specific task, or the highest-priority claimable one matching a role. Safe when two agents race: ' +
       'exactly one wins and the other is told so rather than quietly doing the same work. Claiming takes a lease; ' +
-      'if you stop reporting in, the task returns to the pool instead of being stuck on you forever.',
+      'if you stop reporting in, the task returns to the pool instead of being stuck on you forever. The answer carries ' +
+      '`suggested_skills`: the skills that suit the role the task is for. A hint — use the ones you have.',
     inputSchema: object({
       task_id: str('A specific task. Omit to take the next claimable one.'),
       role: str('When taking the next one, restrict to tasks needing this role.'),

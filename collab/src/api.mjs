@@ -242,6 +242,9 @@ export function createApi({
   // Roles an agent suspended itself are out of routing from the next call on, read fresh from the journal.
   registry.setSuspended((id, role) => (store.get('agents', id)?.suspended_roles || []).some((s) => s.role === role))
 
+  // The skills a role names (roles.json `skills`), or none: a role without them behaves exactly as before.
+  const skillsOf = (role) => (role && Array.isArray(config.roles?.roles?.[role]?.skills) ? [...config.roles.roles[role].skills] : [])
+
   let lastSweep = 0
   const maybeSweep = async () => {
     if (readOnly) return
@@ -295,6 +298,9 @@ export function createApi({
         owner_language: ownerLanguageRule(config.agents?.owner_language) ? config.agents.owner_language : null,
         write_for_owner: ownerLanguageRule(config.agents?.owner_language),
         roles: declared.roles,
+        // Skills that suit each of the agent's roles — named, never loaded: the agent decides which to use. The layer
+        // cannot see which skills the agent has installed, so a name may be one it does not have.
+        role_skills: Object.fromEntries((declared.roles || []).map((role) => [role, skillsOf(role)]).filter(([, skills]) => skills.length)),
         capabilities: declared.capabilities,
         // Capabilities nothing on this machine could confirm (probe.mjs). Evidence that rests on one of these —
         // "the UI was verified" on run_application — is not claimed: say what would have to be checked instead.
@@ -381,7 +387,9 @@ export function createApi({
       } catch {
         // Opportunistic, like the sweep: never the reason a claim fails.
       }
-      return tasks.claimTask(ctx, input)
+      const claim = await tasks.claimTask(ctx, input)
+      // What suits the role the task is for, said at the moment the agent starts on it. A hint, not a load.
+      return claim.task ? { ...claim, suggested_skills: skillsOf(claim.task.role) } : claim
     },
     assignTask: (input) => tasks.assignTask(ctx, input),
     updateTask: (input) => tasks.updateTask(ctx, input),

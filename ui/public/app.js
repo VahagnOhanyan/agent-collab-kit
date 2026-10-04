@@ -513,6 +513,7 @@ async function taskDetail(id) {
     el('div', { class: 'toolbar' }, pill(t.status), el('a', { href: closed ? '#/tasks?all=1' : '#/tasks', text: '← к списку задач' }),
       ownerButtons.length ? el('span', { class: 'grow' }) : null, ...ownerButtons),
     formBox,
+    data.skills?.length ? el('div', { class: 'muted small' }, `Скиллы роли ${t.role} (подсказка исполнителю): `, data.skills.map((name, i) => [i ? ', ' : '', el('span', { class: 'mono', text: name })])) : null,
     data.parent ? el('div', { class: 'note' }, 'Создана в рамках задачи ', el('a', { href: `#/tasks/${encodeURIComponent(data.parent.id)}`, text: data.parent.title }), ' ', pill(data.parent.status))
       : t.parent_task ? el('div', { class: 'note', text: `Создана в рамках задачи ${t.parent_task}` }) : null,
     t.closed_by_owner ? el('div', { class: 'note warn', text: `Закрыта мимо проверок: ${ownerClosedNote(t.closed_by_owner)}` }) : null,
