@@ -87,9 +87,25 @@ function cursorServers(home) {
   })
 }
 
+// Gemini (Antigravity CLI, `agy`): ~/.gemini/config/mcp_config.json, `mcpServers` keyed by name. A remote server is
+// written with `url` or `serverUrl`; a disabled one (`disabled: true`) is still configured, so it is listed.
+function geminiServers(home) {
+  let data
+  try {
+    data = JSON.parse(readFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), 'utf8'))
+  } catch {
+    return []
+  }
+  const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
+  return Object.entries(servers).map(([name, spec]) => {
+    const address = typeof spec?.url === 'string' ? spec.url : typeof spec?.serverUrl === 'string' ? spec.serverUrl : null
+    return { name, agent: 'gemini', transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : basename(String(spec?.command || '')) }
+  })
+}
+
 export function readMcpServers(home) {
   const byName = new Map()
-  for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home)]) {
+  for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home), ...geminiServers(home)]) {
     const row = byName.get(s.name) || { name: s.name, transport: s.transport, target: s.target, agents: [] }
     if (!row.agents.includes(s.agent)) row.agents.push(s.agent)
     if (!row.target) row.target = s.target
