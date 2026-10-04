@@ -54,3 +54,13 @@ test('mcp discovery lists user-level servers of both agents, skips project files
   ])
   assert.doesNotMatch(JSON.stringify(kit), /SECRET/)
 })
+
+test('mcp discovery lists a server the kit registered for one project, marked with the project and without add-commands', () => {
+  const home = tempDir('panel-home-')
+  mkdirSync(join(home, '.agent-collab-kit', 'state'), { recursive: true })
+  const entry = (dir) => ({ dir, root: '/p', name: 'sentry', url: 'https://mcp.sentry.dev/mcp/org', project: 'my-app' })
+  writeFileSync(join(home, '.agent-collab-kit', 'state', 'project-mcp.json'), JSON.stringify({ version: 1, registrations: [entry('/a'), entry('/b')] }))
+
+  const kit = readKitFiles(tempDir('panel-empty-'), { home })
+  assert.deepEqual(kit.mcp, [{ name: 'sentry', transport: 'http', target: 'https://mcp.sentry.dev/mcp/org', agents: ['claude'], commands: {}, project: 'my-app' }])
+})

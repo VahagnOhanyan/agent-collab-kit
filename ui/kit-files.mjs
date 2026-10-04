@@ -62,7 +62,35 @@ export function readKitFiles(kitRoot, { home = homedir() } = {}) {
     name: basename(entry.name, '.md'),
     path: relative(kitRoot, join(kitRoot, 'rules', entry.name))
   }))
-  return { skills, agents, rules, mcp: mcpRows(readMcpServers(home)) }
+  return { skills, agents, rules, mcp: [...mcpRows(readMcpServers(home)), ...projectMcpRows(home)] }
+}
+
+// Servers the kit registered for ONE project (`state/project-mcp.json`, written by the installer). They are not in any
+// user-level config, so readMcpServers never sees them; the record is the only place they are listed. Shown with the
+// project's name and no add-commands: such a server is deliberately not offered to other agents or projects.
+function projectMcpRows(home) {
+  let registrations = []
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, '.agent-collab-kit', 'state', 'project-mcp.json'), 'utf8'))
+    if (Array.isArray(parsed?.registrations)) registrations = parsed.registrations
+  } catch {
+    return []
+  }
+  const rows = new Map()
+  for (const entry of registrations) {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.project !== 'string') continue
+    let target = ''
+    try {
+      const url = new URL(entry.url)
+      target = `${url.origin}${url.pathname === '/' ? '' : url.pathname}`
+    } catch {
+      // A record without a readable URL is listed by name only.
+    }
+    // One server registered in several Claude accounts is still one row.
+    const key = `${entry.project}\n${entry.name}`
+    if (!rows.has(key)) rows.set(key, { name: entry.name, transport: target ? 'http' : '', target, agents: ['claude'], commands: {}, project: entry.project })
+  }
+  return [...rows.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // The vendors a copied command is written for: the clients whose MCP settings the kit knows how to read.
