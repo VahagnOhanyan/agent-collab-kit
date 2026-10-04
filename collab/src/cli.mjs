@@ -16,12 +16,13 @@ import { createInterface } from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
 import { DEFAULT_CONFIG_DIR, defaultRegistryDir, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
 import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
+import { planNoteInstall, writeNote } from './notes.mjs'
 import { findProject, listProjects } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { restoreRole } from './domain/agents.mjs'
@@ -412,6 +413,72 @@ const STANDALONE = {
     const journal = initJournal({ projectRoot: proposal.root })
     out(journal.created ? `${C.green}initialized${C.off}  ${journal.stateDir}` : `journal      already initialized  ${journal.stateDir}`)
     out('Restart open Claude/Codex sessions of this project so they pick up the new configuration.')
+  },
+
+  // `collab notes install <skill> <draft>`: the one way a project's notes for a skill get into the registry. An agent
+  // drafts the file wherever it can write; the owner, at their own terminal, sees what would change and types the
+  // skill's name. Notes are instructions agents obey, so nothing but a person at a terminal may put them there.
+  async notes({ args, flags }, options) {
+    const fail = (error) => {
+      printError(error instanceof CollabError ? error : new CollabError('INVALID_INPUT', String(error?.message || error)))
+      process.exit(1)
+    }
+    const [verb, skill, file] = args
+    if (verb !== 'install') return fail(new CollabError('INVALID_INPUT', 'usage: collab notes install <skill> <draft-file> [--project <id>] [--dry-run]'))
+    const registryDir = options.registryDir || PERSISTENT_REGISTRY_DIR
+    let entry
+    try {
+      if (flags.project !== undefined) {
+        if (typeof flags.project !== 'string') return fail(new CollabError('INVALID_INPUT', '--project needs a project id'))
+        entry = listProjects(registryDir).find((project) => project.id === flags.project && project.problems.length === 0)
+      } else {
+        entry = findProject(rootHere(options), { registry: registryDir })
+      }
+    } catch (error) {
+      return fail(error)
+    }
+    if (!entry) return fail(new CollabError('INVALID_INPUT', 'this folder is not a connected project — run `collab connect` here first, or name one with --project <id>'))
+    let plan
+    try {
+      plan = planNoteInstall({ projectDir: join(registryDir, entry.id), skill, file: file && resolve(file) })
+    } catch (error) {
+      return fail(error)
+    }
+    out(
+      '',
+      `${C.bold}notes${C.off} ${skill} for project "${entry.id}"`,
+      `  draft        ${resolve(file)}  (${plan.bytes} bytes)`,
+      `  target       ${plan.target}`,
+      `  ${plan.existing === null ? 'new file — nothing there yet' : plan.same ? 'identical to what is installed' : `replaces the installed note: +${plan.changes.added.length} / -${plan.changes.removed.length} lines`}`
+    )
+    if (plan.changes && !plan.same) {
+      for (const line of plan.changes.removed.slice(0, 40)) out(`${C.red}  - ${line}${C.off}`)
+      for (const line of plan.changes.added.slice(0, 40)) out(`${C.green}  + ${line}${C.off}`)
+      if (plan.changes.added.length > 40 || plan.changes.removed.length > 40) out(dim('  … only the first 40 lines of each are shown'))
+    } else if (plan.existing === null) {
+      out(dim('  ---'), ...plan.text.split('\n').slice(0, 25).map((line) => dim(`  ${line}`)))
+      if (plan.text.split('\n').length > 25) out(dim('  … the rest is in the draft'))
+    }
+    out('', 'An agent will run the commands in this note as the project\'s own procedure. Read it before you agree.', '')
+    if (plan.same) {
+      out('nothing to do')
+      return
+    }
+    if (flags['dry-run']) {
+      out('dry run — nothing written')
+      return
+    }
+    refuseUnlessHuman(options, 'collab notes install')
+    if (!(await confirmTyped(options, `Type "${skill}" to install this note, anything else to abort: `, skill))) {
+      out('aborted — nothing changed')
+      process.exit(0)
+    }
+    try {
+      writeNote(plan)
+    } catch (error) {
+      return fail(error)
+    }
+    out(`${C.green}installed${C.off}  ${plan.target}`, 'The next session that uses this skill reads it; no restart is needed.')
   },
 
   async disconnect({ flags }, options) {
@@ -1168,6 +1235,7 @@ const COMMANDS = {
       '',
       '  connect [--id <id>] [--dry-run]  put this project under the kit: registry entry (write scope, gate, platform) + journal; owner only',
       '  disconnect [--dry-run]  take this project off the registry; its journal stays; owner only',
+      '  notes install <skill> <draft-file> [--project <id>] [--dry-run]  put a drafted project note for a skill (verify, ui-shot, device-run, db-migration, api-change) into the registry; shows what changes; owner only',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
       '  setup [--agents a,b] [--lead a] [--single-vendor] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role, review mode; owner only',
