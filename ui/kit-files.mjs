@@ -44,7 +44,7 @@ function record(file, kitRoot, fields) {
   }
 }
 
-export function readKitFiles(kitRoot, { home = homedir() } = {}) {
+export function readKitFiles(kitRoot, { home = homedir(), project = null } = {}) {
   const skills = filesAt(join(kitRoot, 'skills'), (entry) => entry.isDirectory()).map((entry) => {
     const file = join(kitRoot, 'skills', entry.name, 'SKILL.md')
     return record(file, kitRoot, (meta) => ({ name: meta.name || entry.name, description: meta.description || '' }))
@@ -62,13 +62,15 @@ export function readKitFiles(kitRoot, { home = homedir() } = {}) {
     name: basename(entry.name, '.md'),
     path: relative(kitRoot, join(kitRoot, 'rules', entry.name))
   }))
-  return { skills, agents, rules, mcp: [...mcpRows(readMcpServers(home)), ...projectMcpRows(home)] }
+  return { skills, agents, rules, mcp: [...mcpRows(readMcpServers(home)), ...projectMcpRows(home, project)] }
 }
 
 // Servers the kit registered for ONE project (`state/project-mcp.json`, written by the installer). They are not in any
 // user-level config, so readMcpServers never sees them; the record is the only place they are listed. Shown with the
-// project's name and no add-commands: such a server is deliberately not offered to other agents or projects.
-function projectMcpRows(home) {
+// project's id (kept in the row) and no add-commands. Only the selected project's servers are listed: in another
+// project's context the server does not exist, so it is not shown there.
+function projectMcpRows(home, project) {
+  if (!project) return []
   let registrations = []
   try {
     const parsed = JSON.parse(readFileSync(join(home, '.agent-collab-kit', 'state', 'project-mcp.json'), 'utf8'))
@@ -78,7 +80,7 @@ function projectMcpRows(home) {
   }
   const rows = new Map()
   for (const entry of registrations) {
-    if (!entry || typeof entry.name !== 'string' || typeof entry.project !== 'string') continue
+    if (!entry || typeof entry.name !== 'string' || entry.project !== project) continue
     let target = ''
     try {
       const url = new URL(entry.url)

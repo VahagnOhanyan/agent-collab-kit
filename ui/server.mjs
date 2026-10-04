@@ -469,7 +469,11 @@ export async function startPanel({
         if (here.projectId && existsSync(join(here.registryDir, here.projectId, 'collab', 'agents.json'))) answer.project_own_composition = here.projectId
         return sendJson(res, 200, answer, { ...options, headers: authHeaders })
       }
-      if (url.pathname === '/api/kit') return sendJson(res, 200, readKitFiles(kitRoot), { ...options, headers: authHeaders })
+      if (url.pathname === '/api/kit') {
+        // The kit's files are the machine's; MCP servers registered for one project follow the project the panel shows.
+        const shown = chosen.error ? null : chosen.where?.id || describeProject({ cwd, ...(registryDir ? { registryDir } : {}) }).projectId || null
+        return sendJson(res, 200, readKitFiles(kitRoot, { project: shown }), { ...options, headers: authHeaders })
+      }
       // Read-only: a PATH lookup, no CLI is started.
       if (url.pathname === '/api/vendors') return sendJson(res, 200, { unadapted: await vendorsLookup() }, { ...options, headers: authHeaders })
       // The switcher's list: the connected projects of the trusted registry, whether each has a journal yet, and which

@@ -990,8 +990,8 @@ async function kit() {
       ? dataTable(['Название', 'Подключение', 'Куда', 'У каких агентов', 'Добавить другим'], items.map((x) => el('tr', {},
           td(el('strong', { class: 'mono', text: x.name }), 'nw'), td(x.transport || '—', 'nw'),
           td(x.problem ? el('span', { class: 'pill bad', text: `проблема: ${x.problem}` }) : el('span', { class: 'mono small', text: x.target || '—' })),
-          // A project server is registered for that one project only: it names the project and offers no add-commands.
-          td(x.project ? [`${(x.agents || []).join(', ')} · `, el('span', { class: 'pill', text: `только проект ${x.project}` })] : (x.agents || []).join(', ') || '—', 'nw'),
+          // A project server is registered for the shown project only: no add-commands for other agents.
+          td((x.agents || []).join(', ') || '—', 'nw'),
           td(x.project ? '—' : mcpAddBlock(x)))))
       : dataTable(tab === 'agents' ? ['Название', 'Описание', 'Модель'] : ['Название', 'Описание'], items.map((x) => el('tr', {},
           td(el('strong', { class: 'mono', text: x.name }), 'nw'),
@@ -1007,7 +1007,7 @@ async function kit() {
     } })))
   const search = el('input', { type: 'search', placeholder: 'Поиск', 'aria-label': 'Поиск по набору', oninput: (e) => { query = e.target.value.trim().toLowerCase(); draw() } })
   draw()
-  return page('Скиллы и агенты', 'Читается из файлов набора и пользовательских конфигов агентов (MCP — общие из конфигов агентов плюс серверы, которые набор зарегистрировал для одного проекта, с пометкой проекта): список нигде не ведётся вручную.', el('div', { class: 'toolbar' }, tabs, search), holder)
+  return page('Скиллы и агенты', 'Читается из файлов набора и пользовательских конфигов агентов (MCP — общие из конфигов агентов плюс серверы выбранного проекта): список нигде не ведётся вручную.', el('div', { class: 'toolbar' }, tabs, search), holder)
 }
 
 // ── setup wizard ──────────────────────────────────────────────────────────
