@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { basename, join, relative } from 'node:path'
 
 import { readMcpServers } from '../collab/src/mcp-servers.mjs'
+import { mcpAddCommands } from '../collab/src/mcp-share.mjs'
 
 function scalar(value) {
   const clean = value.trim()
@@ -61,5 +62,18 @@ export function readKitFiles(kitRoot, { home = homedir() } = {}) {
     name: basename(entry.name, '.md'),
     path: relative(kitRoot, join(kitRoot, 'rules', entry.name))
   }))
-  return { skills, agents, rules, mcp: readMcpServers(home) }
+  return { skills, agents, rules, mcp: mcpRows(readMcpServers(home)) }
+}
+
+// The vendors a copied command is written for: the clients whose MCP settings the kit knows how to read.
+const COMMAND_VENDORS = ['claude', 'codex', 'gemini', 'cursor']
+
+// Each server with the commands that add it to the vendors that do not have it yet. The description itself (`share`)
+// stays out of the answer: the commands are all the page needs.
+export function mcpRows(servers) {
+  return servers.map(({ share, ...row }) => {
+    const all = mcpAddCommands(share)
+    const commands = all ? Object.fromEntries(COMMAND_VENDORS.filter((vendor) => !row.agents.includes(vendor) && all[vendor]).map((vendor) => [vendor, all[vendor]])) : {}
+    return { ...row, commands }
+  })
 }

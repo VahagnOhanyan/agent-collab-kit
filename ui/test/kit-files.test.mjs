@@ -41,10 +41,16 @@ test('mcp discovery lists user-level servers of both agents, skips project files
   writeFileSync(join(home, 'work', '.mcp.json'), JSON.stringify({ mcpServers: { project_only: { command: 'node' } } }))
 
   const kit = readKitFiles(tempDir('panel-empty-'), { home })
-  assert.deepEqual(kit.mcp, [
+  assert.deepEqual(kit.mcp.map(({ commands, ...row }) => row), [
     { name: 'collab', transport: 'stdio', target: 'node', agents: ['claude', 'codex'] },
     { name: 'docs', transport: 'http', target: 'https://docs.example/mcp', agents: ['claude'] },
     { name: 'linear', transport: 'http', target: 'https://linear.example/mcp', agents: ['codex'] }
+  ])
+  // Commands to add a server go to the vendors that lack it; collab is the installer's, never offered.
+  assert.deepEqual(kit.mcp.map((row) => [row.name, Object.keys(row.commands).sort()]), [
+    ['collab', []],
+    ['docs', ['codex', 'cursor', 'gemini']],
+    ['linear', ['claude', 'cursor', 'gemini']]
   ])
   assert.doesNotMatch(JSON.stringify(kit), /SECRET/)
 })

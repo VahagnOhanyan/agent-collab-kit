@@ -2,13 +2,15 @@
 // not the ones a project declares (a project's .mcp.json is deliberately not
 // read — a server that only exists for one project is not part of the kit).
 //
-// Only name, transport and a short target come out. env, args and headers are
-// never read into the result: they are where tokens live.
+// Only name, transport and a short target come out, plus `share` — what it takes to add the same server to another
+// vendor (sharedSpec): values of env and headers are never read into the result, only their NAMES, and an argument
+// that looks like a secret is replaced. They are where tokens live.
 
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, join, sep } from 'node:path'
 import { loadBuiltinAgents } from './registry.mjs'
+import { sharedSpec, sharedSpecFromToml } from './mcp-share.mjs'
 
 // The program name only. A command written as an array (`["node", "--token", "…"]`) or anything but a string carries
 // arguments, and arguments are where tokens live: it gives no name at all.
@@ -43,7 +45,7 @@ function claudeServers(home) {
     }
     for (const [name, spec] of Object.entries(config?.mcpServers || {})) {
       const remote = typeof spec?.url === 'string'
-      found.push({ name, agent: 'claude', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec) })
+      found.push({ name, agent: 'claude', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec), share: sharedSpec(name, spec) })
     }
   }
   return found
@@ -61,19 +63,35 @@ function tomlServers(file, tableKey, agent) {
   } catch {
     return []
   }
-  const tableHeader = new RegExp(`^${tableKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.("[^"]+"|[^.]+)$`)
+  const key = tableKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const tableHeader = new RegExp(`^${key}\\.("[^"]+"|[^.]+)$`)
+  // A server's nested tables (`[mcp_servers.x.env]`): their keys belong to that server, prefixed with the section.
+  const nestedHeader = new RegExp(`^${key}\\.("[^"]+"|[^.]+)\\.(env|http_headers|env_http_headers)$`)
   const found = []
   let current = null
+  let section = ''
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim()
     const header = /^\[([^\]]+)\]$/.exec(trimmed)
     if (header) {
       const table = tableHeader.exec(header[1])
-      current = table ? { name: table[1].replace(/^"|"$/g, ''), agent, transport: 'stdio', target: '' } : null
-      if (current) found.push(current)
+      const nested = nestedHeader.exec(header[1])
+      section = ''
+      if (table) {
+        current = { name: table[1].replace(/^"|"$/g, ''), agent, transport: 'stdio', target: '', lines: [] }
+        found.push(current)
+      } else if (nested) {
+        current = found.find((server) => server.name === nested[1].replace(/^"|"$/g, '')) || null
+        section = nested[2]
+      } else current = null
       continue
     }
     if (!current) continue
+    if (section) {
+      if (trimmed && !trimmed.startsWith('#')) current.lines.push(`${section}.${trimmed}`)
+      continue
+    }
+    current.lines.push(trimmed)
     const url = /^url\s*=\s*"([^"]*)"/.exec(trimmed)
     const command = /^command\s*=\s*"([^"]*)"/.exec(trimmed)
     if (url) {
@@ -83,7 +101,7 @@ function tomlServers(file, tableKey, agent) {
       current.target = basename(command[1])
     }
   }
-  return found
+  return found.map(({ lines, ...server }) => ({ ...server, share: sharedSpecFromToml(server.name, lines) }))
 }
 
 // Cursor's user-level MCP settings: ~/.cursor/mcp.json, `mcpServers` keyed by name (the editor and its CLI share it).
@@ -97,7 +115,7 @@ function cursorServers(home) {
   const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
   return Object.entries(servers).map(([name, spec]) => {
     const remote = typeof spec?.url === 'string'
-    return { name, agent: 'cursor', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec) }
+    return { name, agent: 'cursor', transport: remote ? 'http' : 'stdio', target: remote ? safeUrl(spec.url) : commandName(spec), share: sharedSpec(name, spec) }
   })
 }
 
@@ -113,7 +131,7 @@ function geminiServers(home) {
   const servers = data && typeof data.mcpServers === 'object' && data.mcpServers ? data.mcpServers : {}
   return Object.entries(servers).map(([name, spec]) => {
     const address = typeof spec?.url === 'string' ? spec.url : typeof spec?.serverUrl === 'string' ? spec.serverUrl : null
-    return { name, agent: 'gemini', transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec) }
+    return { name, agent: 'gemini', transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec), share: sharedSpec(name, spec) }
   })
 }
 
@@ -130,7 +148,7 @@ function jsonServers(file, serversKey, agent) {
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return []
   return Object.entries(servers).map(([name, spec]) => {
     const address = typeof spec?.url === 'string' ? spec.url : typeof spec?.serverUrl === 'string' ? spec.serverUrl : null
-    return { name, agent, transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec) }
+    return { name, agent, transport: address ? 'http' : 'stdio', target: address ? safeUrl(address) : commandName(spec), share: sharedSpec(name, spec) }
   })
 }
 
@@ -207,9 +225,11 @@ function defaultMachineAdapters(home) {
 export function readMcpServers(home, options = {}) {
   const byName = new Map()
   for (const s of [...claudeServers(home), ...codexServers(home), ...cursorServers(home), ...geminiServers(home), ...describedServers(home, options)]) {
-    const row = byName.get(s.name) || { name: s.name, transport: s.transport, target: s.target, agents: [] }
+    const row = byName.get(s.name) || { name: s.name, transport: s.transport, target: s.target, agents: [], share: null }
     if (!row.agents.includes(s.agent)) row.agents.push(s.agent)
     if (!row.target) row.target = s.target
+    // The first readable description wins (Claude's is read first): one server, one way to add it elsewhere.
+    if (!row.share && s.share) row.share = s.share
     byName.set(s.name, row)
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))

@@ -963,6 +963,19 @@ function brief(text) {
   return el('span', {}, first, ' ', el('details', { class: 'more' }, el('summary', { text: 'подробнее' }), el('div', { class: 'muted', text: rest.join(' ') })))
 }
 
+// Commands that add one MCP server to the vendors that do not have it yet, to copy into a terminal. Key values are
+// ВАШ_КЛЮЧ: the person puts their own in. Cursor has no command — its entry goes into ~/.cursor/mcp.json.
+const MCP_VENDOR_LABEL = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini (agy)', cursor: 'Cursor — запись в ~/.cursor/mcp.json' }
+function mcpAddBlock(x) {
+  const vendors = Object.keys(x.commands || {})
+  if (!vendors.length) return el('span', { class: 'muted small', text: x.name === 'collab' ? 'регистрирует установщик' : '—' })
+  return el('details', {}, el('summary', { text: `Команды (${vendors.length})` }),
+    ...vendors.map((vendor) => el('div', {},
+      el('div', { class: 'muted small', text: MCP_VENDOR_LABEL[vendor] || vendor }),
+      command(x.commands[vendor], `команду добавления ${x.name} для ${MCP_VENDOR_LABEL[vendor] || vendor}`))),
+    el('div', { class: 'muted small', text: 'Вместо ВАШ_КЛЮЧ подставьте свой ключ. После добавления перезапустите сессию агента.' }))
+}
+
 async function kit() {
   const data = await api('/api/kit')
   let tab = 'skills'
@@ -974,10 +987,11 @@ async function kit() {
     const items = (data[tab] || []).filter((x) => `${x.name} ${x.description || ''} ${x.target || ''}`.toLowerCase().includes(query))
     // Columns per tab: an MCP server is a transport, a target and the agents that use it; the rest are a description.
     const rows = tab === 'mcp'
-      ? dataTable(['Название', 'Подключение', 'Куда', 'У каких агентов'], items.map((x) => el('tr', {},
+      ? dataTable(['Название', 'Подключение', 'Куда', 'У каких агентов', 'Добавить другим'], items.map((x) => el('tr', {},
           td(el('strong', { class: 'mono', text: x.name }), 'nw'), td(x.transport || '—', 'nw'),
           td(x.problem ? el('span', { class: 'pill bad', text: `проблема: ${x.problem}` }) : el('span', { class: 'mono small', text: x.target || '—' })),
-          td((x.agents || []).join(', ') || '—', 'nw'))))
+          td((x.agents || []).join(', ') || '—', 'nw'),
+          td(mcpAddBlock(x)))))
       : dataTable(tab === 'agents' ? ['Название', 'Описание', 'Модель'] : ['Название', 'Описание'], items.map((x) => el('tr', {},
           td(el('strong', { class: 'mono', text: x.name }), 'nw'),
           td(x.description ? brief(x.description) : x.problem ? `проблема: ${x.problem}` : ''),
