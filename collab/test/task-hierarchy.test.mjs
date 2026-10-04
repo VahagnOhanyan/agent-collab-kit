@@ -109,3 +109,57 @@ test('a planned route is kept as data, and a malformed one is refused', async ()
     w.cleanup()
   }
 })
+
+test('a task that passes from one agent to another keeps who worked on it with what', async () => {
+  const w = world()
+  try {
+    const task = await make(w.claude, 'A task two agents work on in turn')
+    await w.claude.claimTask({ task_id: task.id, model: 'first-model' })
+    await w.claude.releaseTask({ task_id: task.id })
+    const second = await w.codex.claimTask({ task_id: task.id, model: 'second-model' })
+
+    assert.deepEqual(second.task.working_models.map((m) => [m.by, m.model]), [['claude', 'first-model'], ['codex', 'second-model']], 'both stretches, oldest first')
+    assert.equal(second.task.working_model.by, 'codex', 'the latest is still `working_model`, which the list and the header read')
+    assert.equal(second.task.working_model.model, 'second-model')
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('taking a task back with the same model is the same stretch, and a claim without a model adds nothing', async () => {
+  const w = world()
+  try {
+    const task = await make(w.claude, 'A task taken, given back, taken again')
+    await w.claude.claimTask({ task_id: task.id, model: 'the-model' })
+    await w.claude.releaseTask({ task_id: task.id })
+    const again = await w.claude.claimTask({ task_id: task.id, model: 'the-model' })
+    assert.equal(again.task.working_models.length, 1, 'the same agent and model again is not a new line')
+
+    await w.claude.releaseTask({ task_id: task.id })
+    const bare = await w.codex.claimTask({ task_id: task.id })
+    assert.deepEqual(bare.task.working_models.map((m) => [m.by, m.model]), [['claude', 'the-model']], 'a claim that names no model records none — and puts none on the agent that did not say')
+
+    const other = await w.codex.releaseTask({ task_id: task.id })
+    const switched = await w.claude.claimTask({ task_id: other.id, model: 'another-model' })
+    assert.deepEqual(switched.task.working_models.map((m) => m.model), ['the-model', 'another-model'], 'the same agent on a different model is a new line')
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('a task claimed before the history was kept reads as a history of one, and an unclaimed one as none', async () => {
+  const w = world()
+  try {
+    const task = await make(w.claude, 'A task from before the history')
+    assert.deepEqual(task.working_models, [], 'never claimed with a model: nothing to show')
+    const old = { model: 'old-model', model_ref: null, model_id: null, model_known: false, effort: null, by: 'claude', at: '2026-10-01T10:00:00.000Z' }
+    await w.claude.store.transact(async (tx) => {
+      const { working_models, ...before } = tx.get('tasks', task.id)
+      tx.put('tasks', { ...before, working_model: old })
+    })
+    const read = w.claude.getTask({ task_id: task.id })
+    assert.deepEqual(read.working_models, [old], 'the one record there is becomes the history')
+  } finally {
+    w.cleanup()
+  }
+})

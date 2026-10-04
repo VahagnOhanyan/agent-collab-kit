@@ -24,6 +24,9 @@ import { SESSION_ID } from '../usage.mjs'
 import { closed } from './sessions.mjs'
 
 const DEFAULT_LEASE_SECONDS = 3600
+// The most stretches of work with a named model kept on one task; a task passed back and forth fifty times is not
+// a history anyone reads, and the record must not grow without bound.
+const WORKING_MODELS_MAX = 20
 
 // A lease says "somebody is working on this right now". Only these two states
 // mean that. A task in `review` is not abandoned — it is waiting on a reviewer
@@ -69,6 +72,8 @@ function withDerived(ctx, task) {
   const now = ctx.clock.now()
   return {
     ...task,
+    // A task claimed before the history was kept has only `working_model`: it is a history of one.
+    working_models: task.working_models?.length ? task.working_models : task.working_model ? [task.working_model] : [],
     review_risk: risk.level,
     review_risk_declared: task.spec?.review_risk || null,
     review_risk_floor: risk.floor,
@@ -312,11 +317,19 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
 
     assertTransition(task, TASK_STATUS.IN_PROGRESS, { admission })
     // A later claim without a model keeps the one on record: the record is of who works on it, not of the last call.
+    // `working_model` is the latest; `working_models` is every stretch of work with a named model, so a task that
+    // passed from one agent to another still says who worked on it with what. The same agent naming the same model
+    // again (taking it back after a release) is the same stretch, not a new line.
+    const declared = workingModelOf(ctx, model, tx.iso())
+    const history = task.working_models || (task.working_model ? [task.working_model] : [])
+    const lastModel = history[history.length - 1]
+    const sameAsLast = declared && lastModel && lastModel.by === declared.by && lastModel.model === declared.model
     const next = tx.put('tasks', {
       ...task,
       ...admission.fields,
       git_base: git_base || task.git_base,
-      working_model: workingModelOf(ctx, model, tx.iso()) || task.working_model || null,
+      working_model: declared || task.working_model || null,
+      working_models: declared && !sameAsLast ? [...history, declared].slice(-WORKING_MODELS_MAX) : history,
       sessions: sessionsAfterClaim(ctx, task, tx.iso())
     })
     touchAgent(tx, ctx, { status: 'busy', current_task_id: task.id })

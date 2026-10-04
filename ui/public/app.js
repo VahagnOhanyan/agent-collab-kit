@@ -502,9 +502,12 @@ async function taskDetail(id) {
   // facts without a plan, is shown as it is — an empty side says so instead of hiding the block.
   const modelText = (m) => (m ? `${m.model_ref || m.model}${m.effort ? ` · ${m.effort}` : ''}${m.model_known ? '' : ' (не из реестра)'}` : '')
   const planned = t.spec?.route || []
+  // Every stretch of work with a named model, in the order it happened, each named by who recorded it: the owner may
+  // have changed since, and a model must not be put on the wrong agent. With more than one the moment is shown too, so
+  // "who did the first part" reads off the line. (The API derives a history of one for a task that kept only the latest.)
+  const worked = t.working_models?.length ? t.working_models : t.working_model ? [t.working_model] : []
   const actual = [
-    // Named by who recorded it: the owner may have changed since, and a model must not be put on the wrong agent.
-    t.working_model ? `${t.working_model.by || '?'} — работает на ${modelText(t.working_model)}` : null,
+    ...worked.map((m, index) => `${m.by || '?'} — ${index === worked.length - 1 ? 'работает на' : 'работал на'} ${modelText(m)}${worked.length > 1 && m.at ? ` · с ${when(m.at)}` : ''}`),
     ...(data.delegations || t.delegations || []).map((d) => `${d.to || '?'} — ${d.model || '?'}${d.level ? ` · ${d.level}` : ''}${d.purpose ? `: ${d.purpose}` : ''}${d.finished_at || d.outcome ? '' : ' (без итога)'}`),
     ...(data.reviews || []).map((r) => `ревью ${r.reviewer || r.reviewer_agent || '?'}${r.reviewer_model ? ` на ${r.reviewer_model}` : ''} — ${r.verdict || 'ждёт'}`)
   ].filter(Boolean)
