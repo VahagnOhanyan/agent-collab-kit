@@ -424,7 +424,7 @@ const STANDALONE = {
       process.exit(1)
     }
     const [verb, skill, file] = args
-    if (verb !== 'install') return fail(new CollabError('INVALID_INPUT', 'usage: collab notes install <skill> <draft-file> [--project <id>] [--dry-run]'))
+    if (verb !== 'install') return fail(new CollabError('INVALID_INPUT', 'usage: collab notes install <skill | ui-review.json> <draft-file> [--project <id>] [--dry-run]'))
     const registryDir = options.registryDir || PERSISTENT_REGISTRY_DIR
     let entry
     try {
@@ -459,7 +459,9 @@ const STANDALONE = {
       out(dim('  ---'), ...plan.text.split('\n').slice(0, 25).map((line) => dim(`  ${line}`)))
       if (plan.text.split('\n').length > 25) out(dim('  … the rest is in the draft'))
     }
-    out('', 'An agent will run the commands in this note as the project\'s own procedure. Read it before you agree.', '')
+    out('', skill === 'ui-review.json'
+      ? 'The kit\'s scripts build their build and simulator commands from these values. Read them before you agree.'
+      : 'An agent will run the commands in this note as the project\'s own procedure. Read it before you agree.', '')
     if (plan.same) {
       out('nothing to do')
       return
@@ -469,7 +471,7 @@ const STANDALONE = {
       return
     }
     refuseUnlessHuman(options, 'collab notes install')
-    if (!(await confirmTyped(options, `Type "${skill}" to install this note, anything else to abort: `, skill))) {
+    if (!(await confirmTyped(options, `Type "${skill}" to install this ${skill === 'ui-review.json' ? 'file' : 'note'}, anything else to abort: `, skill))) {
       out('aborted — nothing changed')
       process.exit(0)
     }
@@ -1235,7 +1237,7 @@ const COMMANDS = {
       '',
       '  connect [--id <id>] [--dry-run]  put this project under the kit: registry entry (write scope, gate, platform) + journal; owner only',
       '  disconnect [--dry-run]  take this project off the registry; its journal stays; owner only',
-      '  notes install <skill> <draft-file> [--project <id>] [--dry-run]  put a drafted project note for a skill (verify, ui-shot, device-run, db-migration, api-change) into the registry; shows what changes; owner only',
+      '  notes install <skill> <draft-file> [--project <id>] [--dry-run]  put a drafted project note for a skill (verify, ui-shot, device-run, db-migration, api-change) or the build parameters (ui-review.json) into the registry; shows what changes; owner only',
       '  init                   create the journal (.collab/) for this project; nothing else creates it',
       '  check-config [--project <id>]  validate the built-in defaults and the project registry',
       '  setup [--agents a,b] [--lead a] [--single-vendor] [--dry-run]  this machine\'s composition: which agents you have, who leads, who holds which role, review mode; owner only',

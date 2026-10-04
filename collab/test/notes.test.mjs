@@ -88,7 +88,7 @@ test('what is not a plain note for a known skill is refused', () => {
   try {
     const run = (skill, file) => runCli(['notes', 'install', skill, file], { cwd: w.root, options: w.human })
     assert.notEqual(run('nonsense', w.draft('x.md', NOTE)).status, 0, 'a skill nobody reads notes for')
-    assert.match(run('../escape', w.draft('y.md', NOTE)).stderr, /no project notes/, 'a name that is a path')
+    assert.match(run('../escape', w.draft('y.md', NOTE)).stderr, /not something that can be installed here/, 'a name that is a path')
     assert.notEqual(run('verify', join(w.base, 'missing.md')).status, 0, 'a draft that does not exist')
     assert.notEqual(run('verify', w.draft('empty.md', '')).status, 0, 'an empty draft')
     assert.notEqual(run('verify', w.draft('big.md', 'x'.repeat(70_000))).status, 0, 'an oversized draft')
@@ -129,4 +129,65 @@ test('line changes count additions and removals as a multiset', () => {
   assert.deepEqual(lineChanges('x', 'x'), { added: [], removed: [] })
   assert.ok(NOTE_SKILLS.includes('verify') && !NOTE_SKILLS.includes('ui-review'))
   assert.throws(() => planNoteInstall({ projectDir: '/nope', skill: 'verify', file: null }), /name the draft file/)
+})
+
+const UI_REVIEW = {
+  platform: 'ios-simulator',
+  project: 'My App.xcodeproj',
+  scheme: 'My App',
+  bundleId: 'com.example.my-app',
+  product: 'My App',
+  device: 'iPhone 17 Pro Max',
+  appearanceNote: 'The in-app appearance setting must be "system" for the simulator appearance to show.'
+}
+
+test('ui-review.json is installed the same way, after a check of every value that reaches a command', () => {
+  const w = world()
+  try {
+    const run = (value, extra = []) => runCli(['notes', 'install', 'ui-review.json', w.draft('ui.json', typeof value === 'string' ? value : JSON.stringify(value)), ...extra], { cwd: w.root, options: w.human })
+    const ok = run(UI_REVIEW)
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr)
+    assert.match(ok.stdout, /installed/)
+    assert.deepEqual(JSON.parse(readFileSync(join(w.registryDir, 'my-app', 'ui-review.json'), 'utf8')), UI_REVIEW)
+
+    const refused = (value, pattern, label) => {
+      const r = run(value)
+      assert.notEqual(r.status, 0, `${label}: ${r.stdout}`)
+      assert.match(r.stderr, pattern, label)
+      assert.deepEqual(JSON.parse(readFileSync(join(w.registryDir, 'my-app', 'ui-review.json'), 'utf8')), UI_REVIEW, `${label}: the installed file is untouched`)
+    }
+    refused('{ not json', /not valid JSON/, 'not JSON')
+    refused('[1]', /one JSON object/, 'not an object')
+    refused({ ...UI_REVIEW, extra: 'x' }, /no field "extra"/, 'an unknown field')
+    refused({ ...UI_REVIEW, scheme: 'App; rm -rf ~' }, /"scheme".*not a plain value/, 'shell punctuation in a scheme')
+    refused({ ...UI_REVIEW, bundleId: 'com.x$(id)' }, /"bundleId"/, 'a substitution in a bundle id')
+    refused({ ...UI_REVIEW, product: '../Other' }, /"product"/, 'a path in a product name')
+    refused({ ...UI_REVIEW, project: '/etc/App.xcodeproj' }, /"project"/, 'an absolute project path')
+    refused({ ...UI_REVIEW, project: '../x/App.xcodeproj' }, /"project"/, 'a project path that climbs out')
+    refused({ ...UI_REVIEW, project: 'notes.txt' }, /"project"/, 'a project that is not an Xcode project')
+    refused({ ...UI_REVIEW, device: 'iPhone`id`' }, /"device"/, 'a backtick in a device name')
+    refused({ ...UI_REVIEW, device: undefined }, /needs a non-empty string "device"/, 'a missing required field')
+    refused({ ...UI_REVIEW, appearanceNote: 'x'.repeat(601) }, /appearanceNote/, 'a long note')
+    refused(`{"platform":"ios-simulator","token":"ghp_abcdefghijklmnopqrstuvwxyz0123456789"}`, /GitHub personal access token/, 'a secret')
+  } finally {
+    w.cleanup()
+  }
+})
+
+test('another platform needs only its name, and a real project file passes', () => {
+  const w = world()
+  try {
+    const web = runCli(['notes', 'install', 'ui-review.json', w.draft('web.json', '{"platform":"web"}')], { cwd: w.root, options: w.human })
+    assert.equal(web.status, 0, web.stdout + web.stderr)
+    const real = JSON.stringify({ platform: 'ios-simulator', project: 'Tripix.xcodeproj', scheme: 'Tripix', bundleId: 'com.vahagn.Tripix', product: 'Tripix', device: 'iPhone 17 Pro Max' })
+    const r = runCli(['notes', 'install', 'ui-review.json', w.draft('real.json', real)], { cwd: w.root, options: w.human })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    const tooBig = runCli(['notes', 'install', 'ui-review.json', w.draft('big.json', `{"platform":"web","appearanceNote":"${'x'.repeat(5000)}"}`)], { cwd: w.root, options: w.human })
+    assert.notEqual(tooBig.status, 0)
+    assert.match(tooBig.stderr, /a few lines/)
+    const agent = runCli(['notes', 'install', 'ui-review.json', w.draft('a.json', '{"platform":"web"}')], { cwd: w.root, env: { COLLAB_AGENT_ID: 'claude' }, options: { registryDir: w.registryDir } })
+    assert.equal(agent.status, 3, 'an agent shell is refused for this file as for any')
+  } finally {
+    w.cleanup()
+  }
 })
