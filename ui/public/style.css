@@ -147,7 +147,8 @@ button, .btn { font: inherit; font-weight: 500; color: var(--text); background: 
 button:hover { border-color: var(--accent); background: var(--surface-2); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--text)); }
-button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed; border-color: var(--line-strong); background: var(--surface); }
+/* A disabled primary button keeps its accent-ink text colour otherwise: dark text on the dark surface it is given here. */
+button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed; border-color: var(--line-strong); background: var(--surface); color: var(--text); }
 input[type="search"], input[type="text"] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 7px 12px; min-width: 260px; transition: border-color .12s, box-shadow .12s; }
 input[type="search"]:focus, input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; }
