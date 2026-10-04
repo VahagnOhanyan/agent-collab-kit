@@ -186,12 +186,17 @@ test('nobody holds a role its capabilities do not support, and the facts of the 
   }
 })
 
-test('only an agent with a proven read-only launch reviews: Codex reviews, MiniMax and Grok implement', () => {
+test('a read-only launch the owner declared but nobody proved leaves MiniMax and Grok reviewer roles marked unverified, never confirmed', () => {
   const world = applied()
   try {
     const facts = factsFor(world.config.agents.agents, { roleDefs: world.config.roles.roles, capabilityIds: Object.keys(world.config.capabilities.capabilities), env: MACHINE })
     for (const id of ['minimax', 'grok']) {
-      for (const role of REVIEWER_ROLES) assert.ok(facts[id].blocked.some((b) => b.role === role), `${id} cannot hold ${role} without a review launch`)
+      const launch = world.config.agents.agents.find((a) => a.id === id).adapter.review_launch
+      assert.ok(launch && !launch.verified, `${id} declares a review launch and gives no proof for it`)
+      for (const role of REVIEWER_ROLES) {
+        assert.ok(!facts[id].blocked.some((b) => b.role === role), `${id} is not blocked from ${role}: the owner declared its launch`)
+        assert.ok(facts[id].unverified.includes(role), `${id}'s ${role} stays marked unverified until a write attempt is shown to fail`)
+      }
     }
     const byId = Object.fromEntries(world.config.agents.agents.map((a) => [a.id, a]))
     assert.deepEqual(byId.codex.roles.filter((r) => REVIEWER_ROLES.includes(r)).sort(), [...REVIEWER_ROLES].sort())

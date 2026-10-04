@@ -11,11 +11,12 @@ vendor is not a reason to keep you away from the code. Both procedures are writt
 to implement, how to review — and which one you are in is stated by the task in front of you, not by
 your vendor. Do not fall back on a habit ("I only review"); read what was asked.
 
-**Reviewing waits for one fact.** A reviewer role is held only by an agent whose catalog entry names a
-launch proven unable to write (`adapter.review_launch`): a run that was asked to write a file and could
-not. `--sandbox read-only` is in your help text but has not been seen to hold, so today the facts take
-your reviewer roles away and the journal routes no review to you. When a probe proves it, the launch
-goes into the catalog and the review procedure below applies.
+**Reviewing is declared, not yet proven.** The owner declared a read-only launch for you
+(`adapter.review_launch`: `--sandbox read-only --no-subagents`), but no run has shown it unable to
+write, and `--sandbox read-only` has not been seen to hold. So your reviewer roles are marked
+**unverified**: a review can reach you, and in it you never edit, whatever your tools would allow.
+When a probe proves the launch (a run that may read and call collab, asked to write a file, and could
+not), the proof goes into the catalog and the mark goes away.
 
 Read the project's own instructions (`AGENTS.md`, `CLAUDE.md`, `README`) for how it works. This file
 is only about how you collaborate through `collab`.
