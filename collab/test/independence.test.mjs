@@ -15,6 +15,9 @@ import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
 import { expandCatalogAgents, loadBuiltinAgents, loadConfigFrom, validateRegistry } from '../src/registry.mjs'
 import { runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
 
+// A machine where every agent's program is found and nothing else is: what the other doctor tests describe too.
+const machine = () => ({ home: '/nowhere', platform: 'darwin', which: (b) => `/usr/bin/${b}`, exists: () => false, read: () => null })
+
 const roleDefs = {
   software_engineer: { summary: 's', requires: [], reviewed_by: ['code_reviewer'] },
   code_reviewer: { summary: 'r', requires: [] },
@@ -206,7 +209,10 @@ test('doctor reports independence from the composition it runs with', () => {
     const roleDefsBuiltin = loadConfigFrom().roles.roles
     const planned = planComposition({ catalog: loadBuiltinAgents(), roleDefs: roleDefsBuiltin, include: ['claude', 'codex'], lead: 'claude' })
     writeComposition(dir, planned.content, { catalogDir: DEFAULT_CONFIG_DIR })
-    const api = () => createApi({ agentId: 'claude', roots: sbx.roots, machineDir: dir, registryDir: join(base, 'no-registry') })
+    // The machine is DESCRIBED, not read: without `probeEnv` the doctor asks the real machine which agents it can find
+    // and in what state their config is, and this test passed or failed with whatever that was at the moment. It
+    // failed twice when the installer ran it (04.10.2026: codex alone held the roles, so it was its own reviewer).
+    const api = () => createApi({ agentId: 'claude', roots: sbx.roots, machineDir: dir, registryDir: join(base, 'no-registry'), probeEnv: machine() })
     assert.deepEqual(api().doctor().independence.problems, [])
     // Codex stops reviewing: Claude's work now has nobody but Claude to review it.
     const content = { ...planned.content, agents: planned.content.agents.map((a) => (a.id === 'codex' ? { ...a, roles: a.roles.filter((r) => r !== 'code_reviewer') } : a)) }
