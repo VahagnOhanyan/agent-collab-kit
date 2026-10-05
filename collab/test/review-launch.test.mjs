@@ -66,10 +66,10 @@ test('a launch that cannot run here is no launch: the program missing, or anothe
 test('asking by name or by capability does not route a review to an agent with no reviewer role', async () => {
   const w = world()
   try {
-    // gemini is given code_reviewer in the composition, and the facts take it away: no review launch.
-    w.compose([agent('claude', 'anthropic', BOTH), agent('gemini', 'google', BOTH)])
+    // cursor is given code_reviewer in the composition, and the facts take it away: no review launch.
+    w.compose([agent('claude', 'anthropic', BOTH), agent('cursor', 'cursor', BOTH)])
     const task = await workedTask(w.api, 'claude')
-    await assert.rejects(w.api('claude').requestReview({ task_id: task, reviewer_agent: 'gemini' }), (e) => e.code === CODES.NOT_PERMITTED && /gemini holds no read-only reviewer role/.test(e.message))
+    await assert.rejects(w.api('claude').requestReview({ task_id: task, reviewer_agent: 'cursor' }), (e) => e.code === CODES.NOT_PERMITTED && /cursor holds no read-only reviewer role/.test(e.message))
     await assert.rejects(w.api('claude').requestReview({ task_id: task, reviewer_capability: 'review_code' }), (e) => e.code === CODES.NO_AGENT_AVAILABLE)
     await assert.rejects(w.api('claude').requestReview({ task_id: task }), (e) => e.code === CODES.NO_AGENT_AVAILABLE)
   } finally {
@@ -118,12 +118,12 @@ test('a review asked by capability is handed over only to a reviewer, never to a
   const w = world()
   try {
     const writer = (id, provider) => agent(id, provider, ['software_engineer'])
-    w.compose([writer('claude', 'anthropic'), agent('codex', 'openai', BOTH), agent('gemini', 'google', BOTH)])
+    w.compose([writer('claude', 'anthropic'), agent('codex', 'openai', BOTH), agent('cursor', 'cursor', BOTH)])
     const task = await workedTask(w.api, 'claude')
     const review = await w.api('claude').requestReview({ task_id: task, reviewer_capability: 'review_code' })
     assert.equal(review.routed_to, 'codex')
-    // codex leaves; gemini still lists code_reviewer in the composition, but the facts take it away.
-    w.compose([writer('claude', 'anthropic'), agent('gemini', 'google', BOTH)])
+    // codex leaves; cursor still lists code_reviewer in the composition, but the facts take it away.
+    w.compose([writer('claude', 'anthropic'), agent('cursor', 'cursor', BOTH)])
     const later = createApi({ agentId: 'claude', roots: w.roots, machineDir: w.machineDir, registryDir: w.registryDir, probeEnv: machine(), clock: { now: () => Date.now() + 7200e3, iso: () => new Date(Date.now() + 7200e3).toISOString() } })
     const result = await later.handOverFromAbsent()
     assert.deepEqual(result.reviews.map((r) => [r.from, r.to]), [['codex', null]], 'nobody safe to take it: it stays, to be released')

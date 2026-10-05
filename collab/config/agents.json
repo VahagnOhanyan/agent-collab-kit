@@ -80,9 +80,20 @@
         "cannot": [],
         "binary": "agy",
         "args": ["-p"],
+        "review_launch": {
+          "argv": ["agy", "--sandbox", "--model", "<model>", "--print-timeout", "0s", "-p", "<prompt>"],
+          "read_only_by": "permissions",
+          "platforms": ["darwin", "linux"],
+          "requires_settings": "~/.gemini/antigravity-cli/settings.json must allow ONLY mcp(*), read_file(*) and one read-only command rule — no write_file(*), no command(*): headless agy cannot prompt, so every tool or command outside the allow list is auto-denied. The rule used: command(regex:^(git (diff|log|show|status|blame|rev-parse|ls-files|grep)|rg|grep|cat|head|tail|wc|ls)( [^><|;&`$]*)?$) — no redirection, pipes, chaining or substitution. command(*) is NOT read-only: with it agy retries a sandbox-blocked write with the sandbox bypassed and succeeds (seen 2026-10-04). A denial ends the whole headless run, so a reviewer must stay within these commands. Nothing in this launch enforces the settings; whoever changes them breaks the guarantee.",
+          "verified": {
+            "date": "2026-10-04",
+            "version": "1.2.16",
+            "evidence": "gemini-3.6-flash-low, inside the project's git tree (a trusted workspace), with the settings above: reading CLAUDE.md and running git log --oneline -1 worked; creating a file with the file-writing tool was auto-denied ('a tool required the write_file permission'); `echo written > FILE`, a retry with the sandbox bypassed, and `git log ... > FILE` were auto-denied ('required the command permission'); no file appeared and git status was unchanged. Control with command(*) allowed: the shell write failed in the sandbox ('operation not permitted') and then succeeded through a sandbox bypass. collab whoami was not reachable in these runs because gemini was not yet in the machine's composition (collab-mcp: no agent \"gemini\" is registered) — to re-check once it is."
+          }
+        },
         "note": "Owner decision 2026-09-15: queue first, launch by hand — nothing here starts a paid agent on its own. Back in the catalog 2026-09-30 (owner): whether it works in the orchestration is the person's composition, chosen in the panel's wizard.",
         "verified_against": "agy 1.2.6, read 2026-09-30 from `agy --help` and `agy mcp --help` (no model call): -p/--print, --model, --effort are as in 1.1.8; `agy mcp list` shows the collab entry the installer writes to ~/.gemini/config/mcp_config.json. First verified live on agy 1.1.8 (2026-09-15): a headless `agy -p` reached collab's whoami. `args` omits --model/--effort, chosen at invocation time like Codex's.",
-        "install_hint": "brew install --cask antigravity-cli (or install the Antigravity app, which puts `agy` on PATH), then `agy` once to sign in. Headless calls also need an allow-rule or they auto-deny: add {\"permissions\":{\"allow\":[\"mcp(*)\"]}} to ~/.gemini/antigravity-cli/settings.json. Then: collab doctor"
+        "install_hint": "brew install --cask antigravity-cli (or install the Antigravity app, which puts `agy` on PATH), then `agy` once to sign in. Headless calls also need an allow-rule or they auto-deny: add {\"permissions\":{\"allow\":[\"mcp(*)\"]}} to ~/.gemini/antigravity-cli/settings.json. To review, the allow list must stay read-only — see review_launch.requires_settings (no write_file(*), no command(*)). Then: collab doctor"
       },
       "briefing_file": "briefings/gemini.md",
       "briefing": "You are the Gemini agent (Antigravity CLI) on this project, a different vendor from Claude and Codex — useful for an independent second opinion. whoami says whether you lead or take work and reviews from the lead — the person's composition decides, not this catalog. As a reviewer you are NOT a rubber stamp: a review that finds nothing says what you checked and how you could have been wrong. Claim the UI verified only when whoami lists run_application and it is not in unverified_capabilities. If you cannot do one of your roles here, suspend_role. Full instructions: collab brief gemini."

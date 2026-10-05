@@ -165,15 +165,15 @@ test('a reviewer role is held only through a launch that cannot write: none take
   const env = machine({ binaries: ['claude', 'codex', 'agy', 'cursor'] })
   const reviewers = Object.entries(ROLES).filter(([, r]) => r.read_only).map(([id]) => id)
   assert.deepEqual(reviewers.sort(), ['code_reviewer', 'security_reviewer', 'ux_reviewer'])
-  // Codex and Claude: a launch proven by a write-attempt probe — the reviewer roles stay, unmarked.
-  for (const id of ['codex', 'claude']) {
+  // Codex, Claude and Gemini: a launch proven by a write-attempt probe — the reviewer roles stay, unmarked.
+  for (const id of ['codex', 'claude', 'gemini']) {
     const probe = probeAgent(agentOf(id), CAPS, env)
     assert.equal(probe.review_launch.status, 'confirmed', id)
     const roles = rolesByFacts({ ...agentOf(id), capabilities: CAPS }, ROLES, probe)
     assert.ok(reviewers.every((r) => roles.allowed.includes(r)), id)
   }
-  // Gemini and Cursor: no review launch in the catalog — the reviewer roles are blocked, with the reason.
-  for (const id of ['gemini', 'cursor']) {
+  // Cursor: no review launch in the catalog — the reviewer roles are blocked, with the reason.
+  for (const id of ['cursor']) {
     const probe = probeAgent(agentOf(id), CAPS, env)
     assert.equal(probe.review_launch.status, 'missing', id)
     const roles = rolesByFacts({ ...agentOf(id), capabilities: CAPS }, ROLES, probe)
