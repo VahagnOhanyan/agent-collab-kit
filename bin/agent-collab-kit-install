@@ -805,7 +805,9 @@ function runKitTests(dir, node) {
   const argv = kitTestArgv(dir)
   out(`kit tests: node --test (${argv.length - 1} files under ${KIT_TEST_DIR}, in the build copy; about a minute)…`)
   const started = Date.now()
-  const r = spawnSync(node, argv, {
+  // The summary is read as TAP, so the reporter is named: newer Node (26.8 seen) defaults to `spec` even when the
+  // output is not a terminal, and a green run then reads as "no # tests line".
+  const r = spawnSync(node, [argv[0], '--test-reporter=tap', ...argv.slice(1)], {
     cwd: dir,
     env: childEnv(),
     encoding: 'utf8',
