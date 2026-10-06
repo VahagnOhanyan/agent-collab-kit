@@ -21,6 +21,7 @@
 //      .collab/.mcp.json и цель НЕ внутри git-репозитория. Иначе — обычные правила проекта.
 //   3. collab project --json (таймаут 5 с, дерево процессов убивается) — любая ошибка блокирует.
 //   4. Цель (realpath) внутри realpath(codeRoot).
+//   4б. Цель внутри копии задачи из `<codeRoot>/.collab/worktrees.json` — дальше корнем считается копия.
 //   5. .git, .claude, .collab, .mcp.json как компонент где угодно внутри корня.
 //   6–7. projectId/registryDir валидны, scopes.json читается, есть запись агента, allow/deny —
 //      списки непустых строк без `..`.
@@ -206,6 +207,49 @@ async function collabInfo(cwd, home) {
   return info;
 }
 
+// ── копии задач ───────────────────────────────────────────────────────────────
+
+// Копия задачи, в которой лежит цель: { key, real, parts } или null. Учитываются только записи вида
+// `kind: task` из `<корень>/.collab/worktrees.json`, лежащие строго внутри корня и являющиеся git-копией
+// (в корне копии `.git` — файл, а не каталог). Снимок (`kind: snapshot`) — блок: его только читают.
+// Нечитаемый или битый файл — блок; нет файла — копий нет.
+function registeredWorktree(rootReal, rootRealParts, realParts) {
+  const mapFile = path.join(rootReal, '.collab', 'worktrees.json');
+  let text;
+  try {
+    text = readFileSync(mapFile, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw new Blocked(`${mapFile} не читается (${error?.code ?? error?.message}) — блокирую`);
+  }
+  let map;
+  try {
+    map = JSON.parse(text);
+  } catch {
+    throw new Blocked(`${mapFile} — не JSON, блокирую`);
+  }
+  const entries = map && typeof map === 'object' && map.worktrees && typeof map.worktrees === 'object' && !Array.isArray(map.worktrees) ? map.worktrees : {};
+  let found = null;
+  for (const [key, entry] of Object.entries(entries)) {
+    if (typeof key !== 'string' || !path.isAbsolute(key) || key.includes('\0')) continue;
+    const real = realpathLoose(key);
+    const parts = foldedParts(real);
+    if (parts.length <= rootRealParts.length || !isUnder(parts, rootRealParts)) continue;
+    if (!isUnder(realParts, parts)) continue;
+    if (found && found.parts.length >= parts.length) continue;
+    found = { key, real, parts, entry };
+  }
+  if (!found) return null;
+  if (found.entry?.kind === 'snapshot') throw new Blocked(`${found.real} — снимок для аудита (только чтение) — блокирую`);
+  if (found.entry?.kind !== 'task') throw new Blocked(`${found.real}: запись в ${mapFile} неизвестного вида ${JSON.stringify(found.entry?.kind)} — блокирую`);
+  try {
+    if (!lstatSync(path.join(found.real, '.git')).isFile()) throw new Error('not a file');
+  } catch {
+    throw new Blocked(`${found.real} записан как копия задачи, но не похож на git-копию (нет файла .git) — блокирую`);
+  }
+  return found;
+}
+
 // ── решение ───────────────────────────────────────────────────────────────────
 
 async function decide({ stdinBuffer, env }) {
@@ -293,7 +337,7 @@ async function decide({ stdinBuffer, env }) {
   const realParts = candidates[1];
   if (!isUnder(realParts, rootRealParts)) throw new Blocked(`${real} вне корня кода проекта (${rootReal}) — блокирую`);
   const relForms = [realParts.slice(rootRealParts.length)];
-  const display = rawParts(real).slice(rootRealParts.length).join('/');
+  let display = rawParts(real).slice(rootRealParts.length).join('/');
   for (const root of new Set([path.resolve(codeRoot), rootReal])) {
     const rootParts = foldedParts(root);
     if (isUnder(candidates[0], rootParts)) {
@@ -302,6 +346,25 @@ async function decide({ stdinBuffer, env }) {
     }
   }
   if (relForms.some((rel) => rel.length === 0)) throw new Blocked(`${real} совпадает с корнем кода — блокирую`);
+
+  // 4б. Копия задачи (`collab worktree add`) живёт под служебным `.claude/worktrees/` корня, и шаг 5
+  //     запретил бы в ней всё. Если цель внутри копии, зарегистрированной в `<корень>/.collab/worktrees.json`
+  //     как копия задачи, корнем считается сама копия: шаги 5–9 проверяют путь относительно неё, так что
+  //     `.git`/`.claude`/`.collab` внутри копии по-прежнему запрещены, а allow/deny читаются как в основном дереве.
+  const worktree = registeredWorktree(rootReal, rootRealParts, realParts);
+  if (worktree) {
+    relForms.length = 0;
+    relForms.push(realParts.slice(worktree.parts.length));
+    for (const root of new Set([path.resolve(worktree.key), worktree.real])) {
+      const rootParts = foldedParts(root);
+      if (isUnder(candidates[0], rootParts)) {
+        relForms.push(candidates[0].slice(rootParts.length));
+        break;
+      }
+    }
+    if (relForms.some((rel) => rel.length === 0)) throw new Blocked(`${real} совпадает с корнем копии задачи — блокирую`);
+    display = rawParts(real).slice(worktree.parts.length).join('/');
+  }
 
   // 5. Служебные имена где угодно внутри корня.
   if (relForms.some((rel) => rel.some((part) => HARD_DENY_NAMES.has(part)))) {

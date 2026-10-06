@@ -133,6 +133,74 @@ scenario('корень кода сам может лежать под .claude/wo
   assert.equal(w.run(w.event('App/Foo.swift', { root: wt })).code, 0);
 });
 
+// Копия задачи, созданная `collab worktree add`: лежит в <корень>/.claude/worktrees/<имя>, корень журнала —
+// основное дерево (его и сообщает collab project --json), привязка — <корень>/.collab/worktrees.json.
+function taskWorktree(w, { name = 'tsk_1-feat', kind = 'task', gitFile = true, register = true } = {}) {
+  const wt = join(w.code, '.claude', 'worktrees', name);
+  mkdirSync(join(wt, 'App'), { recursive: true });
+  if (gitFile) writeFileSync(join(wt, '.git'), 'gitdir: /nowhere\n');
+  if (register) {
+    mkdirSync(join(w.code, '.collab'), { recursive: true });
+    writeFileSync(join(w.code, '.collab', 'worktrees.json'), JSON.stringify({ version: 1, worktrees: { [wt]: { kind, task_id: 'tsk_1' } } }));
+  }
+  return wt;
+}
+
+scenario('копия задачи под .claude/worktrees: правка по областям относительно копии', (w) => {
+  w.scopes({ implementer: { allow: ['App/', '.claude/'], deny: ['App/Secrets/'] } }); w.collabOk();
+  const wt = taskWorktree(w);
+  const ev = (rel, tool = 'Edit') => ({ tool_name: tool, tool_input: { file_path: join(wt, rel) }, cwd: wt });
+  assert.equal(w.run(ev('App/Foo.swift')).code, 0);
+  assert.equal(w.run(ev('App/New.swift', 'Write')).code, 0);
+  const outside = w.run(ev('Other/x.swift'));
+  assert.equal(outside.code, 2);
+  assert.match(outside.err, /вне разрешённых областей/);
+  assert.match(w.run(ev('App/Secrets/k.swift')).err, /запрещён явно/);
+  // служебные имена внутри копии по-прежнему запрещены, сколько ни разреши
+  for (const rel of ['.git', '.claude/settings.json', 'App/.collab/x']) {
+    const r = w.run(ev(rel));
+    assert.equal(r.code, 2, rel);
+    assert.match(r.err, /служебн/, rel);
+  }
+  // служебное в основном дереве рядом с копией — тоже
+  assert.match(w.run(w.event('.claude/settings.json')).err, /служебн/);
+});
+
+scenario('незарегистрированная копия, снимок, не git-копия и битый worktrees.json — блок', (w) => {
+  w.scopes(APP); w.collabOk();
+  const unregistered = taskWorktree(w, { name: 'loose', register: false });
+  const r1 = w.run({ tool_name: 'Edit', tool_input: { file_path: join(unregistered, 'App/Foo.swift') }, cwd: unregistered });
+  assert.equal(r1.code, 2);
+  assert.match(r1.err, /служебн/);
+
+  const snap = taskWorktree(w, { name: 'snap', kind: 'snapshot' });
+  const r2 = w.run({ tool_name: 'Edit', tool_input: { file_path: join(snap, 'App/Foo.swift') }, cwd: snap });
+  assert.equal(r2.code, 2);
+  assert.match(r2.err, /снимок/);
+
+  const noGit = taskWorktree(w, { name: 'nogit', gitFile: false });
+  const r3 = w.run({ tool_name: 'Edit', tool_input: { file_path: join(noGit, 'App/Foo.swift') }, cwd: noGit });
+  assert.equal(r3.code, 2);
+  assert.match(r3.err, /git-копию/);
+
+  writeFileSync(join(w.code, '.collab', 'worktrees.json'), '{ broken');
+  const r4 = w.run(w.event('App/Foo.swift'));
+  assert.equal(r4.code, 2);
+  assert.match(r4.err, /не JSON/);
+});
+
+scenario('запись копии вне корня кода не расширяет область', (w) => {
+  w.scopes(APP); w.collabOk();
+  const away = join(w.base, 'away');
+  mkdirSync(join(away, 'App'), { recursive: true });
+  writeFileSync(join(away, '.git'), 'gitdir: /nowhere\n');
+  mkdirSync(join(w.code, '.collab'), { recursive: true });
+  writeFileSync(join(w.code, '.collab', 'worktrees.json'), JSON.stringify({ version: 1, worktrees: { [away]: { kind: 'task', task_id: 't' } } }));
+  const r = w.run({ tool_name: 'Edit', tool_input: { file_path: join(away, 'App/Foo.swift') }, cwd: w.code });
+  assert.equal(r.code, 2);
+  assert.match(r.err, /вне корня кода/);
+});
+
 scenario('защищённые каталоги HOME блокируются раньше запуска collab', (w) => {
   for (const name of ['agent-collab-kit', '.agent-collab-kit', '.claude', '.codex']) {
     const r = w.run({ tool_name: 'Edit', tool_input: { file_path: join(w.home, name, 'secret.py') }, cwd: w.home });
