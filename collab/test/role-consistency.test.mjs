@@ -24,7 +24,9 @@ function machine(include = ['claude', 'codex']) {
   return { base, dir, content }
 }
 
-const apiFor = (m, sbx, agentId = 'claude') => createApi({ agentId, roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+// The machine is DESCRIBED, not read: both agents are on PATH whatever computer runs the tests.
+const PROBE = () => ({ home: '/nowhere', platform: 'darwin', which: (b) => `/usr/bin/${b}`, exists: () => false, read: () => null })
+const apiFor = (m, sbx, agentId = 'claude') => createApi({ agentId, roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
 
 test('a task for a role nobody holds is refused when it is created, and one for a held role is fine', async () => {
   const m = machine()

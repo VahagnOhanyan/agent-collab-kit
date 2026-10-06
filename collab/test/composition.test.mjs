@@ -13,6 +13,10 @@ import { createRegistry, loadConfig, loadConfigFrom, validateRegistry } from '..
 import { DEFAULT_CONFIG_DIR } from '../src/paths.mjs'
 import { runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
 
+// The machine is DESCRIBED, not read: without `probeEnv` the API asks the real machine which agents it can find, and a
+// computer without codex on PATH turns these tests red (seen on Node 26 / a second Mac, 06.10.2026).
+const PROBE = () => ({ home: '/nowhere', platform: 'darwin', which: (b) => `/usr/bin/${b}`, exists: () => false, read: () => null })
+
 const ONLY_CODEX = {
   lead: 'codex',
   agents: [
@@ -43,7 +47,7 @@ test('the catalog alone names no lead', () => {
 test('a machine composition replaces the catalog: only codex, and codex leads', () => {
   const m = machine(ONLY_CODEX)
   try {
-    const config = loadConfig({ machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const config = loadConfig({ machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     assert.deepEqual(validateRegistry(config).problems, [])
     assert.deepEqual(config.agents.agents.map((a) => a.id), ['codex'])
     assert.equal(config.agents.lead, 'codex')
@@ -56,7 +60,7 @@ test('a machine composition replaces the catalog: only codex, and codex leads', 
 test('a lead that is not declared is a problem', () => {
   const m = machine({ ...ONLY_CODEX, lead: 'claude' })
   try {
-    const config = loadConfig({ machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const config = loadConfig({ machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     assert.ok(validateRegistry(config).problems.some((p) => /lead "claude" is not one of the declared agents/.test(p)))
   } finally {
     m.cleanup()
@@ -69,10 +73,10 @@ test("a project's own agents.json wins over the machine composition", () => {
   try {
     const registry = join(m.base, 'registry')
     writeJson(join(registry, 'demo', 'project.json'), { id: 'demo', roots: [sbx.root] })
-    const fromMachine = loadConfig({ journalRoot: sbx.root, registryDir: registry, machineDir: m.dir })
+    const fromMachine = loadConfig({ journalRoot: sbx.root, registryDir: registry, machineDir: m.dir, probeEnv: PROBE() })
     assert.equal(fromMachine.agents.lead, 'codex', 'a project without its own agents.json uses the composition')
     writeJson(join(registry, 'demo', 'collab', 'agents.json'), { ...ONLY_CODEX, lead: undefined })
-    const fromProject = loadConfig({ journalRoot: sbx.root, registryDir: registry, machineDir: m.dir })
+    const fromProject = loadConfig({ journalRoot: sbx.root, registryDir: registry, machineDir: m.dir, probeEnv: PROBE() })
     assert.equal(fromProject.agents.lead, undefined, 'the project file is the one in force')
   } finally {
     m.cleanup()
@@ -84,7 +88,7 @@ test('whoami tells the lead it leads; the CLI reads as the lead without being to
   const m = machine(ONLY_CODEX)
   const sbx = sandbox()
   try {
-    const api = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir })
+    const api = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, probeEnv: PROBE() })
     const me = api.whoami()
     assert.equal(me.lead, true)
     assert.equal(me.lead_agent, 'codex')
@@ -149,7 +153,7 @@ test('single_vendor: the same agent reviews in a separate session, recorded as s
   const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
   const sbx = sandbox()
   try {
-    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     const task = await codex.createTask({ title: 'Solo work', action: 'edit a file', spec: { ux_impact: 'HIGH' } })
     await codex.claimTask({ task_id: task.id })
     const review = await codex.requestReview({ task_id: task.id, author_model: 'terra', reviewer_model: 'sol' })
@@ -172,7 +176,7 @@ test('cross_vendor stays strict: with one agent a review has nobody to go to', a
   const m = machine({ ...ONLY_CODEX, review_mode: 'cross_vendor' })
   const sbx = sandbox()
   try {
-    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     const task = await codex.createTask({ title: 'Strict work', action: 'edit a file' })
     await codex.claimTask({ task_id: task.id })
     await assert.rejects(codex.requestReview({ task_id: task.id }), (e) => e.code === 'NO_AGENT_AVAILABLE')
@@ -207,7 +211,7 @@ test('single_vendor: the reviewer model must be named, differ from the author\'s
   const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
   const sbx = sandbox()
   try {
-    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     const task = await codex.createTask({ title: 'Solo work', action: 'edit a file' })
     await codex.claimTask({ task_id: task.id })
     const refused = (input, pattern) => assert.rejects(codex.requestReview({ task_id: task.id, ...input }), (e) => e.code === 'INVALID_INPUT' && pattern.test(e.message))
@@ -231,7 +235,7 @@ test('single_vendor: the author\'s model comes from the latest delegation when n
   const m = machine({ ...ONLY_CODEX, review_mode: 'single_vendor' })
   const sbx = sandbox()
   try {
-    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry') })
+    const codex = createApi({ agentId: 'codex', roots: sbx.roots, machineDir: m.dir, registryDir: join(m.base, 'no-registry'), probeEnv: PROBE() })
     const task = await codex.createTask({ title: 'Delegated', action: 'edit a file' })
     await codex.claimTask({ task_id: task.id })
     await codex.addDelegation({ task_id: task.id, to: 'helper', model: 'sol' })
