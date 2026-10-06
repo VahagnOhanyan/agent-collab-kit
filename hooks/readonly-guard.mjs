@@ -875,9 +875,56 @@ async function checkSimpleCommand(items, context) {
   policy(name, args, cwd);
 }
 
+// Вход в копию задачи. Копия (`collab worktree add`) — отдельное рабочее дерево; verifier, чей cwd —
+// основное дерево, иначе не может прогнать в ней ни git, ни гейт, ни тесты: `cd` и `git -C` запрещены,
+// а путь к скрипту обязан лежать внутри cwd. Поэтому разрешена ровно одна форма: первая команда —
+// `cd <каталог> &&`, где каталог по realpath совпадает с копией, записанной в
+// `<корень проекта>/.collab/worktrees.json` (корень — codeRoot из `collab project --json`), лежит строго
+// внутри корня и имеет файл `.git`. Остальные команды проверяются как обычно, но относительно копии.
+// Любая другая форма `cd` — по-прежнему блок (`cd` нет в allowlist).
+async function enterTaskCopy(tokens, context) {
+  const [head, dir, op] = tokens;
+  if (!(head instanceof Word) || head.text !== 'cd' || head.quoted || head.glob) return 0;
+  if (!(dir instanceof Word) || dir.glob || dir.text.startsWith('-') || op !== '&&' || tokens.length < 4) {
+    throw new Blocked('`cd` разрешён только как `cd <копия задачи> && …`');
+  }
+  const { cwd, env } = context;
+  requireAbsoluteCwd('cd', dir.text, cwd);
+  if (hasParentComponent(dir.text)) throw new Blocked(`\`cd\`: путь \`${dir.text}\` содержит \`..\``);
+  const home = env.HOME || env.USERPROFILE || '';
+  if (!path.isAbsolute(home)) throw new Blocked('HOME не задан — копию задачи не проверить');
+  const info = await collabProjectStrict(cwd, home);
+  if (typeof info.codeRoot !== 'string' || !path.isAbsolute(info.codeRoot)) throw new Blocked('collab не сообщил корень проекта — копию задачи не проверить');
+  const root = realpathLoose(info.codeRoot);
+  const target = realpathLoose(path.isAbsolute(dir.text) ? dir.text : path.join(cwd, dir.text));
+  const mapFile = path.join(root, '.collab', 'worktrees.json');
+  let map;
+  try {
+    map = JSON.parse(decodeUtf8(readFileSync(mapFile)));
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Blocked(`\`cd ${dir.text}\`: в проекте нет копий задач (${mapFile})`);
+    throw new Blocked(`${mapFile} не читается или не JSON — копию задачи не проверить`);
+  }
+  const entries = map && typeof map === 'object' && map.worktrees && typeof map.worktrees === 'object' && !Array.isArray(map.worktrees) ? map.worktrees : {};
+  const key = Object.keys(entries).find((k) => path.isAbsolute(k) && realpathLoose(k) === target);
+  const rel = path.relative(root, target);
+  if (!key || rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Blocked(`\`cd ${dir.text}\`: это не копия задачи из ${mapFile} внутри корня проекта`);
+  }
+  try {
+    if (!statSync(path.join(target, '.git')).isFile()) throw new Error('not a file');
+  } catch {
+    throw new Blocked(`\`cd ${dir.text}\`: записана как копия задачи, но не git-копия (нет файла .git)`);
+  }
+  context.cwd = target;
+  context.settings = undefined;
+  return 3;
+}
+
 export async function checkCommand(command, context) {
   const tokens = tokenize(command);
-  for (const simple of splitSimpleCommands(tokens)) await checkSimpleCommand(simple, context);
+  const start = await enterTaskCopy(tokens, context);
+  for (const simple of splitSimpleCommands(tokens.slice(start))) await checkSimpleCommand(simple, context);
 }
 
 // ── событие хука и обвязка ────────────────────────────────────────────────────

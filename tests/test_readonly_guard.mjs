@@ -532,3 +532,48 @@ test('исходник: failClosed, сторож, верхний перехва�
   assert.match(source, /killActiveChildren\(\)/);
   assert.doesNotMatch(source, /PATTERNS/);
 });
+
+// Копия задачи (`collab worktree add`): <корень>/.claude/worktrees/<имя> с файлом .git, записана в
+// <корень>/.collab/worktrees.json. Корень — codeRoot из `collab project --json`.
+function taskCopyWorld({ register = true, gitFile = true, kind = 'task' } = {}) {
+  const root = tempDir('ro-guard-root-');
+  const copy = join(root, '.claude', 'worktrees', 'tsk_1-feat');
+  mkdirSync(join(copy, 'scripts'), { recursive: true });
+  if (gitFile) writeFileSync(join(copy, '.git'), 'gitdir: /nowhere\n');
+  writeFileSync(join(copy, 'scripts', 'gate.sh'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(copy, 'scripts', 'gate.sh'), 0o755);
+  mkdirSync(join(root, '.collab'), { recursive: true });
+  const entries = register ? { [copy]: { kind, task_id: 'tsk_1' } } : {};
+  writeFileSync(join(root, '.collab', 'worktrees.json'), JSON.stringify({ version: 1, worktrees: entries }));
+  const env = makeWorld({ info: { projectId: 'demo', registryDir: join(root, 'nowhere'), codeRoot: root } });
+  return { root, copy, env };
+}
+
+test('`cd <копия задачи> && …`: команды проверяются относительно копии', { skip: skipPosix }, () => {
+  const { root, copy, env } = taskCopyWorld();
+  const run = (command) => runGuard(bash(command, { cwd: root }), { env });
+  for (const command of [`cd ${copy} && git status`, `cd ${copy} && git diff --stat && scripts/gate.sh`,
+    'cd .claude/worktrees/tsk_1-feat && scripts/gate.sh']) {
+    const r = run(command);
+    assert.equal(r.code, 0, `${command}: ${r.err}`);
+  }
+  // запрещённое внутри копии остаётся запрещённым
+  for (const command of [`cd ${copy} && rm -rf x`, `cd ${copy} && git -C . status`, `cd ${copy} && cd .. && ls`]) {
+    assert.equal(run(command).code, 2, command);
+  }
+});
+
+test('`cd` в незаписанную копию, в корень, без && или с флагом — блок', { skip: skipPosix }, () => {
+  const loose = taskCopyWorld({ register: false });
+  assert.match(runGuard(bash(`cd ${loose.copy} && git status`, { cwd: loose.root }), { env: loose.env }).err, /не копия задачи/);
+  const w = taskCopyWorld();
+  const run = (command) => runGuard(bash(command, { cwd: w.root }), { env: w.env });
+  assert.match(run(`cd ${w.root} && git status`).err, /не копия задачи/);
+  assert.match(run(`cd ${w.copy}; git status`).err, /cd <копия задачи> &&/);
+  assert.match(run(`cd ${w.copy}`).err, /cd <копия задачи> &&/);
+  assert.match(run(`cd -P ${w.copy} && ls`).err, /cd <копия задачи> &&/);
+  assert.match(run(`cd ${w.copy}/../tsk_1-feat && ls`).err, /\.\./);
+  assert.equal(run(`git status && cd ${w.copy} && ls`).code, 2);
+  const noGit = taskCopyWorld({ gitFile: false });
+  assert.match(runGuard(bash(`cd ${noGit.copy} && ls`, { cwd: noGit.root }), { env: noGit.env }).err, /не git-копия/);
+});
