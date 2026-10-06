@@ -108,7 +108,14 @@ const SPEC = object({
     required: ['step']
   }),
   needs_ux_critic: { type: 'boolean', description: 'MEDIUM only: true when the interaction is ambiguous enough to need an independent ux_reviewer. Always true for HIGH.' },
-  needs_visual_verification: { type: 'boolean', description: 'True when the change must be seen rendered (screenshot) before it counts as done.' }
+  needs_visual_verification: { type: 'boolean', description: 'True when the change must be seen rendered (screenshot) before it counts as done.' },
+  infra_request: {
+    type: 'boolean',
+    description: 'True for a request to change shared infrastructure (paths in the project\'s shared_infra list). Only such a task may claim those paths; a feature task files one and waits on it.'
+  },
+  delta_checked_at: str(
+    'When the findings made against audit_base were re-read against git_base (ISO-8601). Required by claim_files once the two differ.'
+  )
 })
 
 const EVIDENCE = object({
@@ -279,6 +286,7 @@ export const TOOLS = [
       role: str('When taking the next one, restrict to tasks needing this role.'),
       lease_seconds: int('How long you expect to hold it.'),
       git_base: str('The commit you are starting from, for the record.'),
+      audit_base: str('The snapshot your audit findings were made against, when the fix starts from a later commit.'),
       model: str('The model you work on this task with, by registry ref or id (list_models). A record, not a check; the panel shows it on the task.')
     }),
     annotations: WRITE,
@@ -319,6 +327,9 @@ export const TOOLS = [
           priority: str('New priority.', { enum: ['p0', 'p1', 'p2', 'p3'] }),
           files: arr('Replacement file list.', { type: 'string' }),
           branch: str('The branch this work lives on.'),
+          worktree: str('Absolute path of the working copy this task is bound to (normally set by `collab worktree add`).'),
+          git_base: str('The commit this task starts fixing from.'),
+          audit_base: str('The commit its audit findings were made against. When it differs from git_base, claim_files needs spec.delta_checked_at first.'),
           spec: SPEC
         })
       },
@@ -372,6 +383,16 @@ export const TOOLS = [
     inputSchema: object({ task_id: str('The task id.'), paths: arr('Repository-relative files or directories.', { type: 'string' }) }, ['task_id', 'paths']),
     annotations: WRITE,
     handler: (input, api) => api.claimFiles(input)
+  },
+  {
+    name: 'release_files',
+    title: 'Give back part of your claim',
+    description:
+      'Drop paths this task claimed but will not change, so another task can take them now rather than when your lease lapses. ' +
+      'Paths are released as they were claimed (a directory claim as the directory).',
+    inputSchema: object({ task_id: str('The task id.'), paths: arr('Paths exactly as claimed.', { type: 'string' }) }, ['task_id', 'paths']),
+    annotations: WRITE,
+    handler: (input, api) => api.releaseFiles(input)
   },
   {
     name: 'add_delegation',

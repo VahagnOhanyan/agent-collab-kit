@@ -14,6 +14,7 @@
 
 import { CODES, CollabError } from '../errors.mjs'
 import { effectiveReviewRisk, resolveModel } from '../models.mjs'
+import { projectSettings, sharedInfraHits } from './project-settings.mjs'
 import { ACTION_KINDS, classifyAction } from '../policy.mjs'
 import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
@@ -198,6 +199,10 @@ export function createTask(ctx, input) {
       lease: null,
       git_base: null,
       branch: null,
+      // Parallel work: the working copy and branch this task is bound to, and
+      // the snapshot its audit findings were made against (see claimFiles).
+      worktree: null,
+      audit_base: null,
       blocked_reason: null,
       waiting_on: null
     })
@@ -266,7 +271,7 @@ function workingModelOf(ctx, named, at) {
   }
 }
 
-export function claimTask(ctx, { task_id = null, role = null, lease_seconds = null, git_base = null, model = null } = {}) {
+export function claimTask(ctx, { task_id = null, role = null, lease_seconds = null, git_base = null, audit_base = null, model = null } = {}) {
   const leaseSeconds = lease_seconds || ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
 
   return ctx.store.transact(async (tx) => {
@@ -328,6 +333,7 @@ export function claimTask(ctx, { task_id = null, role = null, lease_seconds = nu
       ...task,
       ...admission.fields,
       git_base: git_base || task.git_base,
+      audit_base: audit_base || task.audit_base || null,
       working_model: declared || task.working_model || null,
       working_models: declared && !sameAsLast ? [...history, declared].slice(-WORKING_MODELS_MAX) : history,
       sessions: sessionsAfterClaim(ctx, task, tx.iso())
@@ -387,7 +393,7 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
 
     // Field edits (title, description, files…) by any agent keep their old
     // behaviour. STATUS changes do not: see below.
-    const fields = { ...task, ...pick(patch, ['title', 'description', 'priority', 'files', 'depends_on', 'branch', 'waiting_on']) }
+    const fields = { ...task, ...pick(patch, ['title', 'description', 'priority', 'files', 'depends_on', 'branch', 'waiting_on', 'worktree', 'audit_base', 'git_base']) }
     if (patch.files !== undefined) fields.files = normalisePaths(fields.files)
     // `spec` is merged, not replaced: it is filled in as the work is understood,
     // and having to re-send the whole thing to add one criterion is how a field
@@ -570,6 +576,42 @@ export function claimFiles(ctx, { task_id, paths }) {
     // with no owner and no lease — and nothing can expire a lease that does not
     // exist. create_task's `files` reached the same dead end.
     assertOwnerOrContributor(task, ctx.agentId, 'claim files for')
+    const wanted = normalisePaths(paths)
+
+    // SHARED INFRASTRUCTURE IS REQUESTED, NOT CLAIMED. The project lists the
+    // paths every feature depends on (its DI container, network client,
+    // session, schema, route table, cross-side registries). A feature task that
+    // needs one of them changed files a request task for whoever integrates,
+    // marked spec.infra_request, and waits on it — so the one place ten tasks
+    // would collide is edited by one of them, first, and the others rebase onto
+    // the new interface instead of each inventing their own.
+    const settings = projectSettings(ctx)
+    if (settings.shared_infra.length && task.spec?.infra_request !== true) {
+      const hits = sharedInfraHits(wanted, settings.shared_infra)
+      if (hits.length) {
+        throw new CollabError(
+          CODES.REQUIRES_COORDINATION,
+          `shared infrastructure is not claimed by a feature task: ${hits.map((h) => `${h.path} (under ${h.under})`).join('; ')}. ` +
+            'Create a request task for it (spec.infra_request: true, role architect, depends_on from your task) and wait on it, ' +
+            'or narrow your change so it does not touch these paths.',
+          { hits, shared_infra: settings.shared_infra, settings_file: settings.file }
+        )
+      }
+    }
+
+    // FINDINGS AGE. A task audited against one snapshot and fixing from a later
+    // commit has findings about lines that may no longer exist. Before it claims
+    // anything it reads the diff of its own area and records when it did
+    // (spec.delta_checked_at); without that, the claim is refused.
+    if (task.audit_base && task.git_base && task.audit_base !== task.git_base && !task.spec?.delta_checked_at) {
+      throw new CollabError(
+        CODES.DELTA_REQUIRED,
+        `this task's findings were made against ${task.audit_base} but it starts from ${task.git_base}: read the diff of your ` +
+          'read scope between the two (git diff <audit_base>..<git_base> -- <paths>), re-check the findings, then set ' +
+          'spec.delta_checked_at (update_task) and claim again.',
+        { audit_base: task.audit_base, git_base: task.git_base }
+      )
+    }
 
     const now = tx.now()
     const leaseSeconds = ctx.registry.defaults().lease_seconds || DEFAULT_LEASE_SECONDS
@@ -583,7 +625,7 @@ export function claimFiles(ctx, { task_id, paths }) {
       const live = projectTask(other, { now, leaseSeconds })
       if (live.lease_expired) continue // an abandoned claim holds nothing
       for (const path of other.files || []) {
-        if (paths.some((p) => overlaps(p, path))) {
+        if (wanted.some((p) => overlaps(p, path))) {
           conflicts.push({ path, task_id: other.id, owner: other.owner, title: other.title })
         }
       }
@@ -596,9 +638,39 @@ export function claimFiles(ctx, { task_id, paths }) {
       )
     }
 
-    const next = tx.put('tasks', { ...task, files: [...new Set([...(task.files || []), ...paths])] })
+    const next = tx.put('tasks', { ...task, files: [...new Set([...(task.files || []), ...wanted])] })
     touchAgent(tx, ctx)
-    tx.emit('task.files_claimed', { collection: 'tasks', id: task_id }, { paths })
+    tx.emit('task.files_claimed', { collection: 'tasks', id: task_id }, { paths: wanted })
+    return project(ctx, next)
+  })
+}
+
+// The other half of a claim. An audit often reserves a whole area and then
+// finds that half of it needs no change; without a way to give that half back,
+// the next task waits on a claim nobody is using until the lease lapses. Paths
+// are matched exactly against the claim as it was made (a directory claim is
+// released as a directory, not file by file).
+export function releaseFiles(ctx, { task_id, paths }) {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new CollabError(CODES.INVALID_INPUT, 'release_files needs at least one path')
+  }
+  return ctx.store.transact(async (tx) => {
+    const task = tx.get('tasks', task_id)
+    if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    assertOwnerOrContributor(task, ctx.agentId, 'release files of')
+    const wanted = new Set(normalisePaths(paths))
+    const held = task.files || []
+    const missing = [...wanted].filter((p) => !held.includes(p))
+    if (missing.length) {
+      throw new CollabError(CODES.NOT_FOUND, `this task does not hold ${missing.join(', ')} — its claim is: ${held.join(', ') || '(nothing)'}`, {
+        missing,
+        held
+      })
+    }
+    const remaining = held.filter((p) => !wanted.has(p))
+    const next = tx.put('tasks', { ...task, files: remaining })
+    touchAgent(tx, ctx)
+    tx.emit('task.files_released', { collection: 'tasks', id: task_id }, { paths: [...wanted], remaining })
     return project(ctx, next)
   })
 }

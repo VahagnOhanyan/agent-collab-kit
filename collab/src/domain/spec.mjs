@@ -44,6 +44,8 @@ export const UX_DOMAINS = Object.freeze([
   'adaptive-layout'
 ])
 export const UX_FLAGS = Object.freeze(['needs_ux_critic', 'needs_visual_verification'])
+// Fields of the parallel-work protocol (see domain/project-settings.mjs and claimFiles in tasks.mjs).
+export const ISOLATION_FIELDS = Object.freeze(['infra_request', 'delta_checked_at'])
 export const UX_REVIEWER_ROLE = 'ux_reviewer'
 
 function list(value, field) {
@@ -134,7 +136,7 @@ export function normaliseSpec(config, input, existing = null) {
     throw new CollabError(CODES.INVALID_INPUT, 'spec must be an object', {})
   }
   const levels = config.models?.levels || {}
-  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason', 'ux_impact', 'ux_domains', 'route', ...UX_FLAGS])
+  const known = new Set([...SPEC_LISTS, ...SPEC_LEVELS, 'classification_reason', 'ux_impact', 'ux_domains', 'route', ...UX_FLAGS, ...ISOLATION_FIELDS])
   for (const key of Object.keys(input)) {
     if (!known.has(key)) {
       throw new CollabError(CODES.INVALID_INPUT, `spec has no field "${key}"`, { field: key, known: [...known] })
@@ -190,6 +192,22 @@ export function normaliseSpec(config, input, existing = null) {
       throw new CollabError(CODES.INVALID_INPUT, `spec.${flag} must be true or false`, { field: flag })
     }
     next[flag] = input[flag]
+  }
+  // Parallel-work fields. `infra_request` marks the one kind of task that may
+  // claim a path from the project's shared_infra list; `delta_checked_at` says
+  // the findings made against audit_base were re-read against git_base.
+  if (input.infra_request !== undefined && input.infra_request !== null) {
+    if (typeof input.infra_request !== 'boolean') {
+      throw new CollabError(CODES.INVALID_INPUT, 'spec.infra_request must be true or false', { field: 'infra_request' })
+    }
+    next.infra_request = input.infra_request
+  }
+  if (input.delta_checked_at !== undefined && input.delta_checked_at !== null) {
+    const at = String(input.delta_checked_at)
+    if (Number.isNaN(Date.parse(at))) {
+      throw new CollabError(CODES.INVALID_INPUT, 'spec.delta_checked_at must be an ISO-8601 timestamp', { field: 'delta_checked_at' })
+    }
+    next.delta_checked_at = at
   }
   // Contradictory, not missing: a HIGH change that opts out of the critic is
   // the one case the gate exists for, so it is refused rather than recorded.

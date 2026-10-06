@@ -39,6 +39,8 @@ import * as decisions from './domain/decisions.mjs'
 import * as messages from './domain/messages.mjs'
 import * as reviews from './domain/reviews.mjs'
 import * as tasks from './domain/tasks.mjs'
+import * as worktrees from './domain/worktrees.mjs'
+import { projectSettings } from './domain/project-settings.mjs'
 import * as delegations from './domain/delegations.mjs'
 import * as runs from './runs.mjs'
 import { adapterFor } from './adapters/index.mjs'
@@ -57,6 +59,9 @@ const WRITING_METHODS = Object.freeze([
   'blockTask',
   'releaseTask',
   'claimFiles',
+  'releaseFiles',
+  'registerWorktree',
+  'unregisterWorktree',
   'addDelegation',
   'completeDelegation',
   'sweep',
@@ -238,7 +243,10 @@ export function createApi({
   if (!state?.initialized) throw notInitialised(roots, state)
 
   const store = createStore({ root: roots.stateDir, agentId, clock, legacyJournal: state.kind === 'legacy', readOnly })
-  const ctx = { store, registry, config, clock, agentId, roots, sessionId }
+  // registryDir and home travel with the context so domain code can read the
+  // project's trusted registry entry (project-settings.mjs) under a config
+  // loaded from an explicit configDir, which is how tests build their worlds.
+  const ctx = { store, registry, config, clock, agentId, roots, sessionId, registryDir, home }
   // Roles an agent suspended itself are out of routing from the next call on, read fresh from the journal.
   registry.setSuspended((id, role) => (store.get('agents', id)?.suspended_roles || []).some((s) => s.role === role))
 
@@ -398,6 +406,12 @@ export function createApi({
       tasks.updateTask(ctx, { task_id, status: 'blocked', reason, expected_version }),
     releaseTask: (input) => tasks.releaseTask(ctx, input),
     claimFiles: (input) => tasks.claimFiles(ctx, input),
+    releaseFiles: (input) => tasks.releaseFiles(ctx, input),
+    // ── working copies (git worktrees bound to tasks) ─────────────────────
+    registerWorktree: (input) => worktrees.registerWorktree(ctx, input),
+    unregisterWorktree: (input) => worktrees.unregisterWorktree(ctx, input),
+    listWorktrees: () => worktrees.listWorktrees(ctx),
+    projectSettings: () => projectSettings(ctx),
     addDelegation: (input) => delegations.addDelegation(ctx, input),
     completeDelegation: (input) => delegations.completeDelegation(ctx, input),
     sweep: () => tasks.sweep(ctx),

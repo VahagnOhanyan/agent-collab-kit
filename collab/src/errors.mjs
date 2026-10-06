@@ -33,6 +33,12 @@ export const CODES = Object.freeze({
   LOCK_TIMEOUT: 'LOCK_TIMEOUT',
   REENTRANT_TRANSACTION: 'REENTRANT_TRANSACTION',
   PATH_CONFLICT: 'PATH_CONFLICT',
+  // A path the project lists as shared infrastructure: a feature task does not
+  // claim it, it files a request task for whoever integrates (an infra_request).
+  REQUIRES_COORDINATION: 'REQUIRES_COORDINATION',
+  // The task's findings were made against an older snapshot (audit_base) than
+  // the commit it starts fixing from (git_base), and nobody has read the diff.
+  DELTA_REQUIRED: 'DELTA_REQUIRED',
 
   // domain
   ILLEGAL_TRANSITION: 'ILLEGAL_TRANSITION',

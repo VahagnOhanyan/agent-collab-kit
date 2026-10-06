@@ -245,6 +245,7 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
     { matcher: 'Bash', hooks: [theirs] },
     { matcher: 'Agent', hooks: [{ type: 'command', command, timeout: 10 }] },
     { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: gate, timeout: 15 }] },
+    { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(node, cur, 'claim-guard'), timeout: 15 }] },
     { matcher: 'Bash', hooks: [{ type: 'command', command: push, timeout: 180 }] }
   ])
   assert.doesNotMatch(command + gate + push, /exit 2/, 'not a boundary: a broken launch must not block every call')
@@ -253,7 +254,7 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
     { matcher: 'x', hooks: [{ type: 'command', command: lib.codexHookCommand('/n', '/c') }] },
     { matcher: 'Edit|Write', hooks: [project] }
   ] } }, node, cur)
-  assert.equal(kept.hooks.PreToolUse.length, 5, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
+  assert.equal(kept.hooks.PreToolUse.length, 6, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
 })
 
 test('Claude settings: a wrapper that merely mentions the launcher is not ours; our entry is replaced in place, keeping the order', () => {

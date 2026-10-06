@@ -54,7 +54,7 @@ test('installs into every config directory and registers each one separately', (
   for (const dir of [join(W.home, '.claude'), second]) {
     const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
     const commands = settings.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command)
-    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
+    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'claim-guard'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
     assert.deepEqual(settings.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'post-edit'), timeout: 60 }] }], dir)
     assert.deepEqual(settings.hooks.SessionStart, [{ hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'session-start'), timeout: 15 }] }], dir)
   }
@@ -64,8 +64,8 @@ test('installs into every config directory and registers each one separately', (
   const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(again.status, 0, again.all)
   assert.doesNotMatch(again.stdout, /registered user-scope collab/)
-  assert.match(r.stdout, /model-guard, plan-gate, push-gate, post-edit and session-start hooks in/)
-  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, push-gate, post-edit and session-start hooks in/)
+  assert.match(r.stdout, /model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks in/g)
+  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks in/g)
   assert.ok(readFileSync(join(second, 'settings.json')).equals(settingsBefore), 'settings.json unchanged on a second run')
 })
 
@@ -147,7 +147,7 @@ test('rollback to a release without a hook module drops that hook from settings.
   assert.equal(back.status, 0, back.all)
   assert.deepEqual(
     [...commandsOf('PreToolUse')].sort(),
-    [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), 'my-own-hook'].sort()
+    [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'claim-guard'), 'my-own-hook'].sort()
   )
   assert.deepEqual(commandsOf('PostToolUse'), [])
   assert.deepEqual(commandsOf('SessionStart'), [])

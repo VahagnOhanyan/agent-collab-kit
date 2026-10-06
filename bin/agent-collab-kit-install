@@ -93,6 +93,7 @@ const REQUIRED_PATHS = Object.freeze([
   'rules/vendor-claude.md',
   'hooks/codex-guard.mjs',
   'hooks/scope-guard.mjs',
+  'hooks/claim-guard.mjs',
   'hooks/readonly-guard.mjs',
   'hooks/model-guard.mjs',
   'hooks/plan-gate.mjs',
@@ -2206,6 +2207,8 @@ function mergeCodexHooks(existing, command, currentPath = null) {
 const CLAUDE_HOOKS = Object.freeze([
   { name: 'model-guard', matcher: 'Agent', timeout: 10 },
   { name: 'plan-gate', matcher: 'Edit|Write|MultiEdit|NotebookEdit', timeout: 15 },
+  // Holds a task's claim_files inside the working copy bound to it (collab worktree add); passes everywhere else.
+  { name: 'claim-guard', matcher: 'Edit|Write|MultiEdit|NotebookEdit', timeout: 15 },
   { name: 'push-gate', matcher: 'Bash', timeout: 180 },
   { name: 'post-edit', event: 'PostToolUse', matcher: 'Edit|Write|MultiEdit', timeout: 60 },
   { name: 'session-start', event: 'SessionStart', timeout: 15 }
@@ -2280,14 +2283,14 @@ function planClaudeHooks(ctx, available, { cleanOnly = false } = {}) {
 function applyClaudeHooks(ctx, plan, journal, changes) {
   if (plan.skipped) return
   for (const file of plan.files) {
-    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard, plan-gate, push-gate, post-edit and session-start hooks in ${file.file} — a new session picks them up`)
+    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks in ${file.file} — a new session picks them up`)
   }
 }
 
 function summarizeClaudeHooks(ctx, plan) {
   if (plan.skipped) return null
   const changed = plan.files.filter((f) => f.changed).map((f) => f.file)
-  return changed.length ? `claude: add the model-guard, plan-gate, push-gate, post-edit and session-start hooks to ${changed.join(', ')}` : null
+  return changed.length ? `claude: add the model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks to ${changed.join(', ')}` : null
 }
 
 function planCodexHooks(ctx) {

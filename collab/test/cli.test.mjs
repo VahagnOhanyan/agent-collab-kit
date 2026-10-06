@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createApi } from '../src/api.mjs'
@@ -363,6 +363,56 @@ test('a dirty file that a task claimed is not reported as claimed by nobody', as
     // here. What must never appear is a path with its first letter eaten — the
     // form the bug took, and the reason a claimed file stopped matching its claim.
     assert.doesNotMatch(result.stdout, /(^|[^a])lpha\.js/m, 'a path must not lose its first letter')
+  } finally {
+    w.cleanup()
+  }
+})
+
+// ── working copies ─────────────────────────────────────────────────────────
+
+test('worktree add/list/gc: a copy and a branch per task, recorded on the task; gc removes only the copies of closed tasks', async () => {
+  const w = scratch({ git: true })
+  try {
+    const task = await w.claude.createTask({ title: 'Album audit', action: 'edit a file', needs_review: false })
+    await w.claude.claimTask({ task_id: task.id })
+    const added = run(w, ['worktree', 'add', task.id, '--slug', 'album'])
+    assert.equal(added.status, 0, added.stderr)
+    const copy = join(w.sbx.root, '.claude', 'worktrees', `${task.id}-album`)
+    assert.ok(existsSync(join(copy, '.git')), 'the copy is a git worktree')
+    assert.match(added.stdout, new RegExp(`agent/${task.id}-album`))
+    const bound = w.claude.getTask({ task_id: task.id })
+    assert.equal(realpathSync(bound.worktree), realpathSync(copy))
+    assert.equal(bound.branch, `agent/${task.id}-album`)
+    assert.match(git(w.sbx.root, ['branch', '--list', `agent/${task.id}-album`]), /album/)
+
+    const twice = run(w, ['worktree', 'add', task.id, '--slug', 'again'])
+    assert.notEqual(twice.status, 0, 'one copy per task')
+
+    const listed = run(w, ['worktree', 'list'])
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.match(listed.stdout, new RegExp(`${task.id} .*in_progress`))
+
+    const nothing = run(w, ['worktree', 'gc'])
+    assert.equal(nothing.status, 0, nothing.stderr)
+    assert.match(nothing.stdout, /nothing to remove/)
+    assert.ok(existsSync(copy), 'a live task keeps its copy')
+
+    await w.claude.completeTask({ task_id: task.id, summary: 'done' })
+    const dry = run(w, ['worktree', 'gc', '--dry-run'])
+    assert.match(dry.stdout, /would remove/)
+    assert.ok(existsSync(copy))
+    const gc = run(w, ['worktree', 'gc'])
+    assert.equal(gc.status, 0, gc.stderr)
+    assert.match(gc.stdout, /^removed /m)
+    assert.equal(existsSync(copy), false)
+    assert.equal(w.claude.listWorktrees().length, 0)
+    assert.equal(w.claude.getTask({ task_id: task.id }).worktree, null)
+
+    const snap = run(w, ['worktree', 'snapshot', 'HEAD', '--name', 'audit'])
+    assert.equal(snap.status, 0, snap.stderr)
+    assert.match(snap.stdout, /read-only snapshot/)
+    assert.equal(w.claude.listWorktrees()[0].kind, 'snapshot')
+    assert.match(run(w, ['worktree', 'gc']).stdout, /nothing to remove/, 'a snapshot is not gc material')
   } finally {
     w.cleanup()
   }

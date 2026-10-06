@@ -20,7 +20,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createApi, describeProject, legacyJournalLookup } from './api.mjs'
 import { checkConfig } from './check-config.mjs'
-import { DEFAULT_CONFIG_DIR, defaultRegistryDir, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots } from './paths.mjs'
+import { DEFAULT_CONFIG_DIR, defaultRegistryDir, initJournal, MACHINE_CONFIG_DIR, PERSISTENT_REGISTRY_DIR, RELEASE_REGISTRY_DIR, resolveRoots, runGit } from './paths.mjs'
 import { disconnectRoot, ensurePersistentRegistry, proposeConnection, writeConnection } from './connect.mjs'
 import { planNoteInstall, writeNote } from './notes.mjs'
 import { findProject, listProjects } from './projects.mjs'
@@ -1231,6 +1231,99 @@ const COMMANDS = {
     for (const id of result.marked_offline) out(dim(`  offline  ${id}`))
   },
 
+  // A working copy per writing task: `git worktree` + a branch, recorded on the
+  // task and in <state>/worktrees.json so the claim-guard hook can hold the
+  // task's claim inside it. Git runs here, in the caller's code root; the
+  // journal only records (domain/worktrees.mjs).
+  async worktree(api, { args, flags }) {
+    const [sub, ...rest] = args
+    const codeRoot = api.roots?.codeRoot
+    if (!codeRoot) throw new CollabError('INVALID_INPUT', 'collab worktree needs a git working tree with a journal')
+    const settings = api.projectSettings()
+    const copiesDir = join(codeRoot, ...settings.worktrees_dir.split('/'))
+    const git = (cwd, gitArgs) => runGit(cwd, gitArgs).trim()
+    const slugOf = (value) =>
+      String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40)
+
+    if (sub === 'add') {
+      const taskId = rest[0]
+      if (!taskId) throw new CollabError('INVALID_INPUT', 'usage: collab worktree add <task-id> [--slug <name>] [--base <ref>]')
+      const task = api.getTask({ task_id: taskId })
+      const slug = slugOf(flags.slug) || slugOf(task.title) || 'work'
+      const name = `${task.id}-${slug}`
+      const dir = join(copiesDir, name)
+      const branch = `agent/${name}`
+      const base = git(codeRoot, ['rev-parse', '--verify', `${flags.base || 'HEAD'}^{commit}`])
+      if (existsSync(dir)) throw new CollabError('PATH_CONFLICT', `${dir} already exists`)
+      git(codeRoot, ['worktree', 'add', dir, '-b', branch, base])
+      const record = await api.registerWorktree({ task_id: task.id, path: realpathSync(dir), branch, git_base: base })
+      out(
+        `${C.bold}${record.path}${C.off}`,
+        `  branch   ${branch}`,
+        `  base     ${base.slice(0, 12)}`,
+        `  task     ${task.id}  ${task.title}`,
+        dim('  edits inside it are held to this task\'s claim_files by the claim-guard hook; build there with its own DerivedData/test DB name')
+      )
+      return
+    }
+    if (sub === 'snapshot') {
+      const ref = rest[0] || 'HEAD'
+      const sha = git(codeRoot, ['rev-parse', '--verify', `${ref}^{commit}`])
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const dir = join(copiesDir, `${slugOf(flags.name) || 'audit'}-${stamp}-${sha.slice(0, 7)}`)
+      if (existsSync(dir)) throw new CollabError('PATH_CONFLICT', `${dir} already exists`)
+      git(codeRoot, ['worktree', 'add', '--detach', dir, sha])
+      const record = await api.registerWorktree({ path: realpathSync(dir), git_base: sha, kind: 'snapshot' })
+      out(`${C.bold}${record.path}${C.off}`, `  detached at ${sha.slice(0, 12)} — read-only snapshot for audits (claim-guard blocks edits in it)`)
+      return
+    }
+    if (sub === 'list' || sub === undefined) {
+      const copies = api.listWorktrees()
+      if (!copies.length) {
+        out(dim('no working copies on record — collab worktree add <task-id>'))
+        return
+      }
+      for (const c of copies) {
+        const state = c.kind === 'snapshot' ? dim('snapshot') : `${c.task_id} ${paint(c.task_status)}${c.task_owner ? dim(` ${c.task_owner}`) : ''}`
+        out(`${c.path}`, `  ${state}${c.branch ? dim(`  ${c.branch}`) : ''}${c.removable ? `  ${C.yellow}removable${C.off}` : ''}`)
+      }
+      return
+    }
+    if (sub === 'gc') {
+      const dry = flags['dry-run'] === true
+      const copies = api.listWorktrees().filter((c) => c.removable)
+      if (!copies.length) {
+        out(dim('nothing to remove: every recorded copy belongs to an open task or is a snapshot'))
+        return
+      }
+      for (const c of copies) {
+        if (dry) {
+          out(`would remove ${c.path} ${dim(`(${c.task_id} ${c.task_status})`)}`)
+          continue
+        }
+        if (existsSync(c.path)) {
+          // Never --force: a copy with uncommitted changes is somebody's work until they say otherwise.
+          const dirty = git(c.path, ['--no-optional-locks', 'status', '--porcelain'])
+          if (dirty) {
+            out(`${C.yellow}kept${C.off}    ${c.path} ${dim('has uncommitted changes — commit or discard them, then gc again')}`)
+            continue
+          }
+          git(codeRoot, ['worktree', 'remove', c.path])
+        } else {
+          git(codeRoot, ['worktree', 'prune'])
+        }
+        await api.unregisterWorktree({ path: c.path })
+        out(`removed ${c.path} ${dim(`(${c.task_id} ${c.task_status}; branch ${c.branch || '—'} left for the owner to delete)`)}`)
+      }
+      return
+    }
+    throw new CollabError('INVALID_INPUT', 'usage: collab worktree add <task-id> [--slug s] [--base ref] | snapshot [ref] [--name n] | list | gc [--dry-run]')
+  },
+
   help() {
     out(
       `${C.bold}collab${C.off} — shared state for the agents working on this project`,
@@ -1267,6 +1360,9 @@ const COMMANDS = {
       '  brief [agent]          what an agent is told about itself — paste this into a new session',
       '  doctor                 roots, config source, agents, adapters, what is unavailable and how to fix it',
       '  sweep                  release work abandoned by an agent that went away',
+      '  worktree add <task-id> [--slug s] [--base ref]   a working copy + branch agent/<task>-<slug> for one task (claims held inside it)',
+      '  worktree snapshot [ref] [--name n]               a detached read-only copy for audits',
+      '  worktree list | gc [--dry-run]                   recorded copies; remove the copies of closed tasks',
       '',
       dim('  --as <agent>         act as an agent (never unlocks approve/reject)')
     )
