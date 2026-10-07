@@ -176,8 +176,10 @@ export function validateRegistry(config) {
       if (!launch || !Array.isArray(launch.argv) || !launch.argv.length || !launch.argv.every((a) => typeof a === 'string') || !launch.argv[0]) {
         problems.push(`${where} adapter.review_launch.argv must be a list of strings starting with the program`)
       }
-      if (!['sandbox', 'permissions', 'hook'].includes(launch?.read_only_by)) {
-        problems.push(`${where} adapter.review_launch.read_only_by must be sandbox, permissions or hook`)
+      // toolset: the launch gives the reviewer no write or shell tool at all (an agy custom agent), so there is nothing
+      // to deny.
+      if (!['sandbox', 'permissions', 'hook', 'toolset'].includes(launch?.read_only_by)) {
+        problems.push(`${where} adapter.review_launch.read_only_by must be sandbox, permissions, hook or toolset`)
       }
       // A verified launch names when and what the probe showed: "verified" with nothing behind it is a claim.
       // A probe proves the program it ran: the version goes with the date, so a later CLI is seen as unproven by eye.

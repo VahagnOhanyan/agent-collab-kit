@@ -78,6 +78,8 @@ const REQUIRED_PATHS = Object.freeze([
   'rules/apple-toolchain.md',
   'skills/codex-review/SKILL.md',
   'skills/claude-review/SKILL.md',
+  'skills/gemini-review/SKILL.md',
+  'gemini/agents/readonly-reviewer.md',
   'skills/ui-review/SKILL.md',
   'skills/ux-guidance/SKILL.md',
   'skills/ux-critic-review/SKILL.md',
@@ -1233,6 +1235,15 @@ function codexAdapterWanted(ctx) {
   return commandExists('codex') || Boolean(lstatOrNull(path.dirname(ctx.codexConfig)))
 }
 
+// The Gemini adapter (07.10.2026): the review skill and the agent `readonly-reviewer` that agy runs it as. Present
+// by the same signal planGemini uses to register the MCP server — `agy` on PATH or ~/.gemini already there — and
+// never with --skip-gemini. A bare ctx (unit tests) keeps it out unless the test sets geminiPresent.
+function geminiAdapterWanted(ctx) {
+  if (typeof ctx.geminiPresent === 'boolean') return ctx.geminiPresent
+  if (!ctx.geminiConfig || ctx.opts?.skipGemini) return false
+  return commandExists('agy') || Boolean(lstatOrNull(path.dirname(path.dirname(ctx.geminiConfig))))
+}
+
 function personalLayerPresent(ctx) {
   if (typeof ctx.personalPresent === 'boolean') return ctx.personalPresent
   return Boolean(ctx.source && lstatOrNull(path.join(ctx.source, 'personal', 'rules', 'personal.md')))
@@ -1240,8 +1251,13 @@ function personalLayerPresent(ctx) {
 
 function linkSpecs(ctx) {
   const codex = codexAdapterWanted(ctx)
+  const gemini = geminiAdapterWanted(ctx)
   const personal = personalLayerPresent(ctx)
   const perConfigDir = (dir) => [
+    // How a lead runs Gemini on a review: as the agy agent without shell or write tools (gemini/agents/).
+    ...(gemini
+      ? [{ dest: path.join(dir, 'skills', 'gemini-review'), rel: 'skills/gemini-review', kind: 'dir', posixCopy: true }]
+      : []),
     ...(codex
       ? [
           { dest: path.join(dir, 'skills', 'codex-review'), rel: 'skills/codex-review', kind: 'dir', posixCopy: true },
@@ -1301,6 +1317,12 @@ function linkSpecs(ctx) {
   const dirs = ctx.claudeDirs || [path.join(ctx.home, '.claude')]
   return [
     ...dirs.flatMap(perConfigDir),
+    // The read-only reviewer as an agy custom agent: excludeDefaultComponents and only view_file, grep_search,
+    // find_by_name, list_dir — no run_command, no write_to_file. agy discovers ~/.gemini/config/agents/. A copy, like
+    // the Claude agents: it is something a scanner reads.
+    ...(gemini
+      ? [{ dest: path.join(path.dirname(ctx.geminiConfig), 'agents', 'readonly-reviewer.md'), rel: 'gemini/agents/readonly-reviewer.md', kind: 'file', posixCopy: true }]
+      : []),
     { dest: path.join(ctx.bindir, IS_WINDOWS ? 'collab.cmd' : 'collab'), rel: 'bin/collab', kind: IS_WINDOWS ? 'cmd-shim' : 'file', posixCopy: false },
     // The machine lock for Xcode / simulators / devices — macOS only, like the
     // tools it serialises.

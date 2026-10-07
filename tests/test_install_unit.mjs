@@ -334,6 +334,17 @@ test('three layers: the Codex adapter only with Codex, the personal rule only wh
   const withCodex = rels({ ...base, codexPresent: true })
   for (const rel of ADAPTER) assert.ok(withCodex.includes(rel), `${rel} goes where Codex is`)
 
+  // The Gemini adapter: the review skill and the agy agent without shell or write tools, only where Gemini is.
+  const GEMINI = ['skills/gemini-review', 'gemini/agents/readonly-reviewer.md']
+  const geminiConfig = join(home, '.gemini', 'config', 'mcp_config.json')
+  const withoutGemini = rels({ ...base, geminiConfig, geminiPresent: false })
+  for (const rel of GEMINI) assert.ok(!withoutGemini.includes(rel), `${rel} must not go to a machine without Gemini`)
+  const geminiSpecs = lib.linkSpecs({ ...base, geminiConfig, geminiPresent: true })
+  for (const rel of GEMINI) assert.ok(geminiSpecs.some((s) => s.rel === rel), `${rel} goes where Gemini is`)
+  const agent = geminiSpecs.find((s) => s.rel === 'gemini/agents/readonly-reviewer.md')
+  assert.equal(agent.dest, join(home, '.gemini', 'config', 'agents', 'readonly-reviewer.md'), 'agy discovers agents in ~/.gemini/config/agents')
+  assert.equal(agent.posixCopy, true, 'a copy, like every file a scanner reads')
+
   const source = join(world.base, 'layers-source')
   mkdirSync(join(source, 'personal', 'rules'), { recursive: true })
   assert.ok(!rels({ ...base, source }).includes('personal/rules/personal.md'), 'no personal file, no personal rule')
