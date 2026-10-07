@@ -24,6 +24,8 @@
 //                  base branch (the project's full test run, its preflight). The
 //                  same argv shape and `{task}` / `{copy}` substitution as
 //                  worktree_hooks — see worktree-integrate.mjs.
+//   integrate_check_timeout_minutes  how long each integrate_check command may
+//                  run (positive integer, at most 120; default 10).
 //
 // A malformed value is a configuration problem and is reported as one rather
 // than silently read as "nothing configured": an owner who wrote the list wants
@@ -67,7 +69,7 @@ function projectDir(ctx) {
 
 export function projectSettings(ctx) {
   const dir = projectDir(ctx)
-  const empty = { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], worktree_hooks: { add: [], remove: [] }, integrate_check: [] }
+  const empty = { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], worktree_hooks: { add: [], remove: [] }, integrate_check: [], integrate_check_timeout_minutes: null }
   if (!dir) return { ...empty, file: null }
   const file = join(dir, 'project.json')
   const raw = readJson(file, null)
@@ -93,6 +95,14 @@ export function projectSettings(ctx) {
     }
     integrateCheck = c.map((argv) => [...argv])
   }
+  let integrateCheckTimeoutMinutes = null
+  if (raw.integrate_check_timeout_minutes !== undefined && raw.integrate_check_timeout_minutes !== null) {
+    const m = raw.integrate_check_timeout_minutes
+    if (!Number.isInteger(m) || m < 1 || m > 120) {
+      throw new CollabError(CODES.CONFIG_INVALID, `${file}: "integrate_check_timeout_minutes" must be a whole number of minutes from 1 to 120`, { key: 'integrate_check_timeout_minutes' })
+    }
+    integrateCheckTimeoutMinutes = m
+  }
   const worktreeClone = relativeList(raw.worktree_clone, 'worktree_clone', file).map((p) => p.replace(/\/+$/, ''))
   const sharedInfra = relativeList(raw.shared_infra, 'shared_infra', file)
   let worktreesDir = DEFAULT_WORKTREES_DIR
@@ -110,7 +120,7 @@ export function projectSettings(ctx) {
     }
     gitConfig = raw.git_config.map(([k, v]) => [k, v])
   }
-  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, worktree_clone: worktreeClone, worktree_hooks: worktreeHooks, integrate_check: integrateCheck, file }
+  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, worktree_clone: worktreeClone, worktree_hooks: worktreeHooks, integrate_check: integrateCheck, integrate_check_timeout_minutes: integrateCheckTimeoutMinutes, file }
 }
 
 // Which of `paths` fall under the shared-infrastructure list. Prefix-aware the

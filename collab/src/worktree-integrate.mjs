@@ -26,9 +26,34 @@ import { CODES, CollabError } from './errors.mjs'
 import { gitProbe } from './paths.mjs'
 
 const TASK_SAFE = /^[A-Za-z0-9_]+$/
-const CHECK_TIMEOUT_MS = 20 * 60 * 1000
+// Ten minutes: a project's full test run plus its preflight is minutes, and a
+// runner that hangs (seen 07.10.2026: a test file failing inside a loader hook
+// left `node --test` spinning) should not hold the base for twenty. A project
+// that needs longer says so in its registry (`integrate_check_timeout_minutes`).
+export const CHECK_TIMEOUT_MS = 10 * 60 * 1000
 const TAIL_LINES = 40
 const TAIL_CHARS = 4000
+const FAILURE_LINES = 60
+const FAILURE_CHARS = 8000
+
+// The lines that NAME what failed, wherever they sit in the output: TAP
+// `not ok N - <name>` (any depth), a `# fail N` summary that is not zero, and a
+// preflight-style `✘ <gate>` line. The tail alone loses them — a full test run
+// prints thousands of lines after the first failure (07.10.2026: three
+// refusals reported only `# fail 1` and no name).
+export function failureLines(text) {
+  const seen = new Set()
+  const picked = []
+  for (const line of String(text || '').split('\n')) {
+    const trimmed = line.trim()
+    const isFailure = /^not ok \d+\b/.test(trimmed) || /^# fail [1-9]\d*\b/.test(trimmed) || /^✘\s/.test(trimmed)
+    if (!isFailure || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    picked.push(trimmed)
+    if (picked.length >= FAILURE_LINES) break
+  }
+  return picked.join('\n').slice(0, FAILURE_CHARS)
+}
 
 function defaultRun(argv, cwd, timeoutMs) {
   const result = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 })
@@ -126,7 +151,7 @@ export function integrateWorktree({ mainTree, copy, branch, base = null, task, c
         throw new CollabError(
           CODES.GUARD_FAILED,
           `${r.timedOut ? 'timed out' : `failed (exit ${r.status})`}: ${argv.join(' ')} — ${target} was not moved. Fix it in the copy, commit, and integrate again`,
-          { copy, branch, base: target, command: argv, seconds, output: tail(r.output) }
+          { copy, branch, base: target, command: argv, seconds, failures: failureLines(r.output), output: tail(r.output) }
         )
       }
       checks.push({ argv, seconds })

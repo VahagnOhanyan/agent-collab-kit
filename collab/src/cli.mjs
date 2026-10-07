@@ -1365,7 +1365,8 @@ const COMMANDS = {
         base: typeof flags.base === 'string' ? flags.base : null,
         task: taskId,
         commands: settings.integrate_check,
-        skipCheck: flags['no-check'] === true
+        skipCheck: flags['no-check'] === true,
+        ...(settings.integrate_check_timeout_minutes ? { timeoutMs: settings.integrate_check_timeout_minutes * 60 * 1000 } : {})
       })
       out(
         `${C.green}integrated${C.off} ${result.branch} -> ${result.base}`,

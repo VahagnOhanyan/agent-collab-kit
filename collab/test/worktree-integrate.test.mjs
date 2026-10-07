@@ -8,7 +8,7 @@ import test, { after } from 'node:test'
 
 import { createApi } from '../src/api.mjs'
 import { CODES } from '../src/errors.mjs'
-import { integrateWorktree } from '../src/worktree-integrate.mjs'
+import { integrateWorktree, failureLines, CHECK_TIMEOUT_MS } from '../src/worktree-integrate.mjs'
 import { git, removeTree, runCli, sandbox, tempDir, writeJson } from './helpers.mjs'
 
 const trash = []
@@ -88,6 +88,36 @@ test('red check: the base does not move, and the refusal carries the command and
   assert.match(error.details.output, /3 tests failed: boom/)
   assert.equal(w.head(w.main), baseBefore, 'main did not move')
   assert.equal(existsSync(join(w.main, 'b.txt')), false)
+})
+
+test('red check: the refusal names the failing tests even when they are far from the tail', () => {
+  const w = world()
+  w.commit(w.copy, 'b.txt', 'b\n')
+  // A failure early, then thousands of passing lines: the tail alone loses its name.
+  const noisy = [NODE, '-e', [
+    'console.log("ok 1 - fine");',
+    'console.log("not ok 2 - the negative control detects a missing invalidation");',
+    'console.log("  not ok 1 - a nested subtest also counts");',
+    'for (let i = 3; i < 3000; i++) console.log("ok " + i + " - fine");',
+    'console.log("✘ paths in agent instructions");',
+    'console.log("# fail 2");',
+    'process.exit(1)'
+  ].join('')]
+  const error = refuses(() => integrateWorktree(w.args({ commands: [noisy] })), CODES.GUARD_FAILED)
+  assert.match(error.details.failures, /not ok 2 - the negative control detects a missing invalidation/)
+  assert.match(error.details.failures, /not ok 1 - a nested subtest also counts/)
+  assert.match(error.details.failures, /✘ paths in agent instructions/)
+  assert.match(error.details.failures, /# fail 2/)
+  assert.doesNotMatch(error.details.output, /negative control detects/, 'the tail by itself does not carry the name — that is why failures exists')
+})
+
+test('failureLines ignores `# fail 0` and repeats, and keeps only naming lines', () => {
+  const text = '# fail 0\nnot ok 3 - x\nnot ok 3 - x\nok 4 - y\n✘ gate\nrandom line'
+  assert.equal(failureLines(text), 'not ok 3 - x\n✘ gate')
+})
+
+test('the default check timeout is ten minutes', () => {
+  assert.equal(CHECK_TIMEOUT_MS, 10 * 60 * 1000)
 })
 
 test('a check that never starts (no such program) is red as well', () => {
