@@ -13,6 +13,9 @@
 //   git_config     [[key, value], …] the session-start hook sets in every clone
 //                  (a merge driver, for instance). Not read here; validated here
 //                  so one place says what the file may contain.
+//   worktree_clone ignored directories `collab worktree add` clones from the code
+//                  root into a new copy (dependency trees such as
+//                  `backend/node_modules`), copy-on-write — see worktree-clone.mjs.
 //
 // A malformed value is a configuration problem and is reported as one rather
 // than silently read as "nothing configured": an owner who wrote the list wants
@@ -56,12 +59,13 @@ function projectDir(ctx) {
 
 export function projectSettings(ctx) {
   const dir = projectDir(ctx)
-  if (!dir) return { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], file: null }
+  if (!dir) return { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], file: null }
   const file = join(dir, 'project.json')
   const raw = readJson(file, null)
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], file }
+    return { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], file }
   }
+  const worktreeClone = relativeList(raw.worktree_clone, 'worktree_clone', file).map((p) => p.replace(/\/+$/, ''))
   const sharedInfra = relativeList(raw.shared_infra, 'shared_infra', file)
   let worktreesDir = DEFAULT_WORKTREES_DIR
   if (raw.worktrees_dir !== undefined && raw.worktrees_dir !== null) {
@@ -78,7 +82,7 @@ export function projectSettings(ctx) {
     }
     gitConfig = raw.git_config.map(([k, v]) => [k, v])
   }
-  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, file }
+  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, worktree_clone: worktreeClone, file }
 }
 
 // Which of `paths` fall under the shared-infrastructure list. Prefix-aware the

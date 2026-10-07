@@ -29,6 +29,15 @@ import { restoreRole } from './domain/agents.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
 import { ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
 import { CollabError } from './errors.mjs'
+import { cloneIntoCopy } from './worktree-clone.mjs'
+
+// One line per configured worktree_clone path: what the copy got and, when it
+// got nothing, why — a silent miss is how a copy ends up unable to run its tests.
+function cloneLines(results) {
+  return results.map((r) =>
+    r.status === 'cloned' ? `  cloned   ${r.path}` : dim(`  ${r.status.padEnd(8)} ${r.path} — ${r.detail}`)
+  )
+}
 import { which } from './adapters/index.mjs'
 import { catalogFor, loadBuiltinAgents, loadConfig, loadConfigFrom, planAgentSetup, applyAgentSetup, validateRegistry, writeProjectAgentsFile } from './registry.mjs'
 import { agentInstalled, planComposition, writeComposition } from './composition.mjs'
@@ -1266,6 +1275,7 @@ const COMMANDS = {
         `  branch   ${branch}`,
         `  base     ${base.slice(0, 12)}`,
         `  task     ${task.id}  ${task.title}`,
+        ...cloneLines(cloneIntoCopy({ codeRoot, copyDir: dir, paths: settings.worktree_clone })),
         dim('  edits inside it are held to this task\'s claim_files by the claim-guard hook; build there with its own DerivedData/test DB name')
       )
       return
@@ -1278,7 +1288,11 @@ const COMMANDS = {
       if (existsSync(dir)) throw new CollabError('PATH_CONFLICT', `${dir} already exists`)
       git(codeRoot, ['worktree', 'add', '--detach', dir, sha])
       const record = await api.registerWorktree({ path: realpathSync(dir), git_base: sha, kind: 'snapshot' })
-      out(`${C.bold}${record.path}${C.off}`, `  detached at ${sha.slice(0, 12)} — read-only snapshot for audits (claim-guard blocks edits in it)`)
+      out(
+        `${C.bold}${record.path}${C.off}`,
+        `  detached at ${sha.slice(0, 12)} — read-only snapshot for audits (claim-guard blocks edits in it)`,
+        ...cloneLines(cloneIntoCopy({ codeRoot, copyDir: dir, paths: settings.worktree_clone }))
+      )
       return
     }
     if (sub === 'list' || sub === undefined) {
