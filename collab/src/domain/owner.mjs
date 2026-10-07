@@ -2,8 +2,8 @@
 //
 // ⛔ OWNER ONLY, AND NOT ON THE AGENTS' SURFACE. The transition table (transitions.mjs) is unchanged: an agent still
 // cannot complete a task that skipped its review, and nothing an agent calls leads out of `completed`/`cancelled`.
-// These two functions are reached the way approvals are answered — by importing this module directly, from
-// `collab close|reopen` (refused in an agent's shell and without a terminal) and from the panel's write path (only a
+// These functions (close, reopen, and accept at the end of the file) are reached the way approvals are answered —
+// by importing this module directly, from `collab close|reopen|task accept` (refused in an agent's shell and without a terminal) and from the panel's write path (only a
 // panel started from the owner's terminal may write). They are deliberately absent from api.mjs and the MCP tools.
 // As with approvals, that is a barrier against the realistic accident, not a security boundary: agents run as the
 // same user. What makes a forced close visible instead of indistinguishable from a real one is the record it leaves:
@@ -137,5 +137,70 @@ export async function ownerReopenTask(ctx, { task_id, reason }) {
     })
     tx.emit('task.reopened_by_owner', { collection: 'tasks', id: task_id }, { reason: why, from_status: task.status, previous_owner: task.owner || null, actor_kind: 'user' })
     return { id: reopened.id, status: reopened.status, from_status: task.status }
+  })
+}
+
+// The owner accepting work a review did not approve — `collab task accept <id> --reason "…"`.
+//
+// The case it exists for: the last gating review said `changes_requested`, the owner read the findings and decided
+// the work stands (the findings are about code the change merely touched; the owner prefers it shipped as it is).
+// Nothing an agent can call does that, on purpose: a review gate that its own author could open is not a gate.
+// So this is `collab close --complete` with a different purpose and a different record — `owner_decision` carries
+// the owner's words and the verdict they overrode, so a later reader sees "accepted over changes_requested", not a
+// task that merely finished.
+//
+// Only for a task with a review gate that is stuck behind it: changes_requested, or sent back to work
+// (in_progress) or parked (waiting_for_user) after one. A task with no review gate needs no acceptance, and a task
+// with an unanswered approval is waiting for a different owner decision, which has to be answered first — accepting
+// the work would otherwise silently drop the question.
+export const ACCEPTABLE_STATUSES = Object.freeze([TASK_STATUS.CHANGES_REQUESTED, TASK_STATUS.IN_PROGRESS, TASK_STATUS.WAITING_FOR_USER])
+
+export async function ownerAcceptTask(ctx, { task_id, reason }) {
+  const why = requireReason(reason)
+  return ctx.store.transact(async (tx) => {
+    const task = tx.get('tasks', task_id)
+    if (!task) throw new CollabError(CODES.NOT_FOUND, `no task ${task_id}`, { id: task_id })
+    if (!task.needs_review) {
+      throw new CollabError(CODES.INVALID_INPUT, `task ${task_id} has no review gate (needs_review is false) — there is nothing to accept; close it with collab close --complete`, { id: task_id })
+    }
+    if (!ACCEPTABLE_STATUSES.includes(task.status)) {
+      throw new CollabError(CODES.ILLEGAL_TRANSITION, `task ${task_id} is ${task.status}; accept applies to ${ACCEPTABLE_STATUSES.join(', ')}`, { id: task_id, status: task.status })
+    }
+    const approval = task.approval_id ? tx.get('approvals', task.approval_id) : null
+    if (approval && approval.status === 'pending') {
+      throw new CollabError(CODES.INVALID_INPUT, `task ${task_id} waits for the owner's answer to approval ${approval.id}; answer it (collab approve|reject) before accepting the work`, { id: task_id, approval_id: approval.id })
+    }
+
+    const at = tx.iso()
+    const gating = tx.list('reviews', { filter: (r) => r.task_id === task.id && r.blocking !== false && r.submitted_at })
+      .sort((a, b) => String(a.submitted_at).localeCompare(String(b.submitted_at)))
+    const lastVerdict = gating.length ? gating[gating.length - 1].verdict : null
+
+    // A review still pending would ask a reviewer to answer a question about work that is already accepted.
+    const releasedReviews = []
+    for (const review of tx.list('reviews', { filter: (r) => r.task_id === task.id && r.verdict === 'pending' })) {
+      tx.put('reviews', { ...review, verdict: RELEASED, released_at: at, released_by: 'owner', release_reason: `работа принята владельцем: ${why}` })
+      tx.emit('review.released', { collection: 'reviews', id: review.id }, { task_id: task.id, reviewer: review.reviewer, by: 'owner', reason: why, actor_kind: 'user' })
+      releasedReviews.push(review.id)
+    }
+    const delegations = (task.delegations || []).map((d) => (d.finished_at ? d : { ...d, finished_at: at, outcome: `закрыто решением владельца: ${why}`, rework_required: null }))
+
+    const decision = { at, reason: why, last_review_verdict: lastVerdict, from_status: task.status }
+    const accepted = tx.put('tasks', {
+      ...task,
+      status: TASK_STATUS.COMPLETED,
+      lease: null,
+      waiting_on: null,
+      blocked_reason: null,
+      delegations,
+      owner_decision: decision,
+      owner_history: [...(task.owner_history || []), { action: 'accepted', ...decision, previous_owner: task.owner || null }]
+    })
+    tell(tx, task.owner, task, `Работа принята владельцем: ${task.title}`,
+      `Владелец принял работу по задаче ${task.id} (было «${task.status}», последний вердикт ревью: ${lastVerdict || 'нет'}).\n\nПричина: ${why}\n\nЗадача завершена; замечания ревью по ней больше не блокируют.`)
+    tx.emit('task.accepted_by_owner', { collection: 'tasks', id: task.id }, {
+      reason: why, from_status: task.status, last_review_verdict: lastVerdict, previous_owner: task.owner || null, actor_kind: 'user', released_reviews: releasedReviews
+    })
+    return { id: accepted.id, status: accepted.status, from_status: task.status, last_review_verdict: lastVerdict, released_reviews: releasedReviews }
   })
 }

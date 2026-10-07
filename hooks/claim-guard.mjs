@@ -35,7 +35,7 @@ const TERMINAL = new Set(['completed', 'cancelled']);
 const LEASED = new Set(['in_progress', 'assigned']);
 const IS_WINDOWS = process.platform === 'win32';
 
-class Blocked extends Error {}
+export class Blocked extends Error {}
 
 const toPosix = (p) => String(p).replace(/\\/g, '/');
 
@@ -59,7 +59,7 @@ function loadEvent(stdinBuffer) {
   return event;
 }
 
-function safeRealpath(p) {
+export function safeRealpath(p) {
   try {
     return realpathSync.native(p).replace(/^\\\\\?\\(?=[A-Za-z]:)/, '');
   } catch {
@@ -83,7 +83,7 @@ function gitCandidates(env) {
     .flatMap((base) => [path.join(base, 'Git', 'cmd', 'git.exe'), path.join(base, 'Git', 'bin', 'git.exe')]);
 }
 
-function existingParent(p) {
+export function existingParent(p) {
   let current = p;
   for (;;) {
     try {
@@ -98,7 +98,7 @@ function existingParent(p) {
 }
 
 // { toplevel, journalRoot } для каталога, или null вне git-репозитория.
-async function gitRoots(dir, home, env) {
+export async function gitRoots(dir, home, env) {
   const git = gitCandidates(env).find((g) => {
     try {
       return statSync(g).isFile();
@@ -130,7 +130,7 @@ async function gitRoots(dir, home, env) {
   return { toplevel, journalRoot: safeRealpath(path.dirname(commonDir)) };
 }
 
-function readJsonOrNull(file) {
+export function readJsonOrNull(file) {
   let text;
   try {
     text = readFileSync(file, 'utf8');

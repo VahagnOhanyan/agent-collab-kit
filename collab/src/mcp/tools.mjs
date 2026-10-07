@@ -320,7 +320,7 @@ export const TOOLS = [
         status: str('The new status.', { enum: TASK_STATUSES }),
         expected_version: int('The version you read. A mismatch is reported, not overwritten.'),
         note: str('What changed and why.'),
-        reason: str('Required when blocking.'),
+        reason: str('Required when blocking or when returning an approved task to work.'),
         patch: object({
           title: str('New title.'),
           description: str('New description.'),

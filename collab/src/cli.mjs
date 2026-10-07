@@ -27,10 +27,11 @@ import { findProject, listProjects } from './projects.mjs'
 import { resolveApproval } from './domain/approvals.mjs'
 import { restoreRole } from './domain/agents.mjs'
 import { resolveDecision } from './domain/decisions.mjs'
-import { ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
+import { ownerAcceptTask, ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
 import { CollabError } from './errors.mjs'
 import { cloneIntoCopy } from './worktree-clone.mjs'
 import { runWorktreeHooks } from './worktree-hooks.mjs'
+import { integrateWorktree } from './worktree-integrate.mjs'
 
 function hookLines(results) {
   return results.map((r) =>
@@ -816,7 +817,10 @@ const COMMANDS = {
     }
   },
 
-  async task(api, { args }) {
+  async task(api, { args, flags }) {
+    // `collab task accept <id> --reason "…"` — the owner taking work a review did not approve (domain/owner.mjs).
+    // Same barriers as an approval: not from an agent's shell, not without a terminal, and the id typed back.
+    if (args[0] === 'accept') return acceptTaskInteractively(api, { args: args.slice(1), flags })
     const task = api.getTask({ task_id: args[0] })
     out(
       `${C.bold}${task.title}${C.off}`,
@@ -1346,7 +1350,34 @@ const COMMANDS = {
       }
       return
     }
-    throw new CollabError('INVALID_INPUT', 'usage: collab worktree add <task-id> [--slug s] [--base ref] | snapshot [ref] [--name n] | list | gc [--dry-run]')
+    if (sub === 'integrate') {
+      const taskId = rest[0]
+      if (!taskId) throw new CollabError('INVALID_INPUT', 'usage: collab worktree integrate <task-id> [--base <branch>] [--no-check]')
+      const mainTree = api.roots?.journalRoot
+      if (!mainTree) throw new CollabError('INVALID_INPUT', 'collab worktree integrate needs the journal root (the main working tree)')
+      const record = api.listWorktrees().find((c) => c.kind === 'task' && c.task_id === taskId)
+      if (!record) throw new CollabError('NOT_FOUND', `task ${taskId} has no working copy on record (collab worktree list)`, { id: taskId })
+      if (!existsSync(record.path)) throw new CollabError('NOT_FOUND', `the copy of ${taskId} is recorded at ${record.path} but is not there`, { path: record.path })
+      const result = integrateWorktree({
+        mainTree,
+        copy: record.path,
+        branch: record.branch,
+        base: typeof flags.base === 'string' ? flags.base : null,
+        task: taskId,
+        commands: settings.integrate_check,
+        skipCheck: flags['no-check'] === true
+      })
+      out(
+        `${C.green}integrated${C.off} ${result.branch} -> ${result.base}`,
+        `  ${result.moved ? `${result.before.slice(0, 12)} -> ${result.after.slice(0, 12)}` : `${result.after.slice(0, 12)} (already contained; nothing to move)`}`,
+        ...(result.skipped_check
+          ? [`  ${C.yellow}checks skipped${C.off} (--no-check)${result.ran_without_project_check ? dim(' — the project defines no integrate_check') : ''}`]
+          : result.checks.map((c) => `  ${C.green}ok${C.off} ${c.argv.join(' ')} ${dim(`${c.seconds}s`)}`)),
+        dim(`  the copy and its branch are left as they are — collab worktree gc after the task closes`)
+      )
+      return
+    }
+    throw new CollabError('INVALID_INPUT', 'usage: collab worktree add <task-id> [--slug s] [--base ref] | snapshot [ref] [--name n] | list | gc [--dry-run] | integrate <task-id> [--base branch] [--no-check]')
   },
 
   help() {
@@ -1365,6 +1396,7 @@ const COMMANDS = {
       '  status                 who is doing what, what is waiting, what the tree looks like',
       '  tasks [--all]          list tasks',
       '  task <id>              one task with its reviews and messages',
+      '  task accept <id> --reason "…"  complete a task whose review gate is stuck (changes_requested, sent back to work, parked) on the owner\'s word; recorded as owner_decision; owner only',
       '  inbox [agent]          messages addressed to an agent',
       '  thread <id>            one conversation',
       '  reviews [--reviewer <agent>] [--pending] [--task <id>] [--json]  reviews, verdicts and their tasks (read-only)',
@@ -1388,6 +1420,7 @@ const COMMANDS = {
       '  worktree add <task-id> [--slug s] [--base ref]   a working copy + branch agent/<task>-<slug> for one task (claims held inside it)',
       '  worktree snapshot [ref] [--name n]               a detached read-only copy for audits',
       '  worktree list | gc [--dry-run]                   recorded copies; remove the copies of closed tasks',
+      '  worktree integrate <task-id> [--base b] [--no-check]  rebase the task branch onto the base, run the project\'s integrate_check in the copy, and only if green fast-forward the base (main tree must stand on it)',
       '',
       dim('  --as <agent>         act as an agent (never unlocks approve/reject)')
     )
@@ -1411,6 +1444,36 @@ function refuseUnlessOwnerAtTerminal(what) {
     process.stderr.write(`refusing: ${what} needs an interactive terminal — it is the owner's decision, not a script's.\n`)
     process.exit(3)
   }
+}
+
+async function acceptTaskInteractively(api, { args, flags }) {
+  const id = args[0]
+  if (args.length !== 1 || typeof flags.reason !== 'string' || !flags.reason.trim()) {
+    throw new CollabError('INVALID_INPUT', 'usage: collab task accept <task-id> --reason "the owner\'s words"')
+  }
+  // Barriers 1 and 2 are the approval's: an agent shell carries COLLAB_AGENT_ID, and a human sits at a terminal.
+  refuseUnlessOwnerAtTerminal('collab task accept')
+
+  const task = api.getTask({ task_id: id })
+  const last = api.listReviews({ task_id: id }).filter((r) => r.blocking !== false && r.submitted_at).sort((a, b) => String(a.submitted_at).localeCompare(String(b.submitted_at))).at(-1)
+  out(
+    '',
+    `${C.bold}${task.title}${C.off}  ${task.id}  ${paint(task.status)}`,
+    `  last review  ${last ? `${paint(last.verdict)} by ${last.reviewer} — ${(last.findings || []).length} finding(s)` : dim('none submitted')}`,
+    `  reason       ${flags.reason.trim()}`,
+    dim('  accepting completes the task over this verdict; it is recorded as the owner\'s decision'),
+    ''
+  )
+  // Barrier 3: type the id back — y/n is too easy to answer without reading.
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const typed = await rl.question('Type the task id to ACCEPT the work, anything else to abort: ')
+  rl.close()
+  if (typed.trim() !== id) {
+    out('aborted — nothing changed')
+    process.exit(0)
+  }
+  const result = await ownerAcceptTask(api.ctx, { task_id: id, reason: flags.reason })
+  out(`${C.green}accepted${C.off} ${result.id}  (was ${result.from_status}; last review ${result.last_review_verdict || 'none'})${result.released_reviews.length ? dim(`  reviews released: ${result.released_reviews.length}`) : ''}`)
 }
 
 async function resolveApprovalInteractively(api, { args, flags }, decision) {

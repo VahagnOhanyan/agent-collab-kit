@@ -54,7 +54,7 @@ test('installs into every config directory and registers each one separately', (
   for (const dir of [join(W.home, '.claude'), second]) {
     const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
     const commands = settings.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command)
-    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'claim-guard'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
+    assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'claim-guard'), lib.claudeHookCommand(NODE, cur, 'stash-guard'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
     assert.deepEqual(settings.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'post-edit'), timeout: 60 }] }], dir)
     assert.deepEqual(settings.hooks.SessionStart, [{ hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'session-start'), timeout: 15 }] }], dir)
   }
@@ -64,8 +64,8 @@ test('installs into every config directory and registers each one separately', (
   const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(again.status, 0, again.all)
   assert.doesNotMatch(again.stdout, /registered user-scope collab/)
-  assert.match(r.stdout, /model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks in/g)
-  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, claim-guard, push-gate, post-edit and session-start hooks in/g)
+  assert.match(r.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks in/g)
+  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks in/g)
   assert.ok(readFileSync(join(second, 'settings.json')).equals(settingsBefore), 'settings.json unchanged on a second run')
 })
 
@@ -130,8 +130,8 @@ test('rollback to a release without a hook module drops that hook from settings.
   const settingsFile = join(W.home, '.claude', 'settings.json')
   assert.equal(W.run(['--source', source, ...args]).status, 0)
   const cur = join(W.home, '.agent-collab-kit', 'current')
-  // Make the installed release look like one from before these three hooks existed.
-  for (const name of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
+  // Make the installed release look like one from before these four hooks existed.
+  for (const name of ['stash-guard', 'push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
   const own = { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }
   const first = JSON.parse(readFileSync(settingsFile, 'utf8'))
   first.hooks.PreToolUse.push(own)

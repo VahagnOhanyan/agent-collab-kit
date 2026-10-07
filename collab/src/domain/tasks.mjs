@@ -18,7 +18,7 @@ import { projectSettings, sharedInfraHits } from './project-settings.mjs'
 import { ACTION_KINDS, classifyAction } from '../policy.mjs'
 import { normaliseEvidence, normaliseSpec } from './spec.mjs'
 import { LEASED_STATES, admitWork, assertMayHold, assertOwnerOrContributor } from './gate.mjs'
-import { TASK_STATUS, TERMINAL, allowedNext, assertTransition } from '../transitions.mjs'
+import { TASK_STATUS, TERMINAL, allowedNext, assertTransition, lastGatingReview } from '../transitions.mjs'
 import { touchAgent } from './agents.mjs'
 import { holdsReviewerRole } from './reviewer-roles.mjs'
 import { SESSION_ID } from '../usage.mjs'
@@ -414,7 +414,8 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
         // and then claim it — the lease bypassed in two steps.
         assertMayHold(tx, task, ctx.agentId, 'change the status of')
       }
-      const reviews = status === TASK_STATUS.COMPLETED ? reviewsOf(tx, task) : []
+      const backToWork = status === TASK_STATUS.IN_PROGRESS && task.status === TASK_STATUS.APPROVED
+      const reviews = status === TASK_STATUS.COMPLETED || backToWork ? reviewsOf(tx, task) : []
       // The spec being written in this same call counts: raising ux_impact and
       // completing in one update must not slip past the gate on the old spec.
       assertTransition({ ...task, spec: fields.spec }, status, { reason, pendingApproval, admission, reviews })
@@ -422,6 +423,13 @@ export function updateTask(ctx, { task_id, status = null, expected_version, note
       if (admission) Object.assign(fields, admission.fields)
       if (status === TASK_STATUS.BLOCKED) fields.blocked_reason = reason
       if (status === TASK_STATUS.IN_PROGRESS) fields.blocked_reason = null
+      // The mark that lets this task complete without a second review (transitions.mjs, approved -> in_progress):
+      // who reopened it, why, and the review whose approval it still stands on.
+      if (backToWork) {
+        fields.reopened_after_approval = { at: tx.iso(), reason: reason.trim(), review_id: lastGatingReview(task, reviews)?.id || null, by: ctx.agentId }
+      }
+      // New work goes back through a reviewer: the mark does not outlive the review it was granted against.
+      if (status === TASK_STATUS.REVIEW) fields.reopened_after_approval = null
     }
     const next = tx.put('tasks', fields, { expectedVersion: expected_version })
     touchAgent(tx, ctx, admission ? { status: 'busy', current_task_id: task_id } : {})

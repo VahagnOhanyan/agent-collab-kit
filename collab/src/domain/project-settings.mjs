@@ -19,6 +19,11 @@
 //   worktree_hooks { add: [argv…], remove: [argv…] } commands run when a task
 //                  copy is created / garbage-collected (a per-task test database)
 //                  — see worktree-hooks.mjs.
+//   integrate_check [argv…] the commands `collab worktree integrate` runs in the
+//                  task's copy, after the rebase and before anything reaches the
+//                  base branch (the project's full test run, its preflight). The
+//                  same argv shape and `{task}` / `{copy}` substitution as
+//                  worktree_hooks — see worktree-integrate.mjs.
 //
 // A malformed value is a configuration problem and is reported as one rather
 // than silently read as "nothing configured": an owner who wrote the list wants
@@ -62,7 +67,7 @@ function projectDir(ctx) {
 
 export function projectSettings(ctx) {
   const dir = projectDir(ctx)
-  const empty = { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], worktree_hooks: { add: [], remove: [] } }
+  const empty = { shared_infra: [], worktrees_dir: DEFAULT_WORKTREES_DIR, git_config: [], worktree_clone: [], worktree_hooks: { add: [], remove: [] }, integrate_check: [] }
   if (!dir) return { ...empty, file: null }
   const file = join(dir, 'project.json')
   const raw = readJson(file, null)
@@ -79,6 +84,14 @@ export function projectSettings(ctx) {
     }
     worktreeHooks.add = (h.add || []).map((argv) => [...argv])
     worktreeHooks.remove = (h.remove || []).map((argv) => [...argv])
+  }
+  let integrateCheck = []
+  if (raw.integrate_check !== undefined && raw.integrate_check !== null) {
+    const c = raw.integrate_check
+    if (!Array.isArray(c) || c.some((argv) => !Array.isArray(argv) || argv.length === 0 || argv.some((x) => typeof x !== 'string' || x === ''))) {
+      throw new CollabError(CODES.CONFIG_INVALID, `${file}: "integrate_check" must be a list of argv lists, [["cmd", "arg"…]…]`, { key: 'integrate_check' })
+    }
+    integrateCheck = c.map((argv) => [...argv])
   }
   const worktreeClone = relativeList(raw.worktree_clone, 'worktree_clone', file).map((p) => p.replace(/\/+$/, ''))
   const sharedInfra = relativeList(raw.shared_infra, 'shared_infra', file)
@@ -97,7 +110,7 @@ export function projectSettings(ctx) {
     }
     gitConfig = raw.git_config.map(([k, v]) => [k, v])
   }
-  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, worktree_clone: worktreeClone, worktree_hooks: worktreeHooks, file }
+  return { shared_infra: sharedInfra, worktrees_dir: worktreesDir, git_config: gitConfig, worktree_clone: worktreeClone, worktree_hooks: worktreeHooks, integrate_check: integrateCheck, file }
 }
 
 // Which of `paths` fall under the shared-infrastructure list. Prefix-aware the

@@ -246,6 +246,7 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
     { matcher: 'Agent', hooks: [{ type: 'command', command, timeout: 10 }] },
     { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: gate, timeout: 15 }] },
     { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(node, cur, 'claim-guard'), timeout: 15 }] },
+    { matcher: 'Bash', hooks: [{ type: 'command', command: lib.claudeHookCommand(node, cur, 'stash-guard'), timeout: 15 }] },
     { matcher: 'Bash', hooks: [{ type: 'command', command: push, timeout: 180 }] }
   ])
   assert.doesNotMatch(command + gate + push, /exit 2/, 'not a boundary: a broken launch must not block every call')
@@ -254,7 +255,7 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
     { matcher: 'x', hooks: [{ type: 'command', command: lib.codexHookCommand('/n', '/c') }] },
     { matcher: 'Edit|Write', hooks: [project] }
   ] } }, node, cur)
-  assert.equal(kept.hooks.PreToolUse.length, 6, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
+  assert.equal(kept.hooks.PreToolUse.length, 7, 'a codex-guard entry and a project\'s own plan-gate script are not taken for ours')
 })
 
 test('Claude settings: a wrapper that merely mentions the launcher is not ours; our entry is replaced in place, keeping the order', () => {
@@ -272,7 +273,8 @@ test('Claude settings: a wrapper that merely mentions the launcher is not ours; 
   assert.deepEqual(bash.map((g) => g.hooks[0].command), [
     lib.claudeHookCommand('/new/node', cur, 'push-gate'),
     theirs.command,
-    wrapper.command
+    wrapper.command,
+    lib.claudeHookCommand('/new/node', cur, 'stash-guard') // not there before: appended as a new Bash group
   ], 'ours stays first where it was; the wrapper survives untouched')
   assert.equal(merged.hooks.PreToolUse.findIndex((g) => g.hooks[0].command === wrapper.command), 2)
 })
@@ -288,7 +290,7 @@ test('Claude settings: a launcher from another install root is not ours; our ent
   const after = { type: 'command', command: 'after.sh' }
   const merged = lib.mergeClaudeHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [before, oldPush, after] }] } }, '/new/node', cur)
   const flat = merged.hooks.PreToolUse.filter((g) => g.matcher === 'Bash').flatMap((g) => g.hooks.map((h) => h.command))
-  assert.deepEqual(flat, [before.command, lib.claudeHookCommand('/new/node', cur, 'push-gate'), after.command], 'order before, ours, after')
+  assert.deepEqual(flat, [before.command, lib.claudeHookCommand('/new/node', cur, 'push-gate'), after.command, lib.claudeHookCommand('/new/node', cur, 'stash-guard')], 'order before, ours, after; the hook that was not there yet is appended')
 })
 
 test('Codex hooks: node and launcher by absolute quoted path; the old python entry is replaced', () => {

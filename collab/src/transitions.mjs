@@ -61,7 +61,12 @@ export const TRANSITIONS = Object.freeze({
   [S.WAITING_FOR_USER]: [S.IN_PROGRESS, S.CREATED, S.BLOCKED, S.CANCELLED],
   [S.REVIEW]: [S.APPROVED, S.CHANGES_REQUESTED, S.BLOCKED, S.CANCELLED],
   [S.CHANGES_REQUESTED]: [S.IN_PROGRESS, S.ASSIGNED, S.BLOCKED, S.CANCELLED],
-  [S.APPROVED]: [S.COMPLETED, S.CHANGES_REQUESTED, S.CANCELLED],
+  // approved -> in_progress is the one way back into work that does not discard the approval: a fix made while
+  // carrying approved work into the base (a rebase, a conflict, a red integration check) is a correction of
+  // what was reviewed, not new work. It needs a reason, leaves the mark `reopened_after_approval`, and
+  // completing afterwards needs no second review ONLY while the last gating review is still approved
+  // (isReopenedAfterApproval). Any move into `review` clears the mark: then it is new work after all.
+  [S.APPROVED]: [S.COMPLETED, S.CHANGES_REQUESTED, S.IN_PROGRESS, S.CANCELLED],
   [S.BLOCKED]: [S.CREATED, S.ASSIGNED, S.IN_PROGRESS, S.CANCELLED],
   [S.COMPLETED]: [],
   [S.CANCELLED]: []
@@ -75,15 +80,35 @@ export function allowedNext(task) {
   return [...(TRANSITIONS[task.status] || [])]
 }
 
+// The latest SUBMITTED gating review of the task (a released one carries no verdict of its own; a slot beside
+// the gate does not count). Null when there is none.
+export function lastGatingReview(task, reviews = []) {
+  const submitted = reviews
+    .filter((r) => r.task_id === task.id && r.blocking !== false && r.submitted_at)
+    .sort((a, b) => String(a.submitted_at).localeCompare(String(b.submitted_at)))
+  return submitted[submitted.length - 1] || null
+}
+
+// A task that went back to work from `approved` (reopened_after_approval is set) and whose last gating review is
+// still `approved` — the review it already passed. Anything else that is still in_progress needs a review.
+export function isReopenedAfterApproval(task, reviews = []) {
+  if (!task.reopened_after_approval) return false
+  return lastGatingReview(task, reviews)?.verdict === 'approved'
+}
+
 // Guards that cannot be expressed as an edge. Each returns null or a reason.
 const GUARDS = {
-  [S.IN_PROGRESS]: (task, ctx) =>
-    ctx?.admission?.task_id === task.id
+  [S.IN_PROGRESS]: (task, ctx) => {
+    if (task.status === S.APPROVED && !(typeof ctx?.reason === 'string' && ctx.reason.trim())) {
+      return 'returning an approved task to work requires a reason'
+    }
+    return ctx?.admission?.task_id === task.id
       ? null
-      : "work starts only through the approval gate (admitWork), which checks the policy and consumes the owner's grant",
+      : "work starts only through the approval gate (admitWork), which checks the policy and consumes the owner's grant"
+  },
   [S.REVIEW]: (task) => (task.needs_review === false ? 'this task was created with needs_review false' : null),
   [S.COMPLETED]: (task, ctx) => {
-    if (task.needs_review && task.status === S.IN_PROGRESS) {
+    if (task.needs_review && task.status === S.IN_PROGRESS && !isReopenedAfterApproval(task, ctx?.reviews || [])) {
       return 'it needs a review: move it to review and let a reviewer approve it first'
     }
     if (ctx?.pendingApproval) {

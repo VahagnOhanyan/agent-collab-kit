@@ -361,7 +361,9 @@ export function requestReview(ctx, {
 
     tx.put('tasks', {
       ...task,
-      ...(gates ? { status: TASK_STATUS.REVIEW, waiting_on: { kind: 'agent', ref: review.id } } : {}),
+      // Asking for a gating review is saying the work needs one: a task that had gone back to work after its approval
+      // (transitions.mjs, approved -> in_progress) loses the right to complete without it.
+      ...(gates ? { status: TASK_STATUS.REVIEW, waiting_on: { kind: 'agent', ref: review.id }, reopened_after_approval: null } : {}),
       reviewers: [...new Set([...(task.reviewers || []), reviewer])]
     })
 

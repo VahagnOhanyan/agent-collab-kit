@@ -155,10 +155,12 @@ export function gitBinary() {
 
 // { ok: true, stdout } or { ok: false, notRepo, status, stderr }. `notRepo` is
 // true only for git's definitive answer (exit 128, "not a git repository").
-export function gitProbe(cwd, args) {
+// `timeoutMs` is for the one caller whose git work is long by nature (a rebase and a fast-forward that rewrite a
+// working tree — worktree-integrate.mjs); every probe keeps the 30 s it always had.
+export function gitProbe(cwd, args, { timeoutMs = 30_000 } = {}) {
   const binary = gitBinary()
   if (!binary) return { ok: false, notRepo: false, status: -1, stderr: `no working git among ${GIT_CANDIDATES.join(', ')}` }
-  const result = spawnSync(binary, args, { cwd, env: gitEnv(), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 30_000 })
+  const result = spawnSync(binary, args, { cwd, env: gitEnv(), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs })
   if (result.status === 0) return { ok: true, stdout: result.stdout }
   const stderr = `${result.stderr || ''}${result.error ? ` ${result.error.message}` : ''}`.trim()
   return { ok: false, status: result.status, stderr, notRepo: result.status === 128 && /not a git repository/.test(stderr) }
