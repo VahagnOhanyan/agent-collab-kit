@@ -30,6 +30,13 @@ import { resolveDecision } from './domain/decisions.mjs'
 import { ownerCloseTasks, ownerReopenTask } from './domain/owner.mjs'
 import { CollabError } from './errors.mjs'
 import { cloneIntoCopy } from './worktree-clone.mjs'
+import { runWorktreeHooks } from './worktree-hooks.mjs'
+
+function hookLines(results) {
+  return results.map((r) =>
+    r.status === 'ok' ? `  hook     ${r.argv.join(' ')}` : dim(`  hook ${r.status} ${r.argv.join(' ')} — ${r.detail}`)
+  )
+}
 
 // One line per configured worktree_clone path: what the copy got and, when it
 // got nothing, why — a silent miss is how a copy ends up unable to run its tests.
@@ -1276,6 +1283,7 @@ const COMMANDS = {
         `  base     ${base.slice(0, 12)}`,
         `  task     ${task.id}  ${task.title}`,
         ...cloneLines(cloneIntoCopy({ codeRoot, copyDir: dir, paths: settings.worktree_clone })),
+        ...hookLines(runWorktreeHooks({ commands: settings.worktree_hooks.add, task: task.id, copy: record.path, cwd: codeRoot })),
         dim('  edits inside it are held to this task\'s claim_files by the claim-guard hook; build there with its own DerivedData/test DB name')
       )
       return
@@ -1332,6 +1340,9 @@ const COMMANDS = {
         }
         await api.unregisterWorktree({ path: c.path })
         out(`removed ${c.path} ${dim(`(${c.task_id} ${c.task_status}; branch ${c.branch || '—'} left for the owner to delete)`)}`)
+        if (c.task_id) {
+          for (const line of hookLines(runWorktreeHooks({ commands: settings.worktree_hooks.remove, task: c.task_id, copy: c.path, cwd: codeRoot }))) out(line)
+        }
       }
       return
     }
