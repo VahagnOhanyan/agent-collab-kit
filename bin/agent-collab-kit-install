@@ -103,6 +103,7 @@ const REQUIRED_PATHS = Object.freeze([
   'hooks/push-gate.mjs',
   'hooks/post-edit.mjs',
   'hooks/session-start.mjs',
+  'hooks/context-watch.mjs',
   'hooks/lib/paths.mjs',
   'hooks/lib/plan-gate.mjs',
   'hooks/lib/project.mjs',
@@ -2238,7 +2239,11 @@ const CLAUDE_HOOKS = Object.freeze([
   { name: 'stash-guard', matcher: 'Bash', timeout: 15 },
   { name: 'push-gate', matcher: 'Bash', timeout: 180 },
   { name: 'post-edit', event: 'PostToolUse', matcher: 'Edit|Write|MultiEdit', timeout: 60 },
-  { name: 'session-start', event: 'SessionStart', timeout: 15 }
+  { name: 'session-start', event: 'SessionStart', timeout: 15 },
+  // Context watch: once the model's context window passes a threshold, the model is asked to offer the owner
+  // a handoff. Two events — a chat turn and a long autonomous run of tools — one module.
+  { name: 'context-watch', event: 'UserPromptSubmit', timeout: 10 },
+  { name: 'context-watch', event: 'PostToolUse', matcher: '.*', timeout: 10 }
 ])
 
 const claudeHookCommand = (nodePath, currentPath, name = 'model-guard') => hookCommand(nodePath, currentPath, name)
@@ -2310,14 +2315,14 @@ function planClaudeHooks(ctx, available, { cleanOnly = false } = {}) {
 function applyClaudeHooks(ctx, plan, journal, changes) {
   if (plan.skipped) return
   for (const file of plan.files) {
-    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks in ${file.file} — a new session picks them up`)
+    if (applyJsonHooks(file, journal)) changes.push(`claude: model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit, session-start and context-watch hooks in ${file.file} — a new session picks them up`)
   }
 }
 
 function summarizeClaudeHooks(ctx, plan) {
   if (plan.skipped) return null
   const changed = plan.files.filter((f) => f.changed).map((f) => f.file)
-  return changed.length ? `claude: add the model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks to ${changed.join(', ')}` : null
+  return changed.length ? `claude: add the model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit, session-start and context-watch hooks to ${changed.join(', ')}` : null
 }
 
 function planCodexHooks(ctx) {

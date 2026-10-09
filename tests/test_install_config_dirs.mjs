@@ -55,8 +55,12 @@ test('installs into every config directory and registers each one separately', (
     const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
     const commands = settings.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command)
     assert.deepEqual(commands, [lib.claudeHookCommand(NODE, cur), lib.claudeHookCommand(NODE, cur, 'plan-gate'), lib.claudeHookCommand(NODE, cur, 'claim-guard'), lib.claudeHookCommand(NODE, cur, 'stash-guard'), lib.claudeHookCommand(NODE, cur, 'push-gate')], dir)
-    assert.deepEqual(settings.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'post-edit'), timeout: 60 }] }], dir)
+    assert.deepEqual(settings.hooks.PostToolUse, [
+      { matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'post-edit'), timeout: 60 }] },
+      { matcher: '.*', hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'context-watch'), timeout: 10 }] }
+    ], dir)
     assert.deepEqual(settings.hooks.SessionStart, [{ hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'session-start'), timeout: 15 }] }], dir)
+    assert.deepEqual(settings.hooks.UserPromptSubmit, [{ hooks: [{ type: 'command', command: lib.claudeHookCommand(NODE, cur, 'context-watch'), timeout: 10 }] }], dir)
   }
   const settingsBefore = readFileSync(join(second, 'settings.json'))
 
@@ -64,8 +68,8 @@ test('installs into every config directory and registers each one separately', (
   const again = W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second])
   assert.equal(again.status, 0, again.all)
   assert.doesNotMatch(again.stdout, /registered user-scope collab/)
-  assert.match(r.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks in/g)
-  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit and session-start hooks in/g)
+  assert.match(r.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit, session-start and context-watch hooks in/g)
+  assert.doesNotMatch(again.stdout, /model-guard, plan-gate, claim-guard, stash-guard, push-gate, post-edit, session-start and context-watch hooks in/g)
   assert.ok(readFileSync(join(second, 'settings.json')).equals(settingsBefore), 'settings.json unchanged on a second run')
 })
 
@@ -131,7 +135,7 @@ test('rollback to a release without a hook module drops that hook from settings.
   assert.equal(W.run(['--source', source, ...args]).status, 0)
   const cur = join(W.home, '.agent-collab-kit', 'current')
   // Make the installed release look like one from before these four hooks existed.
-  for (const name of ['stash-guard', 'push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
+  for (const name of ['stash-guard', 'push-gate', 'post-edit', 'session-start', 'context-watch']) rmSync(join(realpathSync(cur), 'hooks', `${name}.mjs`))
   const own = { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-own-hook' }] }
   const first = JSON.parse(readFileSync(settingsFile, 'utf8'))
   first.hooks.PreToolUse.push(own)
@@ -151,6 +155,7 @@ test('rollback to a release without a hook module drops that hook from settings.
   )
   assert.deepEqual(commandsOf('PostToolUse'), [])
   assert.deepEqual(commandsOf('SessionStart'), [])
+  assert.deepEqual(commandsOf('UserPromptSubmit'), [])
 })
 
 // Two releases where the older one has no push-gate/post-edit/session-start modules; both config directories
@@ -161,7 +166,7 @@ function twoReleasesWithSecondDir(name) {
   const source = makeSource(name)
   assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
   const cur = join(W.home, '.agent-collab-kit', 'current')
-  for (const hook of ['push-gate', 'post-edit', 'session-start']) rmSync(join(realpathSync(cur), 'hooks', `${hook}.mjs`))
+  for (const hook of ['push-gate', 'post-edit', 'session-start', 'context-watch']) rmSync(join(realpathSync(cur), 'hooks', `${hook}.mjs`))
   commitChange(source, 'rules/orchestration.md', 'rule v2\n')
   assert.equal(W.run(['--source', source, '--skip-kit-tests', '--claude-config-dir', second]).status, 0)
   const commandsOf = (dir, event) => (JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).hooks?.[event] ?? []).flatMap((g) => g.hooks).map((h) => h.command)

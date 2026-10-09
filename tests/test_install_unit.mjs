@@ -240,7 +240,12 @@ test('Claude settings: model-guard, plan-gate, push-gate, post-edit and session-
   const post = lib.claudeHookCommand(node, cur, 'post-edit')
   const start = lib.claudeHookCommand(node, cur, 'session-start')
   assert.deepEqual(once.hooks.SessionStart, [...existing.hooks.SessionStart, { hooks: [{ type: 'command', command: start, timeout: 15 }] }], 'no matcher on SessionStart; theirs stay')
-  assert.deepEqual(once.hooks.PostToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: post, timeout: 60 }] }])
+  const watch = lib.claudeHookCommand(node, cur, 'context-watch')
+  assert.deepEqual(once.hooks.PostToolUse, [
+    { matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: post, timeout: 60 }] },
+    { matcher: '.*', hooks: [{ type: 'command', command: watch, timeout: 10 }] }
+  ], 'one module, its own entry next to post-edit')
+  assert.deepEqual(once.hooks.UserPromptSubmit, [{ hooks: [{ type: 'command', command: watch, timeout: 10 }] }], 'and on the chat turn')
   assert.deepEqual(once.hooks.PreToolUse, [
     { matcher: 'Bash', hooks: [theirs] },
     { matcher: 'Agent', hooks: [{ type: 'command', command, timeout: 10 }] },
